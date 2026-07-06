@@ -955,8 +955,8 @@ require_path_bytes_failure_response =
 enable_p_shortcut = true
 
 # Optional first line prepended to path command RF replies (Python str.format on the triggering message).
-# Placeholders match Multitest/Keywords-style responses: {sender}, {connection_info}, {path},
-# {timestamp}, {snr}, {rssi}. Only the first RF chunk includes the prefix when the reply is split.
+# Placeholders match keyword-style responses: {sender}, {connection_info}, {path},
+# {hops}, {hops_label}, {timestamp}, {snr}, {rssi}. Only the first RF chunk includes the prefix when the reply is split.
 # Example: @[{sender}]
 reply_prefix =
 

@@ -18,7 +18,7 @@ These options only affect the **path** command’s reply text and whether repeat
 **`reply_prefix`** (string, default empty)
 
 - Prepended as the first line of path command RF replies (only the **first** chunk when the reply is split for length).
-- Uses Python `str.format` on the **triggering** message. Placeholders: `{sender}`, `{connection_info}`, `{path}`, `{timestamp}`, `{snr}`, `{rssi}` (same idea as `[Multitest_Command]` `response_format`).
+- Uses Python `str.format` on the **triggering** message. Placeholders: `{sender}`, `{connection_info}`, `{path}`, `{hops}`, `{hops_label}`, `{timestamp}`, `{snr}`, `{rssi}`.
 
 **`minimum_path_bytes`** (integer `0`–`3`, default `0`)
 

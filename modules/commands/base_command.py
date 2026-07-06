@@ -1079,16 +1079,45 @@ class BaseCommand(ABC):
         translator = getattr(self.bot, 'translator', None)
         return format_elapsed_display(message.timestamp, translator)
 
+    def get_hops_display_values(self, message: MeshMessage) -> tuple[str, str]:
+        """Return hop count placeholders as numeric and pluralized strings."""
+        hops_val = getattr(message, 'hops', None)
+        routing_info = getattr(message, 'routing_info', None)
+
+        if not isinstance(hops_val, int) and routing_info is not None:
+            hops_val = routing_info.get('path_length')
+            if hops_val is None and routing_info.get('path_nodes'):
+                hops_val = len(routing_info['path_nodes'])
+
+        if not isinstance(hops_val, int):
+            path_str = message.path or ""
+            hop_match = re.search(r'\((\d+)\s*hops?', path_str, re.IGNORECASE)
+            if hop_match:
+                hops_val = int(hop_match.group(1))
+            elif re.search(r'\bdirect\b|\b0\s*hops?\b', path_str, re.IGNORECASE):
+                hops_val = 0
+
+        if not isinstance(hops_val, int):
+            return "?", "?"
+
+        hops_str = str(hops_val)
+        hops_label = "1 hop" if hops_val == 1 else f"{hops_val} hops"
+        return hops_str, hops_label
+
     def format_response(self, message: MeshMessage, response_format: str) -> str:
         """Format a response string with message data"""
         try:
             connection_info = self.build_enhanced_connection_info(message)
+            path_display = self.get_path_display_string(message)
+            hops, hops_label = self.get_hops_display_values(message)
             timestamp = self.format_timestamp(message)
 
             return response_format.format(
                 sender=message.sender_id or "Unknown",
                 connection_info=connection_info,
-                path=message.path or "Unknown",
+                path=path_display,
+                hops=hops,
+                hops_label=hops_label,
                 timestamp=timestamp,
                 snr=message.snr or "Unknown",
                 rssi=message.rssi or "Unknown"
