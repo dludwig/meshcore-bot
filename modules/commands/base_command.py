@@ -9,6 +9,12 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Optional
 
+from ..command_prefix import (
+    DECORATIVE_PREFIX_CHARS,
+    find_matching_prefix,
+    load_command_prefix_settings,
+    normalize_command_content,
+)
 from ..models import CHANNEL_REGIONAL_FLOOD_SCOPE_BODY_OVERHEAD, MeshMessage
 from ..security_utils import validate_pubkey_format
 from ..utils import format_elapsed_display, get_config_timezone
@@ -48,14 +54,19 @@ class BaseCommand(ABC):
         # Load allowed channels from config (standardized channel override)
         self.allowed_channels = self._load_allowed_channels()
 
+        # Cache command prefix settings before aliases (alias normalization uses prefixes)
+        self._command_prefixes, self._require_command_prefix = load_command_prefix_settings(
+            self.bot.config
+        )
+        self._command_prefix = (
+            self._command_prefixes[0] if self._command_prefixes else ''
+        )
+
         # Load aliases from this command's config section and extend keywords
         self._load_aliases_from_config()
 
         # Load translated keywords after initialization
         self._load_translated_keywords()
-
-        # Cache command prefix from config
-        self._command_prefix = self._load_command_prefix()
 
     def translate(self, key: str, **kwargs: Any) -> str:
         """Translate a key using the bot's translator.
@@ -374,22 +385,22 @@ class BaseCommand(ABC):
         """
         if not alias:
             return ''
-        command_prefix = self.bot.config.get('Bot', 'command_prefix', fallback='').strip()
-        cp_lower = command_prefix.lower() if command_prefix else ''
+        prefixes = self._command_prefixes
 
         # Legacy / mistaken leading punctuation (prefer stem-only in config)
-        decorative = frozenset('!.,/')
+        decorative = DECORATIVE_PREFIX_CHARS
 
         for _ in range(32):
             if not alias:
                 break
-            if cp_lower and alias.startswith(cp_lower):
-                alias = alias[len(cp_lower):].strip()
+            matched = find_matching_prefix(alias, prefixes) if prefixes else None
+            if matched:
+                alias = alias[len(matched):].strip()
                 continue
-            if not cp_lower and alias and alias[0] in decorative:
+            if not prefixes and alias and alias[0] in decorative:
                 alias = alias[1:].strip()
                 continue
-            if cp_lower and alias and alias[0] in decorative:
+            if prefixes and alias and alias[0] in decorative:
                 alias = alias[1:].strip()
                 continue
             break
@@ -710,13 +721,13 @@ class BaseCommand(ABC):
             self.logger.debug(f"Could not load translated keywords for {self.name}: {e}")
 
     def _load_command_prefix(self) -> str:
-        """Load command prefix from config.
+        """Load default command prefix from config (first configured prefix).
 
         Returns:
-            str: The command prefix, or empty string if not configured.
+            str: The default command prefix, or empty string if not configured.
         """
-        prefix = self.bot.config.get('Bot', 'command_prefix', fallback='')
-        return prefix.strip() if prefix else ''
+        prefixes, _require = load_command_prefix_settings(self.bot.config)
+        return prefixes[0] if prefixes else ''
 
     def _get_bot_name(self) -> str:
         """Get bot name from device or config.
@@ -838,13 +849,14 @@ class BaseCommand(ABC):
         # is canonical and re-stripping/re-rejecting it here would break matching for
         # every command after the first in the check_keywords scan.
         if not getattr(message, 'prefix_normalized', False):
-            if self._command_prefix:
-                if not content.startswith(self._command_prefix):
-                    return ""
-                content = content[len(self._command_prefix):].strip()
-            else:
-                if content.startswith('!'):
-                    content = content[1:].strip()
+            normalized = normalize_command_content(
+                content,
+                self._command_prefixes,
+                require_prefix=self._require_command_prefix,
+            )
+            if normalized is None:
+                return ""
+            content = normalized
 
         mention_mode = self.bot.config.get('Bot', 'respond_to_mentions', fallback='also').strip().lower()
         if mention_mode != 'false':

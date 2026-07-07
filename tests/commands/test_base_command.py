@@ -454,6 +454,17 @@ class TestCleanupMessageForMatching:
         msg = mock_message(content="testcmd")  # missing the ! prefix
         assert cmd.cleanup_message_for_matching(msg) == ""
 
+    def test_optional_command_prefix_allows_bare(self, command_mock_bot):
+        """require_command_prefix=false allows bare commands when prefix is configured."""
+        command_mock_bot.config.set("Bot", "respond_to_mentions", "false")
+        command_mock_bot.config.set("Bot", "command_prefix", "!")
+        command_mock_bot.config.set("Bot", "require_command_prefix", "false")
+        cmd = self._cmd(command_mock_bot)
+        msg = mock_message(content="testcmd")
+        assert cmd.cleanup_message_for_matching(msg) == "testcmd"
+        msg = mock_message(content="!testcmd")
+        assert cmd.cleanup_message_for_matching(msg) == "testcmd"
+
     # ---------------------------------------------- matches_keyword integration
     def test_matches_keyword_with_bot_mention(self, command_mock_bot):
         """matches_keyword uses cleanup_message_for_matching — @[bot] ping matches 'testcmd'."""

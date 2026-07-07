@@ -128,6 +128,13 @@ Common per-command options (when supported by that command):
   - Comma list: only those channels
 - **`aliases`** – Extra trigger words for that command, comma-separated **stems only** (e.g. `aliases = weather, w`). Do not put the bot's **`command_prefix`** or punctuation in this value (no `!` or `.`)
 
+### Command prefix
+
+Under `[Bot]`:
+
+- **`command_prefix`** – Optional global prefix(es) for commands. A single value (`!`, `abc`), comma-separated list (`!, ~, .`), or concatenated decorative characters (`!~.`) where the **first** entry is shown in help/docs. Leave empty for bare commands (legacy leading `!` is still accepted).
+- **`require_command_prefix`** – When `true` (default), messages must start with a configured prefix. When `false`, configured prefix(es) are stripped when present but bare commands also work. Ignored when `command_prefix` is empty.
+
 Full reference: see `config.ini.example` in the repository for every section and option, with inline comments.
 
 ## Data retention

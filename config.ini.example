@@ -103,13 +103,15 @@ enable_enhanced_correlation = true
 # Bot node ID (leave empty for auto-assignment)
 node_id = 
 
-# Command prefix (optional)
-# If set, all commands must start with this prefix (e.g., "!", ".", "b", "abc")
+# Command prefix (optional). Single prefix (!), multiple decorative (!~.),
+# or comma-separated (!, ~, .). First is shown in help/docs.
 # Examples: "!" for !ping, "." for .ping, "b" for bping, "abc" for abcping
-# The prefix applies uniformly to every command (including help); messages without
-# it are ignored. Leave empty or unset to allow commands without a prefix (backward
-# compatible; a leading "!" is still accepted in that mode).
 #command_prefix =
+
+# When true (default): messages must start with a configured prefix.
+# When false: configured prefix(es) are stripped when present, but bare commands also work.
+# Ignored when command_prefix is empty (bare + legacy "!" still work).
+#require_command_prefix = true
 
 # Respond to channel messages when the bot is mentioned via @[bot_name]
 # Controls how the bot handles @[bot_name] mentions in channel messages:

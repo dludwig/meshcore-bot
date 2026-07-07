@@ -366,3 +366,108 @@ class TestCommandPrefixMultipleCommands:
         mock_message.content = "test"
         matches = manager.check_keywords(mock_message)
         assert any(trigger == 'test' for trigger, _ in matches)
+
+
+class TestOptionalCommandPrefix:
+    """Tests for require_command_prefix and multi-prefix command_prefix values."""
+
+    def _make_manager(self, mock_bot, commands):
+        for section in ('Keywords', 'Custom_Syntax'):
+            if not mock_bot.config.has_section(section):
+                mock_bot.config.add_section(section)
+        with patch('modules.command_manager.PluginLoader') as mock_loader_class:
+            loader = Mock()
+            loader.load_all_plugins = Mock(return_value=commands)
+            loader.keyword_mappings = {}
+            mock_loader_class.return_value = loader
+            manager = CommandManager(mock_bot)
+        mock_bot.command_manager = manager
+        return manager
+
+    def test_permissive_prefix_allows_bare_and_prefixed(self, mock_bot, mock_message):
+        mock_bot.config.set('Bot', 'command_prefix', '!')
+        mock_bot.config.set('Bot', 'require_command_prefix', 'false')
+        command = MockTestCommand(mock_bot)
+
+        mock_message.content = "!test"
+        assert command.matches_keyword(mock_message) is True
+
+        mock_message.content = "test"
+        assert command.matches_keyword(mock_message) is True
+
+    def test_permissive_tilde_prefix(self, mock_bot, mock_message):
+        mock_bot.config.set('Bot', 'command_prefix', '~')
+        mock_bot.config.set('Bot', 'require_command_prefix', 'false')
+        command = MockTestCommand(mock_bot)
+
+        mock_message.content = "~test"
+        assert command.matches_keyword(mock_message) is True
+
+        mock_message.content = "test"
+        assert command.matches_keyword(mock_message) is True
+
+        mock_message.content = "!test"
+        assert command.matches_keyword(mock_message) is False
+
+    def test_multi_prefix_decorative_strict(self, mock_bot, mock_message):
+        mock_bot.config.set('Bot', 'command_prefix', '!~.')
+        command = MockTestCommand(mock_bot)
+
+        for content in ('!test', '~test', '.test'):
+            mock_message.content = content
+            assert command.matches_keyword(mock_message) is True
+
+        mock_message.content = "test"
+        assert command.matches_keyword(mock_message) is False
+
+    def test_multi_prefix_decorative_permissive(self, mock_bot, mock_message):
+        mock_bot.config.set('Bot', 'command_prefix', '!~.')
+        mock_bot.config.set('Bot', 'require_command_prefix', 'false')
+        command = MockTestCommand(mock_bot)
+
+        for content in ('!test', '~test', '.test', 'test'):
+            mock_message.content = content
+            assert command.matches_keyword(mock_message) is True
+
+    def test_multi_char_prefix_unchanged(self, mock_bot, mock_message):
+        mock_bot.config.set('Bot', 'command_prefix', 'abc')
+        command = MockTestCommand(mock_bot)
+
+        mock_message.content = "abctest"
+        assert command.matches_keyword(mock_message) is True
+
+        mock_message.content = "test"
+        assert command.matches_keyword(mock_message) is False
+
+    def test_comma_separated_prefixes(self, mock_bot, mock_message):
+        mock_bot.config.set('Bot', 'command_prefix', '!, ~')
+        command = MockTestCommand(mock_bot)
+
+        mock_message.content = "~test"
+        assert command.matches_keyword(mock_message) is True
+
+        mock_message.content = "!test"
+        assert command.matches_keyword(mock_message) is True
+
+    def test_manager_permissive_bare_command_matches(self, mock_bot, mock_message):
+        mock_bot.config.set('Bot', 'command_prefix', '!')
+        mock_bot.config.set('Bot', 'require_command_prefix', 'false')
+        commands = {'test': MockTestCommand(mock_bot)}
+        manager = self._make_manager(mock_bot, commands)
+
+        mock_message.content = "test"
+        matches = manager.check_keywords(mock_message)
+        assert any(trigger == 'test' for trigger, _ in matches)
+
+    def test_command_prefix_property_setter_updates_prefixes(self, mock_bot):
+        mock_bot.config.set('Bot', 'command_prefix', '')
+        with patch('modules.command_manager.PluginLoader') as mock_loader_class:
+            loader = Mock()
+            loader.load_all_plugins = Mock(return_value={})
+            loader.keyword_mappings = {}
+            mock_loader_class.return_value = loader
+            manager = CommandManager(mock_bot)
+
+        manager.command_prefix = '!~.'
+        assert manager.command_prefix == '!'
+        assert manager.command_prefixes == ['!', '~', '.']

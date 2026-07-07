@@ -15,6 +15,13 @@ from typing import Any
 
 from meshcore import EventType
 
+from .command_prefix import (
+    load_command_prefix_settings,
+    parse_command_prefixes,
+)
+from .command_prefix import (
+    normalize_command_content as normalize_command_content_text,
+)
 from .commands.base_command import BaseCommand
 from .config_validation import (
     PUBLIC_CHANNEL_KEY_HEX,  # noqa: F401 — re-exported; used by core.py
@@ -37,6 +44,7 @@ class InternetStatusCache:
         timestamp: Timestamp of the last check.
         _lock: Asyncio lock for thread-safe operations (lazily initialized).
     """
+
     has_internet: bool
     timestamp: float
     _lock: asyncio.Lock | None = None
@@ -69,6 +77,7 @@ class InternetStatusCache:
 @dataclass
 class QueuedCommand:
     """Represents a queued command waiting for cooldown to expire."""
+
     command: BaseCommand
     message: MeshMessage
     queued_at: float
@@ -93,7 +102,8 @@ class CommandManager:
         self.banned_users = self.load_banned_users()
         self.monitor_channels = self.load_monitor_channels()
         self.channel_keywords = self.load_channel_keywords()
-        self.command_prefix = self.load_command_prefix()
+        self.command_prefixes, self.require_command_prefix = load_command_prefix_settings(self.bot.config)
+        self._command_prefix_default = self.command_prefixes[0] if self.command_prefixes else ""
 
         self.bot_backup_wait_time = 15
         self.bot_channel_backup = self.load_bot_channel_backup()
@@ -129,16 +139,13 @@ class CommandManager:
     def _flood_scopes_config_raw(self) -> str:
         """Raw flood_scopes value; [Channels] is canonical, [Bot] accepted with a warning."""
         for section in ("Channels", "Bot"):
-            if self.bot.config.has_section(section) and self.bot.config.has_option(
-                section, "flood_scopes"
-            ):
+            if self.bot.config.has_section(section) and self.bot.config.has_option(section, "flood_scopes"):
                 raw = (self.bot.config.get(section, "flood_scopes") or "").strip()
                 if not raw:
                     continue
                 if section != "Channels":
                     self.logger.warning(
-                        "flood_scopes is set in [Bot]; move it to [Channels] "
-                        "(still loaded for this run)"
+                        "flood_scopes is set in [Bot]; move it to [Channels] (still loaded for this run)"
                     )
                 return raw
         return ""
@@ -199,7 +206,7 @@ class CommandManager:
         for key, value in self.bot.config.items("Channels"):
             if not key.startswith("flood_scope."):
                 continue
-            configured_channel = key[len("flood_scope."):]
+            configured_channel = key[len("flood_scope.") :]
             if self._normalize_channel_name_for_scope_config(configured_channel) == channel_key:
                 return self._normalize_scope_name((value or "").strip())
         return None
@@ -288,7 +295,7 @@ class CommandManager:
         Returns:
             bool: True if queued, False if user already has queued command
         """
-        user_id = message.sender_id or 'global'
+        user_id = message.sender_id or "global"
         queue_key = (command.name, user_id)
 
         # Max 1 command per user
@@ -297,14 +304,10 @@ class CommandManager:
 
         current_time = time.time()
         self._command_queue[queue_key] = QueuedCommand(
-            command=command,
-            message=message,
-            queued_at=current_time,
-            expires_at=current_time + remaining_seconds
+            command=command, message=message, queued_at=current_time, expires_at=current_time + remaining_seconds
         )
 
-        self.logger.debug(f"Queued command '{command.name}' for user {user_id}, "
-                         f"expires in {remaining_seconds:.1f}s")
+        self.logger.debug(f"Queued command '{command.name}' for user {user_id}, expires in {remaining_seconds:.1f}s")
 
         # Start processor if not running
         if self._queue_processor_task is None or self._queue_processor_task.done():
@@ -314,7 +317,7 @@ class CommandManager:
 
     def _start_queue_processor(self):
         """Start background task to process command queue."""
-        if hasattr(self.bot, 'main_event_loop') and self.bot.main_event_loop:
+        if hasattr(self.bot, "main_event_loop") and self.bot.main_event_loop:
             self._queue_processor_task = asyncio.create_task(self._process_command_queue())
         else:
             # Bot not fully started yet, will start in bot.start()
@@ -347,8 +350,7 @@ class CommandManager:
                     try:
                         await self._execute_queued_command(command, message)
                     except Exception as e:
-                        self.logger.error(f"Error executing queued command '{command.name}': {e}",
-                                        exc_info=True)
+                        self.logger.error(f"Error executing queued command '{command.name}': {e}", exc_info=True)
 
                 # Wait before next check
                 if ready_commands:
@@ -373,8 +375,8 @@ class CommandManager:
         success = await command.execute(message)
 
         # Record in stats
-        if 'stats' in self.commands:
-            stats_command = self.commands['stats']
+        if "stats" in self.commands:
+            stats_command = self.commands["stats"]
             if stats_command:
                 stats_command.record_command(message, command.name, success)
 
@@ -400,7 +402,9 @@ class CommandManager:
         return wait
 
     async def _check_rate_limits(
-        self, skip_user_rate_limit: bool = False, rate_limit_key: str | None = None,
+        self,
+        skip_user_rate_limit: bool = False,
+        rate_limit_key: str | None = None,
         channel: str | None = None,
     ) -> tuple[bool, str]:
         """Check all rate limits before sending.
@@ -427,8 +431,8 @@ class CommandManager:
                 return False, ""
             # Per-user rate limit when enabled and key present.
             # Admin ACL controls command authorization only; it does not bypass send rate limits.
-            if getattr(self.bot, 'per_user_rate_limit_enabled', False) and rate_limit_key:
-                per_user = getattr(self.bot, 'per_user_rate_limiter', None)
+            if getattr(self.bot, "per_user_rate_limit_enabled", False) and rate_limit_key:
+                per_user = getattr(self.bot, "per_user_rate_limiter", None)
                 if per_user and not per_user.can_send(rate_limit_key):
                     wait_time = per_user.time_until_next(rate_limit_key)
                     if wait_time > 0.1:
@@ -437,7 +441,7 @@ class CommandManager:
 
         # Per-channel rate limit
         if channel:
-            ch_limiter = getattr(self.bot, 'channel_rate_limiter', None)
+            ch_limiter = getattr(self.bot, "channel_rate_limiter", None)
             if ch_limiter and not ch_limiter.can_send(channel):
                 wait_time = ch_limiter.time_until_next(channel)
                 if wait_time > 0.1:
@@ -454,12 +458,12 @@ class CommandManager:
 
     def _is_no_event_received(self, result) -> bool:
         """Return True when result is an ERROR event with reason 'no_event_received'."""
-        if not result or not hasattr(result, 'type'):
+        if not result or not hasattr(result, "type"):
             return False
         if result.type != EventType.ERROR:
             return False
-        payload = result.payload if hasattr(result, 'payload') else {}
-        return isinstance(payload, dict) and payload.get('reason') == 'no_event_received'
+        payload = result.payload if hasattr(result, "payload") else {}
+        return isinstance(payload, dict) and payload.get("reason") == "no_event_received"
 
     def _handle_send_result(
         self,
@@ -488,10 +492,12 @@ class CommandManager:
                 self.logger.error(f"❌ {operation_name} to {target} failed - no result returned")
             return False
 
-        if hasattr(result, 'type'):
+        if hasattr(result, "type"):
             if result.type == EventType.ERROR:
-                error_payload = result.payload if hasattr(result, 'payload') else {}
-                self.logger.error(f"❌ {operation_name} failed to {target}: {error_payload if error_payload else 'Unknown error'}")
+                error_payload = result.payload if hasattr(result, "payload") else {}
+                self.logger.error(
+                    f"❌ {operation_name} failed to {target}: {error_payload if error_payload else 'Unknown error'}"
+                )
                 return False
 
             if result.type in (EventType.MSG_SENT, EventType.OK):
@@ -501,25 +507,27 @@ class CommandManager:
                     self.logger.info(f"✅ {operation_name} sent to {target}")
                 self.bot.rate_limiter.record_send()
                 self.bot.bot_tx_rate_limiter.record_tx()
-                if getattr(self.bot, 'per_user_rate_limit_enabled', False) and rate_limit_key:
-                    per_user = getattr(self.bot, 'per_user_rate_limiter', None)
+                if getattr(self.bot, "per_user_rate_limit_enabled", False) and rate_limit_key:
+                    per_user = getattr(self.bot, "per_user_rate_limiter", None)
                     if per_user:
                         per_user.record_send(rate_limit_key)
                 return True
 
             # Handle unexpected event types
-            event_name = getattr(result.type, 'name', str(result.type))
+            event_name = getattr(result.type, "name", str(result.type))
 
             # Special handling for channel messages with timeout/no_event_received
             if operation_name == "Channel message":
-                error_payload = result.payload if hasattr(result, 'payload') else {}
-                if isinstance(error_payload, dict) and error_payload.get('reason') == 'no_event_received':
+                error_payload = result.payload if hasattr(result, "payload") else {}
+                if isinstance(error_payload, dict) and error_payload.get("reason") == "no_event_received":
                     # Message likely sent but confirmation timed out - treat as success with warning
-                    self.logger.warning(f"Channel message sent to {target} but confirmation event not received (message may have been sent)")
+                    self.logger.warning(
+                        f"Channel message sent to {target} but confirmation event not received (message may have been sent)"
+                    )
                     self.bot.rate_limiter.record_send()
                     self.bot.bot_tx_rate_limiter.record_tx()
-                    if getattr(self.bot, 'per_user_rate_limit_enabled', False) and rate_limit_key:
-                        per_user = getattr(self.bot, 'per_user_rate_limiter', None)
+                    if getattr(self.bot, "per_user_rate_limit_enabled", False) and rate_limit_key:
+                        per_user = getattr(self.bot, "per_user_rate_limiter", None)
                         if per_user:
                             per_user.record_send(rate_limit_key)
                     return True
@@ -532,8 +540,8 @@ class CommandManager:
         self.logger.info(f"✅ {operation_name} sent to {target} (result: {result})")
         self.bot.rate_limiter.record_send()
         self.bot.bot_tx_rate_limiter.record_tx()
-        if getattr(self.bot, 'per_user_rate_limit_enabled', False) and rate_limit_key:
-            per_user = getattr(self.bot, 'per_user_rate_limiter', None)
+        if getattr(self.bot, "per_user_rate_limit_enabled", False) and rate_limit_key:
+            per_user = getattr(self.bot, "per_user_rate_limiter", None)
             if per_user:
                 per_user.record_send(rate_limit_key)
         return True
@@ -545,8 +553,8 @@ class CommandManager:
             Dict[str, str]: Dictionary mapping keywords to response strings.
         """
         keywords = {}
-        if self.bot.config.has_section('Keywords'):
-            for keyword, response in self.bot.config.items('Keywords'):
+        if self.bot.config.has_section("Keywords"):
+            for keyword, response in self.bot.config.items("Keywords"):
                 # Strip quotes from the response if present
                 if response.startswith('"') and response.endswith('"'):
                     response = response[1:-1]
@@ -558,8 +566,8 @@ class CommandManager:
     def load_custom_syntax(self) -> dict[str, str]:
         """Load custom syntax patterns from config"""
         syntax_patterns = {}
-        if self.bot.config.has_section('Custom_Syntax'):
-            for pattern, response_format in self.bot.config.items('Custom_Syntax'):
+        if self.bot.config.has_section("Custom_Syntax"):
+            for pattern, response_format in self.bot.config.items("Custom_Syntax"):
                 # Strip quotes from the response format if present
                 if response_format.startswith('"') and response_format.endswith('"'):
                     response_format = response_format[1:-1]
@@ -570,10 +578,10 @@ class CommandManager:
 
     def load_banned_users(self) -> list[str]:
         """Load banned users from config"""
-        if not self.bot.config.has_section('Banned_Users'):
+        if not self.bot.config.has_section("Banned_Users"):
             return []
-        banned = self.bot.config.get('Banned_Users', 'banned_users', fallback='')
-        return [user.strip() for user in banned.split(',') if user.strip()]
+        banned = self.bot.config.get("Banned_Users", "banned_users", fallback="")
+        return [user.strip() for user in banned.split(",") if user.strip()]
 
     def is_user_banned(self, sender_id: str | None) -> bool:
         """Check if sender is banned using prefix (starts-with) matching.
@@ -588,9 +596,9 @@ class CommandManager:
         """Load monitored channels from config.
         Values may be quoted, e.g. \"#bot,#bot-everett,#bots\" or unquoted.
         """
-        raw = self.bot.config.get('Channels', 'monitor_channels', fallback='')
+        raw = self.bot.config.get("Channels", "monitor_channels", fallback="")
         channels = strip_optional_quotes(raw)
-        channel_list = [channel.strip() for channel in channels.split(',') if channel.strip()]
+        channel_list = [channel.strip() for channel in channels.split(",") if channel.strip()]
 
         if any(_channel_name_is_public(ch) for ch in channel_list):
             override = self.bot.config.get("Bot", PUBLIC_CHANNEL_OVERRIDE_KEY, fallback="").strip().lower()
@@ -611,10 +619,10 @@ class CommandManager:
         DMs always get all triggers. Use to reduce channel floods by making heavy
         triggers DM-only. Names are case-insensitive.
         """
-        raw = self.bot.config.get('Channels', 'channel_keywords', fallback='').strip()
+        raw = self.bot.config.get("Channels", "channel_keywords", fallback="").strip()
         if not raw:
             return None
-        return [k.strip().lower() for k in raw.split(',') if k.strip()]
+        return [k.strip().lower() for k in raw.split(",") if k.strip()]
 
     def _is_channel_trigger_allowed(self, trigger: str, message: MeshMessage) -> bool:
         """Return True if this trigger is allowed for the message context.
@@ -625,14 +633,28 @@ class CommandManager:
             return True
         return trigger.lower() in self.channel_keywords
 
-    def load_command_prefix(self) -> str:
-        """Load command prefix from config.
+    @property
+    def command_prefix(self) -> str:
+        """Default command prefix (first configured prefix) for backward compatibility."""
+        return self._command_prefix_default
+
+    @command_prefix.setter
+    def command_prefix(self, value: str) -> None:
+        """Update prefix list when tests or callers assign ``command_prefix`` directly."""
+        self.command_prefixes = parse_command_prefixes(value.strip() if value else "")
+        self._command_prefix_default = self.command_prefixes[0] if self.command_prefixes else ""
+
+    def normalize_command_content(self, raw: str) -> str | None:
+        """Strip configured prefix(es) from raw message text.
 
         Returns:
-            str: The command prefix, or empty string if not configured.
+            Normalized content, or ``None`` if the message should be ignored.
         """
-        prefix = self.bot.config.get("Bot", "command_prefix", fallback="")
-        return prefix.strip() if prefix else ""
+        return normalize_command_content_text(
+            raw,
+            self.command_prefixes,
+            require_prefix=self.require_command_prefix,
+        )
 
     def load_bot_channel_backup(self) -> dict:
 
@@ -646,9 +668,8 @@ class CommandManager:
             bar = json.loads(foo)
             return bar
         except json.JSONDecodeError:
-            self.logger.error(f"Bot_Channel_Backup invalid_json")
+            self.logger.error("Bot_Channel_Backup invalid_json")
             return None
-
 
     def format_keyword_response(self, response_format: str, message: MeshMessage) -> str:
         """Format a keyword response string with message data.
@@ -665,7 +686,7 @@ class CommandManager:
             response_format,
             message,
             self.bot,
-            mesh_info=None  # Keywords don't use mesh info placeholders
+            mesh_info=None,  # Keywords don't use mesh info placeholders
         )
 
     def get_max_message_length(self, message: MeshMessage) -> int:
@@ -681,18 +702,18 @@ class CommandManager:
             return 158
         username: str | None = None
         try:
-            if hasattr(self.bot, 'meshcore') and self.bot.meshcore:
-                self_info = getattr(self.bot.meshcore, 'self_info', None)
+            if hasattr(self.bot, "meshcore") and self.bot.meshcore:
+                self_info = getattr(self.bot.meshcore, "self_info", None)
                 if self_info:
                     if isinstance(self_info, dict):
-                        username = self_info.get('name') or self_info.get('user_name')
+                        username = self_info.get("name") or self_info.get("user_name")
                     else:
-                        username = getattr(self_info, 'name', None) or getattr(self_info, 'user_name', None)
+                        username = getattr(self_info, "name", None) or getattr(self_info, "user_name", None)
         except Exception:
             pass
         if not username:
-            username = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
-        max_length = max(130, 160 - len(str(username).encode('utf-8')) - 2)
+            username = self.bot.config.get("Bot", "bot_name", fallback="Bot")
+        max_length = max(130, 160 - len(str(username).encode("utf-8")) - 2)
         if not MeshMessage.is_global_flood_scope(message.effective_outgoing_flood_scope(self.bot)):
             max_length -= CHANNEL_REGIONAL_FLOOD_SCOPE_BODY_OVERHEAD
         return max_length
@@ -734,20 +755,10 @@ class CommandManager:
             List[tuple]: List of (trigger, response) tuples for matched keywords.
         """
         matches: list[tuple[str, str | None]] = []
-        content = message.content.strip()
-
-        # Check for command prefix if configured
-        if self.command_prefix:
-            # If prefix is configured, message must start with it
-            if not content.startswith(self.command_prefix):
-                return matches  # No prefix, no match
-            # Strip the prefix
-            content = content[len(self.command_prefix):].strip()
-        else:
-            # If no prefix configured, strip legacy "!" prefix for backward compatibility
-            if content.startswith('!'):
-                content = content[1:].strip()
-
+        normalized = self.normalize_command_content(message.content)
+        if normalized is None:
+            return matches
+        content = normalized
         content_lower = content.lower()
 
         # Persist the normalized (prefix-stripped) content to the shared message once,
@@ -767,20 +778,20 @@ class CommandManager:
         # this guard it would respond to "help" even when the command is disabled.
         # When no help command is loaded we keep the legacy default of responding to
         # the literal "help" keyword (help defaults to enabled).
-        help_command = self.commands.get('help')
-        help_enabled = getattr(help_command, 'help_enabled', True) if help_command is not None else True
+        help_command = self.commands.get("help")
+        help_enabled = getattr(help_command, "help_enabled", True) if help_command is not None else True
         if help_enabled:
-            help_keywords = ['help']
-            if help_command is not None and hasattr(help_command, 'keywords'):
+            help_keywords = ["help"]
+            if help_command is not None and hasattr(help_command, "keywords"):
                 help_keywords = [k.lower() for k in help_command.keywords]
 
             # Check if message starts with any help keyword
             for help_keyword in help_keywords:
-                if content_lower.startswith(help_keyword + ' ') or content_lower == help_keyword:
+                if content_lower.startswith(help_keyword + " ") or content_lower == help_keyword:
                     # Check channel restrictions for help keyword (same as other keywords/commands)
                     # DMs are allowed if respond_to_dms is enabled
                     if message.is_dm:
-                        if not self.bot.config.getboolean('Channels', 'respond_to_dms', fallback=True):
+                        if not self.bot.config.getboolean("Channels", "respond_to_dms", fallback=True):
                             break  # DMs disabled, skip help keyword
                     else:
                         # For channel messages, honor the help command's channel access:
@@ -789,28 +800,28 @@ class CommandManager:
                         # ignore [Help_Command] channels = ... (it bypasses the plugin
                         # loop where is_channel_allowed is normally enforced). Fall back
                         # to a bare monitor_channels check when no help command is loaded.
-                        if help_command is not None and hasattr(help_command, 'is_channel_allowed'):
+                        if help_command is not None and hasattr(help_command, "is_channel_allowed"):
                             if not help_command.is_channel_allowed(message):
                                 break  # Not allowed in this channel, skip help keyword
                         elif message.channel not in self.monitor_channels:
                             break  # Channel not monitored, skip help keyword
                         # When channel_keywords is set, only allow listed triggers in channel
-                        if not self._is_channel_trigger_allowed('help', message):
+                        if not self._is_channel_trigger_allowed("help", message):
                             break
 
                     # Channel check passed, process help request
-                    if content_lower.startswith(help_keyword + ' '):
-                        command_name = content_lower[len(help_keyword):].strip()  # Remove help keyword prefix
+                    if content_lower.startswith(help_keyword + " "):
+                        command_name = content_lower[len(help_keyword) :].strip()  # Remove help keyword prefix
                         help_text = self.get_help_for_command(command_name, message)
                         # Format the help response with message data (same as other keywords)
                         help_text = self.format_keyword_response(help_text, message)
-                        matches.append(('help', help_text))
+                        matches.append(("help", help_text))
                         return matches
                     elif content_lower == help_keyword:
                         help_text = self.get_general_help(message)
                         # Format the help response with message data (same as other keywords)
                         help_text = self.format_keyword_response(help_text, message)
-                        matches.append(('help', help_text))
+                        matches.append(("help", help_text))
                         return matches
 
         # Check all loaded plugins for matches
@@ -857,7 +868,7 @@ class CommandManager:
             # Check channel restrictions for plain keywords (same as commands)
             # DMs are allowed if respond_to_dms is enabled
             if message.is_dm:
-                if not self.bot.config.getboolean('Channels', 'respond_to_dms', fallback=True):
+                if not self.bot.config.getboolean("Channels", "respond_to_dms", fallback=True):
                     continue  # DMs disabled, skip this keyword
             else:
                 # For channel messages, check if channel is in monitor_channels
@@ -883,7 +894,7 @@ class CommandManager:
             # This ensures the keyword is the first word in the message
             elif content_lower.startswith(keyword_lower):
                 # Check if it's followed by a space or is the end of the message
-                if len(content_lower) == len(keyword_lower) or content_lower[len(keyword_lower)] == ' ':
+                if len(content_lower) == len(keyword_lower) or content_lower[len(keyword_lower)] == " ":
                     try:
                         # Format the response with available message data
                         response = self.format_keyword_response(response_format, message)
@@ -905,20 +916,12 @@ class CommandManager:
         """
         if raw is None:
             return ""
-        text = raw.strip()
-
-        # Mirror check_keywords() prefix handling
-        if self.command_prefix:
-            if not text.startswith(self.command_prefix):
-                return ""  # No prefix -> treat as non-matchable
-            text = text[len(self.command_prefix):].strip()
-        else:
-            # Backward compatibility
-            if text.startswith('!'):
-                text = text[1:].strip()
+        normalized = self.normalize_command_content(raw)
+        if normalized is None:
+            return ""
 
         # case-insensitive + ignore extra spaces
-        return " ".join(text.lower().split())
+        return " ".join(normalized.lower().split())
 
     def match_randomline(self, message: MeshMessage) -> tuple[str, str] | None:
         """
@@ -926,21 +929,16 @@ class CommandManager:
         Returns (key, response) or None.
         Matching is case-insensitive and ignores extra spaces.
         """
-        if not self.bot.config.has_section('RandomLine'):
+        if not self.bot.config.has_section("RandomLine"):
             return None
 
-        # Start with the same content + prefix stripping logic as check_keywords()
-        content = (message.content or "").strip()
-
-        # Check for command prefix if configured
-        if self.command_prefix:
-            if not content.startswith(self.command_prefix):
-                return None
-            content = content[len(self.command_prefix):].strip()
+        if getattr(message, "prefix_normalized", False):
+            content = (message.content or "").strip()
         else:
-            # Legacy "!" prefix compatibility
-            if content.startswith('!'):
-                content = content[1:].strip()
+            normalized = self.normalize_command_content(message.content or "")
+            if normalized is None:
+                return None
+            content = normalized
 
         # Normalize: lowercase + collapse whitespace
         content_norm = " ".join(content.lower().split())
@@ -949,11 +947,11 @@ class CommandManager:
 
         # Build trigger -> key map from config: triggers.<key> = csv list
         trigger_map = {}
-        for cfg_key, cfg_val in self.bot.config.items('RandomLine'):
-            if not cfg_key.startswith('triggers.'):
+        for cfg_key, cfg_val in self.bot.config.items("RandomLine"):
+            if not cfg_key.startswith("triggers."):
                 continue
 
-            key = cfg_key.split('.', 1)[1].strip()
+            key = cfg_key.split(".", 1)[1].strip()
             if not key:
                 continue
 
@@ -969,20 +967,20 @@ class CommandManager:
 
         # Channel restrictions (mirror the plain keyword restrictions)
         if message.is_dm:
-            if not self.bot.config.getboolean('Channels', 'respond_to_dms', fallback=True):
+            if not self.bot.config.getboolean("Channels", "respond_to_dms", fallback=True):
                 return None
         else:
             # Optional per-trigger channel list: channel.<key> or channels.<key> (e.g. channel.momjoke = #jokes)
             # When set, trigger is allowed only in those channels (even if not in global monitor_channels)
-            channel_opt = self.bot.config.get('RandomLine', f'channel.{key}', fallback='').strip()
+            channel_opt = self.bot.config.get("RandomLine", f"channel.{key}", fallback="").strip()
             if not channel_opt:
-                channel_opt = self.bot.config.get('RandomLine', f'channels.{key}', fallback='').strip()
+                channel_opt = self.bot.config.get("RandomLine", f"channels.{key}", fallback="").strip()
             if channel_opt:
-                allowed = [ch.strip() for ch in channel_opt.split(',') if ch.strip()]
+                allowed = [ch.strip() for ch in channel_opt.split(",") if ch.strip()]
                 if allowed:
                     # Normalize for comparison: lowercase, strip optional #
-                    msg_ch = (message.channel or '').lower().strip().lstrip('#')
-                    allowed_normalized = {ch.lower().strip().lstrip('#') for ch in allowed}
+                    msg_ch = (message.channel or "").lower().strip().lstrip("#")
+                    allowed_normalized = {ch.lower().strip().lstrip("#") for ch in allowed}
                     if msg_ch not in allowed_normalized:
                         return None
                     # Per-trigger channels allowed even when not in monitor_channels; skip global check
@@ -995,7 +993,7 @@ class CommandManager:
             if not self._is_channel_trigger_allowed(key, message):
                 return None
 
-        file_path = self.bot.config.get('RandomLine', f'file.{key}', fallback='').strip()
+        file_path = self.bot.config.get("RandomLine", f"file.{key}", fallback="").strip()
         if not file_path:
             self.logger.warning(f"RandomLine matched '{key}' but missing config file.{key}")
             return None
@@ -1024,9 +1022,9 @@ class CommandManager:
 
         chosen = random.choice(lines)
 
-        prefix = self.bot.config.get('RandomLine', f'prefix.{key}', fallback='').strip()
+        prefix = self.bot.config.get("RandomLine", f"prefix.{key}", fallback="").strip()
         if not prefix:
-            prefix = (self.bot.config.get('RandomLine', 'prefix.default', fallback='') or '').strip()
+            prefix = (self.bot.config.get("RandomLine", "prefix.default", fallback="") or "").strip()
 
         response = f"{prefix} {chosen}".strip() if prefix else chosen
         return key, response
@@ -1040,7 +1038,7 @@ class CommandManager:
         Args:
             message: The message triggering the advert command.
         """
-        command = self.commands['advert']
+        command = self.commands["advert"]
         await command.execute(message)
 
         # Small delay to ensure send_response has completed
@@ -1048,14 +1046,19 @@ class CommandManager:
 
         # Determine if a response was sent
         response_sent = False
-        if hasattr(command, 'last_response') and command.last_response or hasattr(self, '_last_response') and self._last_response:
+        if (
+            hasattr(command, "last_response")
+            and command.last_response
+            or hasattr(self, "_last_response")
+            and self._last_response
+        ):
             response_sent = True
 
         # Record command execution in stats database
-        if 'stats' in self.commands:
-            stats_command = self.commands['stats']
+        if "stats" in self.commands:
+            stats_command = self.commands["stats"]
             if stats_command:
-                stats_command.record_command(message, 'advert', response_sent)
+                stats_command.record_command(message, "advert", response_sent)
 
     async def send_dm(
         self,
@@ -1126,7 +1129,7 @@ class CommandManager:
                 return False
 
             # Use the contact name for logging
-            contact_name = contact.get('name', contact.get('adv_name', recipient_id))
+            contact_name = contact.get("name", contact.get("adv_name", recipient_id))
             if lookup_type != "name":
                 self.logger.info(
                     "Sending DM to %s (resolved via %s)",
@@ -1138,14 +1141,11 @@ class CommandManager:
 
             # Record transmission for repeat tracking (don't let this block sending)
             try:
-                if hasattr(self.bot, 'transmission_tracker') and self.bot.transmission_tracker:
+                if hasattr(self.bot, "transmission_tracker") and self.bot.transmission_tracker:
                     if not command_id:
                         command_id = f"dm_{contact_name}_{int(time.time())}"
                     self.bot.transmission_tracker.record_transmission(
-                        content=content,
-                        target=contact_name,
-                        message_type='dm',
-                        command_id=command_id
+                        content=content, target=contact_name, message_type="dm", command_id=command_id
                     )
             except Exception as e:
                 self.logger.debug(f"Error recording transmission for repeat tracking: {e}")
@@ -1154,13 +1154,15 @@ class CommandManager:
             # Try to use send_msg_with_retry if available (meshcore-2.1.6+)
             try:
                 # Use the meshcore commands interface for send_msg_with_retry
-                if hasattr(self.bot.meshcore, 'commands') and hasattr(self.bot.meshcore.commands, 'send_msg_with_retry'):
+                if hasattr(self.bot.meshcore, "commands") and hasattr(
+                    self.bot.meshcore.commands, "send_msg_with_retry"
+                ):
                     self.logger.debug("Using send_msg_with_retry for improved reliability")
 
                     # Use send_msg_with_retry with configurable retry parameters
-                    max_attempts = self.bot.config.getint('Bot', 'dm_max_retries', fallback=3)
-                    max_flood_attempts = self.bot.config.getint('Bot', 'dm_max_flood_attempts', fallback=2)
-                    flood_after = self.bot.config.getint('Bot', 'dm_flood_after', fallback=2)
+                    max_attempts = self.bot.config.getint("Bot", "dm_max_retries", fallback=3)
+                    max_flood_attempts = self.bot.config.getint("Bot", "dm_max_flood_attempts", fallback=2)
+                    flood_after = self.bot.config.getint("Bot", "dm_flood_after", fallback=2)
                     timeout = 0  # Use suggested timeout from meshcore
 
                     self.logger.debug(f"Attempting DM send with {max_attempts} max attempts")
@@ -1170,7 +1172,7 @@ class CommandManager:
                         max_attempts=max_attempts,
                         max_flood_attempts=max_flood_attempts,
                         flood_after=flood_after,
-                        timeout=timeout
+                        timeout=timeout,
                     )
                 else:
                     # Fallback to regular send_msg for older meshcore versions
@@ -1183,8 +1185,9 @@ class CommandManager:
                 result = await self.bot.meshcore.commands.send_msg(contact, content)
 
             # Check if send_msg_with_retry was used
-            used_retry_method = (hasattr(self.bot.meshcore, 'commands') and
-                               hasattr(self.bot.meshcore.commands, 'send_msg_with_retry'))
+            used_retry_method = hasattr(self.bot.meshcore, "commands") and hasattr(
+                self.bot.meshcore.commands, "send_msg_with_retry"
+            )
 
             # Handle result using unified handler
             return self._handle_send_result(
@@ -1219,14 +1222,13 @@ class CommandManager:
             self.bot.logger.warning("send_channel_message suppressed — radio is in zombie state; power cycle required")
             return False
         if self.bot.is_radio_offline:
-            self.bot.logger.warning(
-                "send_channel_message suppressed — radio is offline (repeated send timeouts)"
-            )
+            self.bot.logger.warning("send_channel_message suppressed — radio is offline (repeated send timeouts)")
             return False
 
         # Check all rate limits (including per-channel)
         can_send, reason = await self._check_rate_limits(
-            skip_user_rate_limit=skip_user_rate_limit, rate_limit_key=rate_limit_key,
+            skip_user_rate_limit=skip_user_rate_limit,
+            rate_limit_key=rate_limit_key,
             channel=channel,
         )
         if not can_send:
@@ -1247,14 +1249,11 @@ class CommandManager:
 
             # Record transmission for repeat tracking (don't let this block sending)
             try:
-                if hasattr(self.bot, 'transmission_tracker') and self.bot.transmission_tracker:
+                if hasattr(self.bot, "transmission_tracker") and self.bot.transmission_tracker:
                     if not command_id:
                         command_id = f"channel_{channel}_{int(time.time())}"
                     self.bot.transmission_tracker.record_transmission(
-                        content=content,
-                        target=channel,
-                        message_type='channel',
-                        command_id=command_id
+                        content=content, target=channel, message_type="channel", command_id=command_id
                     )
             except Exception as e:
                 self.logger.debug(f"Error recording transmission for repeat tracking: {e}")
@@ -1262,9 +1261,7 @@ class CommandManager:
 
             # Optional flood scope (region): set before send, restore after
             resolved = self.resolve_channel_send_scope(scope=scope, channel=channel)
-            scope_to_use = (
-                resolved if resolved is not None else self._outgoing_flood_scope_override()
-            ) or ""
+            scope_to_use = (resolved if resolved is not None else self._outgoing_flood_scope_override()) or ""
             scope_is_global = scope_to_use in ("", "*", "0", "None")
             if not scope_is_global:
                 scope_to_use = self._normalize_scope_name(scope_to_use)
@@ -1281,10 +1278,14 @@ class CommandManager:
                 else:
                     self.logger.debug("Outbound channel flood scope: global (no set_flood_scope)")
             else:
-                scope_source = "explicit argument" if scope is not None else (
-                    "outgoing_flood_scope_override"
-                    if resolved is None and override_cfg
-                    else "reply_scope or config"
+                scope_source = (
+                    "explicit argument"
+                    if scope is not None
+                    else (
+                        "outgoing_flood_scope_override"
+                        if resolved is None and override_cfg
+                        else "reply_scope or config"
+                    )
                 )
                 self.logger.info(
                     "Outbound channel flood scope: %s (%s; set_flood_scope)",
@@ -1301,9 +1302,9 @@ class CommandManager:
                 _scope_result = await self.bot.meshcore.commands.set_flood_scope(scope_to_use)
                 if _scope_result is None or getattr(_scope_result, "type", None) == "ERROR":
                     self.logger.warning(
-                        "set_flood_scope(%s) failed (result=%s); "
-                        "message will be sent with current firmware scope",
-                        scope_to_use, _scope_result,
+                        "set_flood_scope(%s) failed (result=%s); message will be sent with current firmware scope",
+                        scope_to_use,
+                        _scope_result,
                     )
 
             target = f"{channel} (channel {channel_num})"
@@ -1312,16 +1313,15 @@ class CommandManager:
             for _attempt in range(_max_retries + 1):
                 try:
                     result = await self.bot.meshcore.commands.send_chan_msg(
-                        channel_num, content,
+                        channel_num,
+                        content,
                         timestamp=int(timestamp.timestamp()) if timestamp else None,
                     )
                 finally:
                     if not scope_is_global and hasattr(self.bot.meshcore.commands, "set_flood_scope"):
                         _restore_result = await self.bot.meshcore.commands.set_flood_scope("*")
                         if _restore_result is None or getattr(_restore_result, "type", None) == "ERROR":
-                            self.logger.warning(
-                                "set_flood_scope('*') restore failed (result=%s)", _restore_result
-                            )
+                            self.logger.warning("set_flood_scope('*') restore failed (result=%s)", _restore_result)
 
                 if self._is_no_event_received(result) and _attempt < _max_retries:
                     self.logger.warning(
@@ -1335,31 +1335,30 @@ class CommandManager:
                         if _scope_result is None or getattr(_scope_result, "type", None) == "ERROR":
                             self.logger.warning(
                                 "set_flood_scope(%s) failed on retry re-apply (result=%s)",
-                                scope_to_use, _scope_result,
+                                scope_to_use,
+                                _scope_result,
                             )
                     continue
                 break
 
             # Handle result using unified handler
-            success = self._handle_send_result(
-                result, "Channel message", target, rate_limit_key=rate_limit_key
-            )
+            success = self._handle_send_result(result, "Channel message", target, rate_limit_key=rate_limit_key)
             if success:
-                ch_limiter = getattr(self.bot, 'channel_rate_limiter', None)
+                ch_limiter = getattr(self.bot, "channel_rate_limiter", None)
                 if ch_limiter:
                     ch_limiter.record_send(channel)
-            if success and getattr(self.bot, 'channel_sent_listeners', None):
-                bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
-                payload = {'channel_idx': channel_num, 'text': f'{bot_name}: {content}'}
-                synthetic_event = type('Event', (), {'payload': payload})()
+            if success and getattr(self.bot, "channel_sent_listeners", None):
+                bot_name = self.bot.config.get("Bot", "bot_name", fallback="Bot")
+                payload = {"channel_idx": channel_num, "text": f"{bot_name}: {content}"}
+                synthetic_event = type("Event", (), {"payload": payload})()
                 for cb in list(self.bot.channel_sent_listeners):
+
                     async def _run_listener(listener, event):
                         try:
                             await listener(event, None)
                         except Exception as e:
-                            self.logger.warning(
-                                "Channel sent listener error: %s", e, exc_info=True
-                            )
+                            self.logger.warning("Channel sent listener error: %s", e, exc_info=True)
+
                     asyncio.create_task(_run_listener(cb, synthetic_event))
             return success
 
@@ -1397,7 +1396,7 @@ class CommandManager:
         """
         if not chunks:
             return True
-        rate_limit_seconds = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+        rate_limit_seconds = self.bot.config.getfloat("Bot", "bot_tx_rate_limit_seconds", fallback=1.0)
         sleep_time = max(rate_limit_seconds + 0.5, 1.0)
         for i, chunk in enumerate(chunks):
             if i > 0:
@@ -1414,9 +1413,7 @@ class CommandManager:
                 scope=scope,
             )
             if not success:
-                self.logger.warning(
-                    "Chunked channel send failed at chunk %d of %d to %s", i + 1, len(chunks), channel
-                )
+                self.logger.warning("Chunked channel send failed at chunk %d of %d to %s", i + 1, len(chunks), channel)
                 return False
         return True
 
@@ -1431,7 +1428,7 @@ class CommandManager:
             str: The help text for the command.
         """
         # Special handling for common help requests
-        if command_name.lower() in ['commands', 'list', 'all']:
+        if command_name.lower() in ["commands", "list", "all"]:
             # User is asking for a list of commands, show general help
             return self.get_general_help(message)
 
@@ -1448,13 +1445,15 @@ class CommandManager:
                 # Fallback for commands that don't accept message parameter
                 help_text = command.get_help_text()
             # Use translator if available
-            if hasattr(self.bot, 'translator'):
-                return self.bot.translator.translate('commands.help.specific', command=command_name, help_text=help_text)
+            if hasattr(self.bot, "translator"):
+                return self.bot.translator.translate(
+                    "commands.help.specific", command=command_name, help_text=help_text
+                )
             return f"Help {command_name}: {help_text}"
 
         # Next, consult plugin_loader keyword mappings (if available)
         mapped_name: str | None = None
-        if hasattr(self, 'plugin_loader') and hasattr(self.plugin_loader, 'keyword_mappings'):
+        if hasattr(self, "plugin_loader") and hasattr(self.plugin_loader, "keyword_mappings"):
             mapped_name = self.plugin_loader.keyword_mappings.get(normalized_name)
         if mapped_name:
             command = self.commands.get(mapped_name)
@@ -1463,17 +1462,16 @@ class CommandManager:
                     help_text = command.get_help_text(message)
                 except TypeError:
                     help_text = command.get_help_text()
-                if hasattr(self.bot, 'translator'):
-                    return self.bot.translator.translate('commands.help.specific', command=command_name, help_text=help_text)
+                if hasattr(self.bot, "translator"):
+                    return self.bot.translator.translate(
+                        "commands.help.specific", command=command_name, help_text=help_text
+                    )
                 return f"Help {command_name}: {help_text}"
 
         # If still not found, search through all commands and their keywords
         for _cmd_name, cmd_instance in self.commands.items():
             # Check if the requested command name matches any of this command's keywords
-            if (
-                hasattr(cmd_instance, 'keywords')
-                and normalized_name in [k.lower() for k in cmd_instance.keywords]
-            ):
+            if hasattr(cmd_instance, "keywords") and normalized_name in [k.lower() for k in cmd_instance.keywords]:
                 # Try to pass message context to get_help_text if supported
                 try:
                     help_text = cmd_instance.get_help_text(message)
@@ -1481,29 +1479,28 @@ class CommandManager:
                     # Fallback for commands that don't accept message parameter
                     help_text = cmd_instance.get_help_text()
                 # Use translator if available
-                if hasattr(self.bot, 'translator'):
-                    return self.bot.translator.translate('commands.help.specific', command=command_name, help_text=help_text)
+                if hasattr(self.bot, "translator"):
+                    return self.bot.translator.translate(
+                        "commands.help.specific", command=command_name, help_text=help_text
+                    )
                 return f"Help {command_name}: {help_text}"
 
         # If still not found, return unknown command message with helpful suggestion
         # Use the help command's method to get popular commands (only primary names, no aliases)
         available_str = ""
-        if 'help' in self.commands:
-            help_command = self.commands['help']
-            if hasattr(help_command, 'get_available_commands_list'):
+        if "help" in self.commands:
+            help_command = self.commands["help"]
+            if hasattr(help_command, "get_available_commands_list"):
                 available_str = help_command.get_available_commands_list(message)
 
         # Fallback if help command doesn't have the method
         if not available_str:
             # Only show primary command names, not keywords
-            primary_names = sorted([
-                cmd.name if hasattr(cmd, 'name') else name
-                for name, cmd in self.commands.items()
-            ])
-            available_str = ', '.join(primary_names)
+            primary_names = sorted([cmd.name if hasattr(cmd, "name") else name for name, cmd in self.commands.items()])
+            available_str = ", ".join(primary_names)
 
-        if hasattr(self.bot, 'translator'):
-            return self.bot.translator.translate('commands.help.unknown', command=command_name, available=available_str)
+        if hasattr(self.bot, "translator"):
+            return self.bot.translator.translate("commands.help.unknown", command=command_name, available=available_str)
         return f"Unknown: {command_name}. Available: {available_str}. Try 'help' for command list."
 
     # Prefix and suffix for general help (reserve space so suffix is never cut off)
@@ -1517,41 +1514,40 @@ class CommandManager:
         Reserves space for the suffix so the message always ends with | More: 'help <command>'.
         """
         # Prefer keywords config if user has customized help
-        if 'help' in self.keywords:
-            return self.keywords['help']
+        if "help" in self.keywords:
+            return self.keywords["help"]
         # Fallback: build compact list from available commands (filtered by channel)
-        if 'help' in self.commands:
-            help_command = self.commands['help']
-            if hasattr(help_command, 'get_available_commands_list'):
+        if "help" in self.commands:
+            help_command = self.commands["help"]
+            if hasattr(help_command, "get_available_commands_list"):
                 max_list = None
-                if message and hasattr(help_command, 'get_max_message_length'):
+                if message and hasattr(help_command, "get_max_message_length"):
                     max_total = help_command.get_max_message_length(message)
                     max_list = max_total - len(self._HELP_PREFIX) - len(self._HELP_SUFFIX)
                 available_str = help_command.get_available_commands_list(message, max_length=max_list)
                 return f"{self._HELP_PREFIX}{available_str}{self._HELP_SUFFIX}"
         # Last resort: simple list of command names (filtered by channel when message provided)
-        help_cmd = self.commands.get('help')
-        if help_cmd and hasattr(help_cmd, '_is_command_valid_for_channel') and message:
-            primary_names = sorted([
-                cmd.name if hasattr(cmd, 'name') else name
-                for name, cmd in self.commands.items()
-                if help_cmd._is_command_valid_for_channel(name, cmd, message)
-            ])
+        help_cmd = self.commands.get("help")
+        if help_cmd and hasattr(help_cmd, "_is_command_valid_for_channel") and message:
+            primary_names = sorted(
+                [
+                    cmd.name if hasattr(cmd, "name") else name
+                    for name, cmd in self.commands.items()
+                    if help_cmd._is_command_valid_for_channel(name, cmd, message)
+                ]
+            )
         else:
-            primary_names = sorted([
-                cmd.name if hasattr(cmd, 'name') else name
-                for name, cmd in self.commands.items()
-            ])
+            primary_names = sorted([cmd.name if hasattr(cmd, "name") else name for name, cmd in self.commands.items()])
         # Truncate list to reserve space for suffix when message (and thus max length) is known
-        if message and help_cmd and hasattr(help_cmd, 'get_max_message_length'):
+        if message and help_cmd and hasattr(help_cmd, "get_max_message_length"):
             max_total = help_cmd.get_max_message_length(message)
             max_list = max_total - len(self._HELP_PREFIX) - len(self._HELP_SUFFIX)
-            if hasattr(help_cmd, '_format_commands_list_to_length'):
+            if hasattr(help_cmd, "_format_commands_list_to_length"):
                 list_str = help_cmd._format_commands_list_to_length(primary_names, max_list)
             else:
-                list_str = ', '.join(primary_names)
+                list_str = ", ".join(primary_names)
         else:
-            list_str = ', '.join(primary_names)
+            list_str = ", ".join(primary_names)
         return f"{self._HELP_PREFIX}{list_str}{self._HELP_SUFFIX}"
 
     def get_available_commands_list(self) -> str:
@@ -1559,12 +1555,12 @@ class CommandManager:
         commands_list = ""
 
         # Group commands by category
-        basic_commands = ['test', 'ping', 'help', 'cmd']
-        custom_syntax = ['t_phrase']  # Use the actual command key
-        special_commands = ['advert']
-        weather_commands = ['wx', 'aqi']
-        solar_commands = ['sun', 'moon', 'solar', 'hfcond', 'satpass']
-        sports_commands = ['sports']
+        basic_commands = ["test", "ping", "help", "cmd"]
+        custom_syntax = ["t_phrase"]  # Use the actual command key
+        special_commands = ["advert"]
+        weather_commands = ["wx", "aqi"]
+        solar_commands = ["sun", "moon", "solar", "hfcond", "satpass"]
+        sports_commands = ["sports"]
 
         commands_list += "**Basic Commands:**\n"
         for cmd in basic_commands:
@@ -1577,7 +1573,7 @@ class CommandManager:
             if cmd in self.commands:
                 help_text = self.commands[cmd].get_help_text()
                 # Add user-friendly aliases
-                if cmd == 't_phrase':
+                if cmd == "t_phrase":
                     commands_list += f"• `t phrase` - {help_text}\n"
                 else:
                     commands_list += f"• `{cmd}` - {help_text}\n"
@@ -1632,7 +1628,7 @@ class CommandManager:
         """
         try:
             # Store the response content for web viewer capture
-            if hasattr(self, '_last_response'):
+            if hasattr(self, "_last_response"):
                 self._last_response = content
             else:
                 self._last_response = content
@@ -1653,7 +1649,7 @@ class CommandManager:
                     command_id,
                     skip_user_rate_limit=skip_user_rate_limit,
                     rate_limit_key=rate_limit_key,
-                    scope=getattr(message, 'reply_scope', None),
+                    scope=getattr(message, "reply_scope", None),
                 )
         except Exception as e:
             self.logger.error(f"Failed to send response: {e}")
@@ -1683,7 +1679,7 @@ class CommandManager:
                 chunks.append(text)
                 break
             # Try to split on the last space within the window
-            split_at = text.rfind(' ', 0, max_len + 1)
+            split_at = text.rfind(" ", 0, max_len + 1)
             if split_at <= 0:
                 split_at = max_len
             chunks.append(text[:split_at].rstrip())
@@ -1712,7 +1708,7 @@ class CommandManager:
             return True
         rate_limit_key = self.get_rate_limit_key(message)
         if message.is_dm:
-            rate_limit_seconds = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+            rate_limit_seconds = self.bot.config.getfloat("Bot", "bot_tx_rate_limit_seconds", fallback=1.0)
             sleep_time = max(rate_limit_seconds + 0.5, 1.0)
             for i, chunk in enumerate(chunks):
                 if i > 0:
@@ -1728,7 +1724,9 @@ class CommandManager:
                 if not success:
                     self.logger.warning(
                         "Chunked DM send failed at chunk %d of %d to %s",
-                        i + 1, len(chunks), message.sender_id,
+                        i + 1,
+                        len(chunks),
+                        message.sender_id,
                     )
                     return False
             return True
@@ -1737,7 +1735,7 @@ class CommandManager:
             chunks,
             skip_user_rate_limit=skip_user_rate_limit_first,
             rate_limit_key=rate_limit_key,
-            scope=getattr(message, 'reply_scope', None),
+            scope=getattr(message, "reply_scope", None),
         )
 
     async def execute_commands(self, message):
@@ -1749,21 +1747,16 @@ class CommandManager:
         Args:
             message: The message triggering the command execution.
         """
-        content = message.content.strip()
-
-        # Check for command prefix if configured
-        if self.command_prefix:
-            # If prefix is configured, message must start with it
-            if not content.startswith(self.command_prefix):
-                return  # No prefix, no match
-            # Strip the prefix
-            content = content[len(self.command_prefix):].strip()
+        if getattr(message, "prefix_normalized", False):
+            content = message.content.strip().lower()
         else:
-            # If no prefix configured, strip legacy "!" prefix for backward compatibility
-            if content.startswith('!'):
-                content = content[1:].strip()
-
-        content = content.lower()
+            normalized = self.normalize_command_content(message.content)
+            if normalized is None:
+                return
+            content = normalized.lower()
+            message.content = normalized
+            message.content_lower = content
+            message.prefix_normalized = True
 
         # Check each command to see if it should execute
         for command_name, command in self.commands.items():
@@ -1788,8 +1781,8 @@ class CommandManager:
                 if should_queue and self._queue_command(command, message, remaining):
                     # Successfully queued - silently return (no message sent)
                     # Still record in stats as attempted
-                    if 'stats' in self.commands:
-                        stats_command = self.commands['stats']
+                    if "stats" in self.commands:
+                        stats_command = self.commands["stats"]
                         if stats_command:
                             stats_command.record_command(message, command_name, False)
                     return
@@ -1804,17 +1797,18 @@ class CommandManager:
                     if command.requires_dm and not message.is_dm:
                         # Only prompt if channel is allowed (configured channels)
                         if command.is_channel_allowed(message):
-                            error_msg = command.translate('errors.dm_only', command=command_name)
+                            error_msg = command.translate("errors.dm_only", command=command_name)
                             await self.send_response(message, error_msg)
                             response_sent = True
                         # Otherwise, silently ignore (channel not configured for this command)
                     elif command.requires_admin_access():
-                        error_msg = command.translate('errors.access_denied', command=command_name)
+                        error_msg = command.translate("errors.access_denied", command=command_name)
                         await self.send_response(message, error_msg)
                         response_sent = True
-                    elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
+                    elif hasattr(command, "get_remaining_cooldown") and callable(command.get_remaining_cooldown):
                         # Check if it's the per-user version (takes user_id parameter)
                         import inspect
+
                         sig = inspect.signature(command.get_remaining_cooldown)
                         if len(sig.parameters) > 0:
                             remaining = command.get_remaining_cooldown(message.sender_id)
@@ -1822,13 +1816,13 @@ class CommandManager:
                             remaining = command.get_remaining_cooldown()
 
                         if remaining > 0:
-                            error_msg = command.translate('errors.cooldown', command=command_name, seconds=remaining)
+                            error_msg = command.translate("errors.cooldown", command=command_name, seconds=remaining)
                             await self.send_response(message, error_msg)
                             response_sent = True
 
                     # Record command execution in stats database (even if it failed checks)
-                    if 'stats' in self.commands:
-                        stats_command = self.commands['stats']
+                    if "stats" in self.commands:
+                        stats_command = self.commands["stats"]
                         if stats_command:
                             stats_command.record_command(message, command_name, response_sent)
 
@@ -1840,23 +1834,24 @@ class CommandManager:
                     if not has_internet:
                         self.logger.warning(f"Command '{command_name}' requires internet but network is unavailable")
                         # Try to get translated error message, fallback to default
-                        error_msg = command.translate('errors.no_internet', command=command_name)
+                        error_msg = command.translate("errors.no_internet", command=command_name)
                         # If translation returns the key itself (translation not found), use fallback
-                        if error_msg == 'errors.no_internet':
+                        if error_msg == "errors.no_internet":
                             error_msg = f"{command_name} unavailable: No internet connection available"
                         await self.send_response(message, error_msg)
 
                         # Record command execution in stats database (error response was sent)
-                        if 'stats' in self.commands:
-                            stats_command = self.commands['stats']
+                        if "stats" in self.commands:
+                            stats_command = self.commands["stats"]
                             if stats_command:
                                 stats_command.record_command(message, command_name, True)
                         return
 
                 try:
                     # Record execution time for cooldown tracking
-                    if hasattr(command, '_record_execution') and callable(command._record_execution):
+                    if hasattr(command, "_record_execution") and callable(command._record_execution):
                         import inspect
+
                         sig = inspect.signature(command._record_execution)
                         if len(sig.parameters) > 0:
                             command._record_execution(message.sender_id)
@@ -1872,23 +1867,25 @@ class CommandManager:
                     # Determine if a response was sent by checking response tracking
                     response_sent = False
                     response = None
-                    if hasattr(command, 'last_response') and command.last_response:
+                    if hasattr(command, "last_response") and command.last_response:
                         response = command.last_response
                         response_sent = True
-                    elif hasattr(self, '_last_response') and self._last_response:
+                    elif hasattr(self, "_last_response") and self._last_response:
                         response = self._last_response
                         response_sent = True
 
                     # Record command execution in stats database
-                    if 'stats' in self.commands:
-                        stats_command = self.commands['stats']
+                    if "stats" in self.commands:
+                        stats_command = self.commands["stats"]
                         if stats_command:
                             stats_command.record_command(message, command_name, response_sent)
 
                     # Capture command data for web viewer
-                    if (hasattr(self.bot, 'web_viewer_integration') and
-                        self.bot.web_viewer_integration and
-                        self.bot.web_viewer_integration.bot_integration):
+                    if (
+                        hasattr(self.bot, "web_viewer_integration")
+                        and self.bot.web_viewer_integration
+                        and self.bot.web_viewer_integration.bot_integration
+                    ):
                         try:
                             # Use the response we found, or default
                             if response is None:
@@ -1898,21 +1895,22 @@ class CommandManager:
                             command_id = f"{command_name}_{message.sender_id}_{int(time.time())}"
 
                             # Try to find matching transmission by content and timestamp
-                            if (hasattr(self.bot, 'transmission_tracker') and
-                                self.bot.transmission_tracker and
-                                response):
+                            if hasattr(self.bot, "transmission_tracker") and self.bot.transmission_tracker and response:
                                 # Search for recent transmission with matching content
                                 current_time = time.time()
                                 matched = False
                                 for timestamp_key in range(int(current_time - 10), int(current_time + 1)):
                                     if timestamp_key in self.bot.transmission_tracker.pending_transmissions:
-                                        for record in self.bot.transmission_tracker.pending_transmissions[timestamp_key]:
+                                        for record in self.bot.transmission_tracker.pending_transmissions[
+                                            timestamp_key
+                                        ]:
                                             # Match by exact content and recent timestamp to avoid false positives
                                             # Using substring matching (e.g., "ok" in "outlook") would cause incorrect correlations
-                                            if record.content == response and \
-                                               abs(record.timestamp - current_time) < 10:
+                                            if record.content == response and abs(record.timestamp - current_time) < 10:
                                                 record.command_id = command_id
-                                                self.logger.debug(f"Linked command {command_id} to transmission: {record.message_type} to {record.target}")
+                                                self.logger.debug(
+                                                    f"Linked command {command_id} to transmission: {record.message_type} to {record.target}"
+                                                )
                                                 matched = True
                                                 break
                                         if matched:
@@ -1920,12 +1918,16 @@ class CommandManager:
 
                                 # Also check confirmed transmissions
                                 if not matched:
-                                    for _packet_hash, record in self.bot.transmission_tracker.confirmed_transmissions.items():
+                                    for (
+                                        _packet_hash,
+                                        record,
+                                    ) in self.bot.transmission_tracker.confirmed_transmissions.items():
                                         # Match by exact content and recent timestamp to avoid false positives
-                                        if record.content == response and \
-                                           abs(record.timestamp - current_time) < 10:
+                                        if record.content == response and abs(record.timestamp - current_time) < 10:
                                             record.command_id = command_id
-                                            self.logger.debug(f"Linked command {command_id} to confirmed transmission: {record.message_type} to {record.target}")
+                                            self.logger.debug(
+                                                f"Linked command {command_id} to confirmed transmission: {record.message_type} to {record.target}"
+                                            )
                                             break
 
                             self.bot.web_viewer_integration.bot_integration.capture_command(
@@ -1937,19 +1939,23 @@ class CommandManager:
                 except Exception as e:
                     self.logger.error(f"Error executing command '{command_name}': {e}")
                     # Send error message to user
-                    error_msg = command.translate('errors.execution_error', command=command_name, error=str(e))
+                    error_msg = command.translate("errors.execution_error", command=command_name, error=str(e))
                     await self.send_response(message, error_msg)
 
                     # Record command execution in stats database (error response was sent)
-                    if 'stats' in self.commands:
-                        stats_command = self.commands['stats']
+                    if "stats" in self.commands:
+                        stats_command = self.commands["stats"]
                         if stats_command:
-                            stats_command.record_command(message, command_name, True)  # Error message counts as response
+                            stats_command.record_command(
+                                message, command_name, True
+                            )  # Error message counts as response
 
                     # Capture failed command for web viewer
-                    if (hasattr(self.bot, 'web_viewer_integration') and
-                        self.bot.web_viewer_integration and
-                        self.bot.web_viewer_integration.bot_integration):
+                    if (
+                        hasattr(self.bot, "web_viewer_integration")
+                        and self.bot.web_viewer_integration
+                        and self.bot.web_viewer_integration.bot_integration
+                    ):
                         try:
                             command_id = f"{command_name}_{message.sender_id}_{int(time.time())}"
                             self.bot.web_viewer_integration.bot_integration.capture_command(
@@ -1976,6 +1982,7 @@ class CommandManager:
 
         # Cache expired or doesn't exist - perform actual check
         from .utils import check_internet_connectivity
+
         has_internet = check_internet_connectivity()
 
         # Update cache (synchronous update, but cache structure is thread-safe)
