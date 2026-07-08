@@ -9,6 +9,7 @@ import copy
 import hmac as hmac_mod
 import time
 from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any, TypedDict
 
@@ -73,6 +74,12 @@ class MessageHandler:
         self.multitest_listener: Any | None = None
 
         self.logger.info(f"RF Data Correlation: timeout={self.rf_data_timeout}s, enhanced={self.enhanced_correlation}")
+        self.backup_bot_last_heard = {}
+
+        self.bot_channel_backup = {}
+        self.bot_backup_channels = {}
+        self.bot_backup_enabled = False
+        self.bot_backup_wait_time = 0
 
     @staticmethod
     def _match_scope(
@@ -2577,7 +2584,7 @@ class MessageHandler:
                 """
                 existing = self.bot.db_manager.execute_query(query, (from_prefix, to_prefix, path_hex, packet_type))
 
-            from datetime import datetime
+            # from datetime import datetime
 
             now = datetime.now()
 
@@ -3184,6 +3191,9 @@ class MessageHandler:
     async def process_message(self, message: MeshMessage) -> None:
         """Process a received message"""
         # Check if multitest is listening and notify it
+
+        should_back_up_bot_or_non_bot_channel = True
+
         if self.multitest_listener:
             try:
                 self.multitest_listener.on_message_received(message)
@@ -3238,6 +3248,59 @@ class MessageHandler:
         if not self.should_process_message(message):
             return
 
+        self.logger.info(
+            f"Processing message: '{message.content}' from {message.sender_id} in {'DM' if message.is_dm else message.channel}"
+        )
+
+        if self.bot_backup_enabled == False:
+            self.bot_backup_enabled = self.bot.command_manager.get_bot_backup_enabled()
+
+        if self.bot_backup_enabled:
+            if self.bot_backup_wait_time == 0:
+                self.bot_backup_wait_time = self.bot.command_manager.get_bot_backup_wait_time()
+
+            if self.bot_channel_backup == {}:
+                self.bot_channel_backup = self.bot.command_manager.get_bot_channel_backup()
+                # set initial 'last heard' as current time minus N minutes
+                for bot in self.bot_channel_backup.values():
+                    self.backup_bot_last_heard[bot] = datetime.now(timezone.utc) - timedelta(
+                        minutes=(self.bot_backup_wait_time - 5)
+                    )
+
+            if self.bot_backup_channels == {}:
+                self.bot_backup_channels = self.bot.command_manager.get_bot_backup_channels()
+
+            backup_bot_matches = self.bot.command_manager.check_backup_bot(message)
+
+            if backup_bot_matches:
+                # it is a bot channel and it is the bot for that channel
+                self.backup_bot_last_heard[message.sender_id] = datetime.now(timezone.utc)
+                self.logger.debug(f"Bot last heard: {self.backup_bot_last_heard}")
+                should_back_up_bot_or_non_bot_channel = False
+            elif message.channel.lower() in self.bot_backup_channels:
+                try:
+                    ago = (
+                        datetime.now(timezone.utc)
+                        - self.backup_bot_last_heard[self.bot_channel_backup[message.channel]]
+                    )
+
+                    if ago > timedelta(minutes=self.bot_backup_wait_time):
+                        should_back_up_bot_or_non_bot_channel = True
+                    else:
+                        should_back_up_bot_or_non_bot_channel = False
+
+                    self.logger.debug(
+                        f"Channel bot {self.bot_channel_backup[message.channel]} last heard {ago} ms ago, and {should_back_up_bot_or_non_bot_channel}"
+                    )
+
+                except Exception as e:
+                    self.logger.error(f"Error executing : {e}")
+
+            else:
+                should_back_up_bot_or_non_bot_channel = True
+
+            self.logger.debug(f"should_back_up_bot_or_non_bot_channel = {should_back_up_bot_or_non_bot_channel}")
+
         # Handle respond_to_mentions for channel messages
         if not message.is_dm:
             _mention_mode = self.bot.config.get("Bot", "respond_to_mentions", fallback="also").strip().lower()
@@ -3267,7 +3330,7 @@ class MessageHandler:
 
         help_response_sent = False
         plugin_command_with_response_matched = False
-        if keyword_matches:
+        if keyword_matches and should_back_up_bot_or_non_bot_channel:
             for keyword, response in keyword_matches:
                 # Use translator if available for logging
                 if hasattr(self.bot, "translator"):
@@ -3333,7 +3396,11 @@ class MessageHandler:
         # Only execute commands if no help response was sent and no plugin command with response was matched
         # Help responses and plugin commands with responses should be the final response for that message
         # Plugin commands without responses (response is None) should still be executed
-        if not help_response_sent and not plugin_command_with_response_matched:
+        if (
+            not help_response_sent
+            and not plugin_command_with_response_matched
+            and should_back_up_bot_or_non_bot_channel
+        ):
             # After keyword handling, try RandomLine
             randomline_match = self.bot.command_manager.match_randomline(message)
             if randomline_match:

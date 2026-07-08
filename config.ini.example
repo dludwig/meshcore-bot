@@ -295,6 +295,11 @@ max_response_hops = 7
 # flood_scope.weather = #sea
 # flood_scope.#local = *
 
+[Bot_Channel_Backup]
+enabled = false
+backup_channels_and_bots_json = {"#channel1":"bot1","#channel2":"bot2"}
+wait_time = 15
+
 [Banned_Users]
 # List of banned sender names (comma-separated). Matching is prefix (starts-with):
 # "Awful Username" also matches "Awful Username 🍆". No bot responses in channels or DMs.

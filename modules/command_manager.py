@@ -5,6 +5,7 @@ Handles all bot commands, keyword matching, and response generation
 """
 
 import asyncio
+import json
 import random
 import time
 from dataclasses import dataclass
@@ -93,6 +94,10 @@ class CommandManager:
         self.monitor_channels = self.load_monitor_channels()
         self.channel_keywords = self.load_channel_keywords()
         self.command_prefix = self.load_command_prefix()
+
+        self.bot_backup_wait_time = 15
+        self.bot_channel_backup = self.load_bot_channel_backup()
+        self.bot_backup_channels = list(self.bot_channel_backup.keys())
 
         # Initialize plugin loader and load all plugins
         local_commands_dir = (
@@ -626,8 +631,24 @@ class CommandManager:
         Returns:
             str: The command prefix, or empty string if not configured.
         """
-        prefix = self.bot.config.get('Bot', 'command_prefix', fallback='')
-        return prefix.strip() if prefix else ''
+        prefix = self.bot.config.get("Bot", "command_prefix", fallback="")
+        return prefix.strip() if prefix else ""
+
+    def load_bot_channel_backup(self) -> dict:
+
+        self.bot_backup_enabled = self.bot.config.getboolean("Bot_Channel_Backup", "enabled", fallback=False)
+
+        self.bot_backup_wait_time = self.bot.config.getint("Bot_Channel_Backup", "wait_time", fallback=20)
+
+        foo = self.bot.config.get("Bot_Channel_Backup", "backup_channels_and_bots_json", fallback="")
+
+        try:
+            bar = json.loads(foo)
+            return bar
+        except json.JSONDecodeError:
+            self.logger.error(f"Bot_Channel_Backup invalid_json")
+            return None
+
 
     def format_keyword_response(self, response_format: str, message: MeshMessage) -> str:
         """Format a keyword response string with message data.
@@ -675,6 +696,30 @@ class CommandManager:
         if not MeshMessage.is_global_flood_scope(message.effective_outgoing_flood_scope(self.bot)):
             max_length -= CHANNEL_REGIONAL_FLOOD_SCOPE_BODY_OVERHEAD
         return max_length
+
+    def get_bot_channel_backup(self):
+        return self.bot_channel_backup
+
+    def get_bot_backup_channels(self):
+        return self.bot_backup_channels
+
+    def get_bot_backup_enabled(self):
+        return self.bot_backup_enabled
+
+    def get_bot_backup_wait_time(self):
+        return self.bot_backup_wait_time
+
+    def check_backup_bot(self, message: MeshMessage) -> list[tuple]:
+        foo = message.channel.lower()
+        try:
+            if foo in self.bot_backup_channels:
+                if self.bot_channel_backup[foo].lower() == message.sender_id.lower():
+                    return True
+
+        except Exception:
+            pass
+
+        return False
 
     def check_keywords(self, message: MeshMessage) -> list[tuple]:
         """Check message content for keywords and return matching responses.
