@@ -39,6 +39,7 @@ def _channel_name_is_public(name: str) -> bool:
 CANONICAL_NON_COMMAND_SECTIONS = frozenset({
     "Connection",
     "Bot",
+    "Admin",
     "Channels",
     "Banned_Users",
     "Localization",
@@ -46,6 +47,7 @@ CANONICAL_NON_COMMAND_SECTIONS = frozenset({
     "Plugin_Overrides",
     "Companion_Purge",
     "Keywords",
+    "RandomLine",
     "Scheduled_Messages",
     "Logging",
     "Custom_Syntax",
@@ -53,12 +55,21 @@ CANONICAL_NON_COMMAND_SECTIONS = frozenset({
     "Weather",
     "Solar_Config",
     "Channels_List",
+    "Data_Retention",
     "Web_Viewer",
     "Feed_Manager",
     "PacketCapture",
     "MapUploader",
     "Weather_Service",
+    "MqttWeather",
+    "Earthquake_Service",
+    "Worldcup_Service",
+    "Rate_Limits",
+    "Webhook",
+    "RepeaterPrefixCollision_Service",
     "DiscordBridge",
+    "TelegramBridge",
+    "DARC_MoWaS_Service",
 })
 
 # Sections required for the bot to start (accessed without has_section guards)
