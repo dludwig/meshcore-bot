@@ -173,6 +173,54 @@ jwt_renewal_interval = 43200      # Default proactive refresh cadence (12 hours)
 }
 ```
 
+### Decoded Payloads
+
+When `decode_payloads = true`, each packet gains a nested `decoded` object with plain-text /
+structured fields, in addition to the unchanged raw fields above. This makes dumps easy to
+process with tools like `jq` (e.g. `jq 'select(.decoded.kind=="GRP_TXT") | .decoded.text'`).
+
+```json
+{
+  "type": "PACKET",
+  "packet_type": "5",
+  "route": "F",
+  "raw": "1540CAB3...",
+  "decoded": {
+    "kind": "GRP_TXT",
+    "channel_hash": "ca",
+    "channel": "#bot",
+    "sender": "Alice",
+    "text": "hello mesh",
+    "msg_timestamp": "2026-07-08T21:22:31Z",
+    "decrypted": true,
+    "path": ["A1", "B2"]
+  }
+}
+```
+
+The `decoded` object holds only payload-specific content — it does not restate header fields
+(`packet_type`, `route`) that already exist at the top level.
+
+What can be decoded:
+
+- **GRP_TXT** (channel messages) are decrypted when a matching channel key is available.
+  Keys come from the bot's own configured radio channels automatically, plus
+  `decode_hashtag_channels` (keys derived from the `#name`), `decode_channel_keys`
+  (`name=hexOrBase64` pairs), and the built-in default **Public** channel key
+  (`decode_include_public = true`).
+- **ADVERT** packets are parsed into `name`, `mode` (role), `lat`/`lon`, and `public_key`.
+- The decoded **path** hop list is included in `decoded.path` when it isn't already present at the
+  top level (the top-level `path` is only added for `route=D`), so flood-route paths are captured
+  without duplication.
+- **Direct messages (TXT_MSG)** are ECDH-encrypted between two nodes and **cannot** be decrypted
+  by a passive observer — they appear as `{"kind": "TXT_MSG", "encrypted": true}`.
+
+Publishing of the `decoded` object to MQTT is **off by default** (`include_decoded = false`) — opt
+in per broker with `mqttN_include_decoded = true`, or set `include_decoded = true` to publish it to
+all brokers. This lets you, e.g., send decoded text to a private broker while public brokers receive
+only raw packets. The log file always includes the `decoded` object when `decode_payloads = true`,
+independent of this setting.
+
 ### Status Message
 ```json
 {
@@ -237,6 +285,27 @@ Configure up to 10 brokers (mqtt1_* through mqtt10_*). Each broker has independe
 health_check_interval = 30        # Check connection every 30s
 health_check_grace_period = 2     # Allow 2 failures before warning
 ```
+
+### Log Rotation
+
+By default `output_file` is a single file that is appended to forever. To keep historical dumps
+manageable, enable rotation:
+
+```ini
+# Size-based: roll at 50 MB, keep 5 backups (packets.jsonl.1 ... .5)
+log_rotation = size
+log_max_bytes = 50MB
+log_backup_count = 5
+
+# Or time-based: roll daily at midnight, keep 14 days
+log_rotation = time
+log_rotation_when = midnight
+log_backup_count = 14
+```
+
+`log_rotation = off` (default) keeps the original single-file behavior. `log_max_bytes` accepts
+plain bytes or suffixes like `10M` / `1G`. `log_rotation_when` uses Python's
+`TimedRotatingFileHandler` values (`midnight`, `H`, `D`, `W0`–`W6`).
 
 ### JWT Authentication
 

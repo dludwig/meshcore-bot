@@ -1613,6 +1613,42 @@ mqtt_skip_unparseable_packets = true
 # (MeshCore createAdvert signature over pubkey || timestamp || app_data). File output is unchanged.
 advert_require_valid_signature = false
 
+# --- Payload decoding (issues #197 & #35) ---
+# When enabled, a nested "decoded" object is added to each packet's JSON (file + MQTT) with
+# plain-text / structured fields: GRP_TXT channel messages are decrypted (sender, text),
+# ADVERTs are parsed (name, role, lat/lon), and human-readable type/route labels + path are
+# included. Raw fields are unchanged, so this is backward compatible. Default off.
+# NOTE: Direct messages (TXT_MSG) are ECDH-encrypted between two nodes and cannot be decrypted
+# by a passive observer; they are marked {"encrypted": true} instead.
+decode_payloads = false
+
+# Global default for whether the "decoded" object is published to MQTT (default false: opt in
+# per broker with mqttN_include_decoded, or set this to true to publish decoded to all brokers).
+# The log file always follows decode_payloads, independent of this setting.
+include_decoded = false
+
+# Channels used to decrypt GRP_TXT messages (in addition to the bot's own configured radio
+# channels, which are used automatically):
+#   decode_hashtag_channels - comma-separated public/hashtag channel names; keys are derived
+#                             from the name (SHA256 of "#name"). '#' optional.
+#   decode_channel_keys     - comma-separated name=key pairs for custom channels; key may be
+#                             32-char hex or base64 (16 bytes).
+#   decode_include_public   - include the well-known default "Public" channel key (default true).
+decode_hashtag_channels =
+decode_channel_keys =
+decode_include_public = true
+
+# --- Packet log rotation (issue #35) ---
+# Roll the output_file so historical dumps stay manageable. Default off = single appended file.
+#   log_rotation      - off | size | time
+#   log_max_bytes     - roll when the file reaches this size (size mode); accepts 50MB, 10M, etc.
+#   log_rotation_when - interval for time mode (midnight, H, D, W0-W6) - see TimedRotatingFileHandler
+#   log_backup_count  - number of rolled files to keep
+log_rotation = off
+log_max_bytes = 50MB
+log_rotation_when = midnight
+log_backup_count = 5
+
 # Owner information (for packet analyzer registration)
 # Owner public key (64-character hex string)
 owner_public_key = 
@@ -1659,6 +1695,7 @@ iata = XYZ
 # mqttN_topic_prefix =                # Legacy topic prefix (fallback if topic_status/topic_packets not set)
 # mqttN_client_id =                   # MQTT client ID (optional, auto-generated from bot name)
 # mqttN_upload_packet_types =         # Comma-separated packet types to upload (e.g. 2,4); empty = all
+# mqttN_include_decoded = true/false  # Publish the decoded object to this broker (default: include_decoded)
 #
 # Topic template placeholders:
 # {IATA} - Uppercase IATA code (e.g., SEA)
@@ -1677,8 +1714,9 @@ mqtt1_token_audience = mqtt-us-v1.letsmesh.net
 mqtt1_topic_status = meshcore/{IATA}/{PUBLIC_KEY}/status
 mqtt1_topic_packets = meshcore/{IATA}/{PUBLIC_KEY}/packets
 mqtt1_websocket_path = /mqtt
-mqtt1_client_id = 
-mqtt1_upload_packet_types = 
+mqtt1_client_id =
+mqtt1_upload_packet_types =
+# mqtt1_include_decoded = true         # Publish decoded payloads to this broker (default: include_decoded)
 # Optional per-broker JWT (inherit globals if omitted):
 # mqtt1_jwt_ttl_seconds = 3600           # JWT exp claim: iat + this many seconds
 # mqtt1_jwt_renewal_interval = 1800      # Refresh password this often; use < ttl; 0 = no renewal loop

@@ -19,6 +19,11 @@ from meshcore import EventType
 
 # Import bot's enums
 from ..enums import PayloadType, PayloadVersion, RouteType
+from ..meshcore_payload_decode import (
+    DEFAULT_PUBLIC_CHANNEL_KEY,
+    ChannelKeyStore,
+    decode_payload,
+)
 
 # Import bot's utilities for packet hash
 from ..utils import (
@@ -41,6 +46,81 @@ import contextlib
 
 from .base_service import BaseServicePlugin
 from .packet_capture_utils import create_auth_token_async, read_private_key_file
+
+
+def _decode_key_str(key_str: str) -> Optional[bytes]:
+    """Decode a 16-byte channel key from a hex (32 chars) or base64 string."""
+    key_str = key_str.strip()
+    try:
+        if len(key_str) == 32 and all(c in "0123456789abcdefABCDEF" for c in key_str):
+            return bytes.fromhex(key_str)
+        import base64
+
+        raw = base64.b64decode(key_str, validate=True)
+        return raw if len(raw) == 16 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_size(value: str) -> int:
+    """Parse a size string like '50MB', '10M', or '1048576' into bytes."""
+    value = str(value).strip().upper().replace("B", "")
+    multipliers = {"K": 1024, "M": 1024**2, "G": 1024**3}
+    try:
+        if value and value[-1] in multipliers:
+            return int(float(value[:-1]) * multipliers[value[-1]])
+        return int(value or 0)
+    except ValueError:
+        return 0
+
+
+class _RotatingPacketLog:
+    """Writes one JSON line per packet, with optional size/time rotation.
+
+    ``rotation='off'`` appends to a single file (original behavior). ``'size'``
+    and ``'time'`` use stdlib rotating handlers. Kept host-agnostic so the same
+    logic can be ported to meshcore-packet-capture.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        rotation: str = "off",
+        max_bytes: int = 0,
+        backup_count: int = 5,
+        when: str = "midnight",
+    ) -> None:
+        self._handler = None
+        self._fh = None
+        if rotation == "size" and max_bytes > 0:
+            from logging.handlers import RotatingFileHandler
+
+            self._handler = RotatingFileHandler(
+                path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+            )
+        elif rotation == "time":
+            from logging.handlers import TimedRotatingFileHandler
+
+            self._handler = TimedRotatingFileHandler(
+                path, when=when, backupCount=backup_count, encoding="utf-8"
+            )
+        else:
+            self._fh = open(path, "a", encoding="utf-8")
+
+    def write_line(self, line: str) -> None:
+        if self._handler is not None:
+            # Default logging formatter emits just the message plus a terminator.
+            record = logging.LogRecord("packetlog", logging.INFO, "(packet)", 0, line, None, None)
+            self._handler.emit(record)
+        else:
+            self._fh.write(line + "\n")
+            self._fh.flush()
+
+    def close(self) -> None:
+        if self._handler is not None:
+            self._handler.close()
+        elif self._fh is not None:
+            self._fh.close()
 
 
 class PacketCaptureService(BaseServicePlugin):
@@ -186,6 +266,19 @@ class PacketCaptureService(BaseServicePlugin):
         self.debug = config.getboolean("PacketCapture", "debug", fallback=False)
         self._apply_log_level()
 
+        # Packet log rotation (off|size|time). Default off preserves single-file behavior.
+        self.log_rotation = config.get("PacketCapture", "log_rotation", fallback="off").strip().lower()
+        self.log_max_bytes = _parse_size(config.get("PacketCapture", "log_max_bytes", fallback="0"))
+        self.log_backup_count = config.getint("PacketCapture", "log_backup_count", fallback=5)
+        self.log_rotation_when = config.get("PacketCapture", "log_rotation_when", fallback="midnight").strip()
+
+        # Payload decoding (decode plain text / structured payload into a nested "decoded" object)
+        self.decode_payloads = config.getboolean("PacketCapture", "decode_payloads", fallback=False)
+        # Global default for the per-broker mqttN_include_decoded toggle (default off:
+        # opt in per broker, or set include_decoded = true to publish decoded everywhere)
+        self.include_decoded = config.getboolean("PacketCapture", "include_decoded", fallback=False)
+        self.channel_key_store = self._build_channel_key_store(config) if self.decode_payloads else None
+
         # MQTT configuration
         self.mqtt_enabled = config.getboolean("PacketCapture", "mqtt_enabled", fallback=True)
         self.mqtt_brokers = self._parse_mqtt_brokers(config)
@@ -227,6 +320,60 @@ class PacketCaptureService(BaseServicePlugin):
         # Note: Python signing can fetch private key from device if not provided via file
         # The create_auth_token_async function will automatically try to export the key
         # from the device if private_key_hex is None and meshcore_instance is available
+
+    def _build_channel_key_store(self, config) -> ChannelKeyStore:
+        """Build a comprehensive channel key store for GRP_TXT decryption.
+
+        Sources (mirrors the web viewer's channel sourcing,
+        modules/web_viewer/app.py:_get_additional_decode_channels):
+          1. The bot's live radio channels (channel_manager, with real keys).
+          2. ``decode_hashtag_channels`` + the ``[Channels_List]`` section (keys derived).
+          3. Explicit ``decode_channel_keys`` = name=hexkey list.
+          4. The well-known default Public channel key (unless disabled).
+        """
+        store = ChannelKeyStore()
+
+        # 1. Bot's configured radio channels (have real key material).
+        try:
+            channel_manager = getattr(self.bot, "channel_manager", None)
+            if channel_manager:
+                for ch in channel_manager.get_configured_channels():
+                    key_hex = ch.get("channel_key_hex")
+                    if key_hex:
+                        store.add_hex(key_hex, ch.get("channel_name"))
+        except Exception as e:
+            self.logger.debug(f"Could not load channel_manager keys: {e}")
+
+        # 2a. decode_hashtag_channels: comma list of names (keys derived).
+        hashtag_raw = config.get("PacketCapture", "decode_hashtag_channels", fallback="")
+        for name in (n.strip() for n in hashtag_raw.split(",")):
+            if name:
+                store.add_hashtag(name)
+
+        # 2b. [Channels_List] section names (keys derived), matching web viewer behavior.
+        if config.has_section("Channels_List"):
+            for key in config.options("Channels_List"):
+                name = key.split(".")[-1] if "." in key else key
+                name = name.strip()
+                if name:
+                    store.add_hashtag(name)
+
+        # 3. Explicit name=hexkey pairs (hex or base64).
+        keys_raw = config.get("PacketCapture", "decode_channel_keys", fallback="")
+        for entry in (e.strip() for e in keys_raw.split(",")):
+            if not entry or "=" not in entry:
+                continue
+            name, _, key_str = entry.partition("=")
+            key_bytes = _decode_key_str(key_str.strip())
+            if key_bytes:
+                store.add_secret(key_bytes, name.strip())
+
+        # 4. Built-in default Public channel key.
+        if config.getboolean("PacketCapture", "decode_include_public", fallback=True):
+            store.add_secret(DEFAULT_PUBLIC_CHANNEL_KEY, "public")
+
+        self.logger.info(f"Payload decoding enabled with {len(store)} channel key(s)")
+        return store
 
     def _prune_correlation_caches(self, current_time: Optional[float] = None) -> None:
         """Drop stale rf_data_cache and recent_rf_packets entries.
@@ -308,6 +455,11 @@ class PacketCaptureService(BaseServicePlugin):
                 "websocket_path": config.get("PacketCapture", f"mqtt{broker_num}_websocket_path", fallback="/mqtt"),
                 "client_id": config.get("PacketCapture", f"mqtt{broker_num}_client_id", fallback=None),
                 "upload_packet_types": upload_packet_types,
+                "include_decoded": config.getboolean(
+                    "PacketCapture",
+                    f"mqtt{broker_num}_include_decoded",
+                    fallback=getattr(self, "include_decoded", False),
+                ),
                 "jwt_renewal_interval": jwt_renewal_interval,
                 "jwt_ttl_seconds": jwt_ttl_seconds,
             }
@@ -448,11 +600,18 @@ class PacketCaptureService(BaseServicePlugin):
 
         self.logger.info("Starting packet capture service...")
 
-        # Open output file if specified
+        # Open output file if specified (with optional size/time rotation)
         if self.output_file:
             try:
-                self.output_handle = open(self.output_file, "a")
-                self.logger.info(f"Writing packets to: {self.output_file}")
+                self.output_handle = _RotatingPacketLog(
+                    self.output_file,
+                    rotation=self.log_rotation,
+                    max_bytes=self.log_max_bytes,
+                    backup_count=self.log_backup_count,
+                    when=self.log_rotation_when,
+                )
+                rotation_note = "" if self.log_rotation == "off" else f" (rotation: {self.log_rotation})"
+                self.logger.info(f"Writing packets to: {self.output_file}{rotation_note}")
             except Exception as e:
                 self.logger.error(f"Failed to open output file: {e}")
 
@@ -824,6 +983,25 @@ class PacketCaptureService(BaseServicePlugin):
         if route == "D" and packet_info.get("path"):
             packet_data["path"] = ",".join(packet_info["path"])
 
+        # Attach decoded payload (issues #197 & #35): plain text / structured fields.
+        # Only payload-specific content goes here — header fields (packet_type, route)
+        # already exist at the top level, so we don't restate them.
+        if self.decode_payloads and self.channel_key_store is not None:
+            try:
+                payload_type_value = packet_info.get("payload_type_value", 0)
+                if hasattr(payload_type_value, "value"):
+                    payload_type_value = payload_type_value.value
+                payload_bytes = bytes.fromhex(packet_info.get("payload_hex", "") or "")
+                decoded = decode_payload(int(payload_type_value), payload_bytes, self.channel_key_store)
+                # Include the decoded hop path only when it isn't already at the top level
+                # (top-level "path" is added for route=D) — captures flood paths without duplicating.
+                if packet_info.get("path") and "path" not in packet_data:
+                    decoded["path"] = list(packet_info["path"])
+                packet_data["decoded"] = decoded
+            except Exception as e:
+                if self.debug:
+                    self.logger.debug(f"Payload decode failed: {e}")
+
         return packet_data
 
     async def process_packet(
@@ -901,8 +1079,7 @@ class PacketCaptureService(BaseServicePlugin):
 
             # Write to file
             if self.output_handle:
-                self.output_handle.write(json.dumps(formatted_packet, default=str) + "\n")
-                self.output_handle.flush()
+                self.output_handle.write_line(json.dumps(formatted_packet, default=str))
 
             # Publish to MQTT if enabled
             # The publish function will check per-broker connection status
@@ -1510,7 +1687,12 @@ class PacketCaptureService(BaseServicePlugin):
                 if not topic:
                     continue
 
-                payload = json.dumps(packet_info, default=str)
+                # Per-broker: strip the decoded object for brokers that opt out.
+                broker_packet = packet_info
+                if "decoded" in packet_info and not config.get("include_decoded", False):
+                    broker_packet = {k: v for k, v in packet_info.items() if k != "decoded"}
+
+                payload = json.dumps(broker_packet, default=str)
 
                 # Log topic and payload size for debugging
                 self.logger.debug(f"Publishing to topic '{topic}' on {config['host']} (payload: {len(payload)} bytes)")
