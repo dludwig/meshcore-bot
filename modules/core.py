@@ -1990,6 +1990,20 @@ long_jokes = false
             self.web_viewer_integration.start_viewer()
             self.logger.info("Web viewer started (early, before radio connect)")
 
+        # Start the inbound webhook service early too (before radio connect). Unlike
+        # the other service plugins, this one accepts inbound connections — starting
+        # it late leaves a window (proportional to how long radio connect() takes)
+        # where external callers get connection-refused instead of a clear response.
+        # The handler itself gates on self.connected and returns 503 until the mesh
+        # link is actually ready, so it's safe to bind before we're connected.
+        webhook_service = self.services.get('webhook')
+        if webhook_service is not None and getattr(webhook_service, 'enabled', False):
+            try:
+                await webhook_service.start()
+                self.logger.info("Service 'webhook' started (early, before radio connect)")
+            except Exception as e:
+                self.logger.error(f"Failed to start service 'webhook' early: {e}")
+
         # Connect to MeshCore node
         if not await self.connect():
             self.logger.error("Failed to connect to MeshCore node")
@@ -2032,8 +2046,10 @@ long_jokes = false
         # Send startup advert if enabled
         await self.send_startup_advert()
 
-        # Start all loaded services
+        # Start all loaded services (webhook already started early, before radio connect)
         for service_name, service_instance in self.services.items():
+            if service_name == 'webhook':
+                continue
             try:
                 await service_instance.start()
                 self.logger.info(f"Service '{service_name}' started")

@@ -37,6 +37,11 @@ Response codes:
     400  {"error": "..."}   bad/missing fields
     401  {"error": "Unauthorized"}   wrong / missing token
     405  method not allowed
+    429  {"error": "Rate limit exceeded"}
+    503  {"error": "Bot not yet connected to mesh, try again shortly"}
+         The listener starts before the radio connection is established, so
+         callers may see this briefly after service start; retry after a
+         few seconds.
 """
 
 import secrets
@@ -175,6 +180,18 @@ class WebhookService(BaseServicePlugin):
                 status=429,
                 content_type="application/json",
                 text='{"error": "Rate limit exceeded"}',
+            )
+
+        # --- Readiness ---
+        # The listener starts before the mesh connection is established (see
+        # core.py), so reject requests with a clear, retryable error until the
+        # bot is actually connected, rather than accepting them only to fail
+        # message dispatch.
+        if not getattr(self.bot, "connected", False):
+            return aio_web.Response(
+                status=503,
+                content_type="application/json",
+                text='{"error": "Bot not yet connected to mesh, try again shortly"}',
             )
 
         # --- Auth ---
