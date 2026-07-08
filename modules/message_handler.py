@@ -632,16 +632,13 @@ class MessageHandler:
                 self.logger.warning("RAW_DATA event has no payload")
                 return
 
-            self.logger.info(f"📦 RAW_DATA EVENT RECEIVED: {payload}")
-            self.logger.info(f"📦 Event type: {type(event)}")
-            self.logger.info(f"📦 Metadata: {metadata}")
+            self.logger.debug(f"📦 RAW_DATA EVENT RECEIVED: {payload}")
+            self.logger.debug(f"📦 Metadata: {metadata}")
 
             # This should contain the full packet data we need
             if hasattr(payload, "data") or "data" in payload:
                 raw_data = payload.get("data", payload.data if hasattr(payload, "data") else None)
                 if raw_data:
-                    self.logger.info(f"🔍 FULL PACKET DATA: {raw_data}")
-
                     # Try to decode this as a MeshCore packet
                     if isinstance(raw_data, str):
                         # Convert to hex if it's not already
@@ -653,7 +650,7 @@ class MessageHandler:
                         # Decode the packet
                         packet_info = self.decode_meshcore_packet(raw_hex)
                         if packet_info:
-                            self.logger.info(f"✅ SUCCESSFULLY DECODED RAW PACKET: {packet_info}")
+                            self.logger.debug(f"✅ SUCCESSFULLY DECODED RAW PACKET: {packet_info}")
 
                             # Check if this is an advertisement packet and track it
                             await self._process_advertisement_packet(packet_info, metadata)
@@ -3561,9 +3558,7 @@ class MessageHandler:
                 self.logger.warning("NEW_CONTACT event has no payload data")
                 return
 
-            self.logger.info(f"🔍 NEW_CONTACT EVENT RECEIVED: {event}")
-            self.logger.info(f"📦 Event type: {type(event)}")
-            self.logger.info(f"📦 Event payload: {contact_data}")
+            self.logger.debug(f"🔍 NEW_CONTACT EVENT RECEIVED: {event}")
 
             # Get contact details
             contact_name = sanitize_name(contact_data.get("name", contact_data.get("adv_name", "Unknown")))
