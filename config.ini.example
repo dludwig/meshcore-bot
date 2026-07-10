@@ -101,7 +101,7 @@ message_correlation_timeout = 10.0
 enable_enhanced_correlation = true
 
 # Bot node ID (leave empty for auto-assignment)
-node_id = 
+node_id =
 
 # Command prefix (optional). Single prefix (!), multiple decorative (!~.),
 # or comma-separated (!, ~, .). First is shown in help/docs.
@@ -172,7 +172,7 @@ dm_flood_after = 2
 # Timezone for bot operations
 # Use standard timezone names (e.g., America/New_York, Europe/London, UTC)
 # Leave empty to use system timezone
-timezone = 
+timezone =
 
 # Bot location for geographic proximity calculations and astronomical data
 # Default latitude for bot location (decimal degrees)
@@ -305,7 +305,7 @@ wait_time = 15
 [Banned_Users]
 # List of banned sender names (comma-separated). Matching is prefix (starts-with):
 # "Awful Username" also matches "Awful Username 🍆". No bot responses in channels or DMs.
-banned_users = 
+banned_users =
 
 [Localization]
 # Language code for bot responses (en, es, es-MX, es-ES, fr, de, ja, etc.)
@@ -330,13 +330,13 @@ translation_path = translations/
 # - Public keys MUST be exactly 64 hexadecimal characters (ed25519 format)
 # - Invalid formats will be rejected with error logs
 # - Empty or whitespace-only values disable admin access
-# - Keys are case-insensitive (normalized to lowercase)  
+# - Keys are case-insensitive (normalized to lowercase)
 #
 # Format: comma-separated list of 64-character hex public keys (without spaces)
 # Example: f5d2b56d19b24412756933e917d4632e088cdd5daeadc9002feca73bf5d2b56d,1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
 #
 # IMPORTANT: Leave blank to disable all admin commands. Set your actual admin pubkey(s) here.
-admin_pubkeys = 
+admin_pubkeys =
 
 # Commands that require admin access (comma-separated)
 # These commands will only work for users in the admin_pubkeys list
@@ -349,13 +349,13 @@ admin_commands = repeater,webviewer,reload,channelpause
 # Format: command_name = alternative_file_name
 # The alternative_file_name should be the name of a Python file (without .py extension)
 # in the modules/commands/alternatives/ directory
-# 
+#
 # Example: To use an alternative weather plugin for international users:
 # wx = wx_international
-# 
+#
 # This will replace the default wx command with the plugin from
 # modules/commands/alternatives/wx_international.py
-# 
+#
 # Note: The alternative plugin must have the same 'name' metadata as the command
 # it's replacing, or the override will use the alternative plugin's name instead.
 #
@@ -405,7 +405,7 @@ companion_min_inactive_days = 30
 #
 # To use a literal backslash + n, use \\n (double backslash + n)
 # Other escape sequences: \t (tab), \r (carriage return), \\ (literal backslash)
-# 
+#
 # Available placeholders (mesh network info - same as Scheduled_Messages):
 # Total counts (ever heard):
 # {total_contacts} - Total number of contacts ever heard
@@ -413,23 +413,23 @@ companion_min_inactive_days = 30
 # {total_companions} - Total number of companion devices ever heard
 # {total_roomservers} - Total number of roomserver devices ever heard
 # {total_sensors} - Total number of sensor devices ever heard
-# 
+#
 # Recent activity:
 # {recent_activity_24h} - Number of unique users active in last 24 hours
-# 
+#
 # Active in last 30 days (last_heard):
 # {total_contacts_30d} - Total contacts active (last_heard) in last 30 days
 # {total_repeaters_30d} - Total repeaters active (last_heard) in last 30 days
 # {total_companions_30d} - Total companions active (last_heard) in last 30 days
 # {total_roomservers_30d} - Total roomservers active (last_heard) in last 30 days
 # {total_sensors_30d} - Total sensors active (last_heard) in last 30 days
-# 
+#
 # New devices (first heard in last 7 days):
 # {new_companions_7d} - New companion devices first heard in last 7 days
 # {new_repeaters_7d} - New repeater devices first heard in last 7 days
 # {new_roomservers_7d} - New roomserver devices first heard in last 7 days
 # {new_sensors_7d} - New sensor devices first heard in last 7 days
-# 
+#
 # Legacy placeholders (for backward compatibility):
 # {repeaters} - Same as {total_repeaters}
 # {companions} - Same as {total_companions}
@@ -492,36 +492,36 @@ category.funfact = fun
 #
 # Newlines: use \n in the message for a line break (e.g. general:Line one\nLine two).
 # Literal backslash: use \\n for backslash+n; \\t for tab.
-# 
+#
 # Available placeholders for mesh network information:
-# 
+#
 # Total counts (ever heard):
 # {total_contacts} - Total number of contacts ever heard
 # {total_repeaters} - Total number of repeater devices ever heard
 # {total_companions} - Total number of companion devices ever heard
 # {total_roomservers} - Total number of roomserver devices ever heard
 # {total_sensors} - Total number of sensor devices ever heard
-# 
+#
 # Recent activity:
 # {recent_activity_24h} - Number of unique users active in last 24 hours
-# 
+#
 # Active in last 30 days (last_heard):
 # {total_contacts_30d} - Total contacts active (last_heard) in last 30 days
 # {total_repeaters_30d} - Total repeaters active (last_heard) in last 30 days
 # {total_companions_30d} - Total companions active (last_heard) in last 30 days
 # {total_roomservers_30d} - Total roomservers active (last_heard) in last 30 days
 # {total_sensors_30d} - Total sensors active (last_heard) in last 30 days
-# 
+#
 # New devices (first heard in last 7 days):
 # {new_companions_7d} - New companion devices first heard in last 7 days
 # {new_repeaters_7d} - New repeater devices first heard in last 7 days
 # {new_roomservers_7d} - New roomserver devices first heard in last 7 days
 # {new_sensors_7d} - New sensor devices first heard in last 7 days
-# 
+#
 # Legacy placeholders (for backward compatibility):
 # {repeaters} - Same as {total_repeaters}
 # {companions} - Same as {total_companions}
-# 
+#
 # Example with placeholders (cron):
 # 0 8 * * * = Public:Good morning! Network: {total_contacts} total ({total_repeaters} repeaters, {total_companions} companions). {new_repeaters_7d} new repeaters, {new_companions_7d} new companions in last 7d. {recent_activity_24h} active in 24h.
 # Example with 30-day active devices and new devices in 7d:
@@ -585,38 +585,38 @@ log_backup_count = 3
 # See https://v.gd/apishorteningreference.php
 short_url_website = https://v.gd
 # Optional API key for alternate shortener hosts (unused for public v.gd/is.gd)
-short_url_website_api_key = 
+short_url_website_api_key =
 
 # Weather API key (future feature)
-weather_api_key = 
+weather_api_key =
 
 # Weather update interval in seconds (future feature)
 weather_update_interval = 3600
 
 # Tide API key (future feature)
-tide_api_key = 
+tide_api_key =
 
 # Tide update interval in seconds (future feature)
 tide_update_interval = 1800
 
 # N2YO API key for satellite pass information
 # Get free key at: https://www.n2yo.com/login/
-n2yo_api_key = 
+n2yo_api_key =
 
 # AirNow API key for AQI data
 # Get free key at: https://docs.airnowapi.org/
-airnow_api_key = 
+airnow_api_key =
 
 # Forecast.Solar API key for solar forecast data
 # Get key at: https://forecast.solar/ (free tier works without key, paid tier for 3+ day forecasts)
 # Free tier: 2-day forecast, 1-hour resolution
 # Paid tier (14 EUR/year): 3-6 day forecast, 15-30 minute resolution
-forecast_solar_api_key = 
+forecast_solar_api_key =
 
 # Repeater prefix API URL for prefix command
 # Leave empty to disable prefix command functionality
 # Configure your own regional API endpoint
-repeater_prefix_api_url = 
+repeater_prefix_api_url =
 
 # Repeater prefix cache duration in hours
 # How long to cache prefix data before refreshing from API
@@ -684,7 +684,7 @@ prefix_best_location_radius_km = 50
 # Useful for excluding major infrastructure repeaters or reserved prefixes
 # Example: prefix_best_do_not_suggest = 00,FF,01,02
 # Leave empty to allow all prefixes
-prefix_best_do_not_suggest = 
+prefix_best_do_not_suggest =
 
 [Weather]
 # NOTE: Unit settings are used by both the wx and gwx commands and Weather_Service plugin
@@ -979,7 +979,7 @@ path_selection_preset = balanced
 
 # Basic Settings
 # Geographic proximity calculation method
-# simple: Use proximity to bot location 
+# simple: Use proximity to bot location
 # path: Use proximity to previous/next nodes in the path for more realistic routing (default)
 proximity_method = path
 
@@ -1161,7 +1161,11 @@ graph_capture_enabled = true
 # Set to 1.0 to disable star bias
 star_bias_multiplier = 2.5
 
-
+# Symbols shown next to inferred repeater names to indicate confidence
+# in the path guess (high / medium / low).
+high_confidence_symbol = 🎯
+medium_confidence_symbol = 📍
+low_confidence_symbol = ❓
 [Joke_Command]
 # Enable or disable the joke command (true/false)
 enabled = true
@@ -1226,7 +1230,7 @@ enabled = false
 # Comma-separated list to restrict to specific channels (only greeter command works there)
 # Example: channels = general,welcome,newbies
 # If not specified, uses the channels from [Channels] monitor_channels setting
-# channels = 
+# channels =
 
 # Greeting message template (default for all channels)
 # Available fields: {sender} - the user's name/ID
@@ -1241,7 +1245,7 @@ greeting_message = Welcome to the mesh, @[{sender}]!
 # Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
 # Multi-part greetings are supported per channel using pipe (|) separator
 # Leave empty to use greeting_message for all channels
-channel_greetings = 
+channel_greetings =
 
 # Per-channel greetings (tracking behavior)
 # false: Greet each user only once globally (default - user gets one greeting total)
@@ -1285,6 +1289,12 @@ backfill_lookback_days = 30
 # Enable or disable the alert command (true/false)
 enabled = false
 
+# Only report incidents within this distance of the bot (kilometers)
+max_distance_km = 20.0
+
+# Only report incidents newer than this (hours)
+max_incident_age_hours = 24.0
+
 # PulsePoint agency IDs by county/region
 # Format: agency.<county_name> = comma-separated agency IDs
 # Get agency IDs from: https://web.pulsepoint.org/ or PulsePoint searchagencies API
@@ -1292,14 +1302,14 @@ enabled = false
 # Examples: agency.county1, agency.city1, agency.region1, etc.
 
 # Example: County agencies
-# agency.county1 = 
+# agency.county1 =
 
 # Example: City agencies (can have multiple entries for the same region)
-# agency.city1 = 
-# agency.city1_alias = 
+# agency.city1 =
+# agency.city1_alias =
 
 # Example: Combined region (all counties/agencies)
-# agency.region_all = 
+# agency.region_all =
 
 [Announcements_Command]
 # Enable or disable the announcements command (true/false)
@@ -1311,7 +1321,7 @@ enabled = false
 # Format: comma-separated list of 64-character hex public keys (without spaces)
 # Example: f5d2b56d19b24412756933e917d4632e088cdd5daeadc9002feca73bf5d2b56d
 # Leave empty to only use Admin_ACL members
-announcements_acl = 
+announcements_acl =
 
 # Default channel for announcements when no channel is specified
 # Announcements will be sent to this channel if no channel is provided
@@ -1357,6 +1367,12 @@ url_timeout = 10
 # Command stubs (enable/channels only; omit to use global monitor_channels)
 [Wx_Command]
 enabled = true
+
+# Temperature unit for weather reports: fahrenheit (default) or celsius
+temperature_unit = fahrenheit
+
+# Wind speed unit for weather reports: mph (default) or kmh
+wind_speed_unit = mph
 # channels =
 # aliases = comma-separated additional trigger words, e.g.: aliases = weather, w
 
@@ -1570,7 +1586,7 @@ multibyte_monitor_enabled = false
 #
 # Note: Only hashtag channels work here - custom channels with private keys
 # must be added to the radio itself.
-decode_hashtag_channels = 
+decode_hashtag_channels =
 
 ####################################################################################################
 #                                                                                                  #
@@ -1587,7 +1603,7 @@ enabled = false
 # Output file for packet data (optional)
 # Leave empty to disable file output
 # Packets will be written as JSON lines
-output_file = 
+output_file =
 
 # Verbose output (show JSON packet data in logs)
 # true: Show packet data in logs
@@ -1604,6 +1620,10 @@ raw_duplicate_window = 2.0
 
 # Keep RX_LOG SNR/RSSI keyed by packet prefix this long for RAW_DATA correlation (seconds).
 rf_data_cache_timeout = 15.0
+
+# Master switch for MQTT publishing (true/false). When false, packets are only
+# written to output_file (if set) and no MQTT connections are made.
+mqtt_enabled = true
 
 # If true, do not publish packet JSON to MQTT when content hash is 0000000000000000
 # (strict path_len reject, too-short buffer, or other unparseable cases). File output is unchanged.
@@ -1651,10 +1671,10 @@ log_backup_count = 5
 
 # Owner information (for packet analyzer registration)
 # Owner public key (64-character hex string)
-owner_public_key = 
+owner_public_key =
 
 # Owner email address
-owner_email = 
+owner_email =
 
 # Private key file path for auth token generation (fallback if device signing unavailable)
 # Optional - on-device signing is preferred
@@ -1662,7 +1682,7 @@ owner_email =
 # Required only if device doesn't support on-device signing or auth_token_method = python
 # Note: If not provided and auth_token_method = python, the service will attempt to fetch
 # the private key from the device automatically
-private_key_path = 
+private_key_path =
 
 # Auth token signing method
 # device: Try on-device signing first, fallback to Python signing (default, recommended)
@@ -1732,8 +1752,8 @@ mqtt2_token_audience = mqtt-eu-v1.letsmesh.net
 mqtt2_topic_status = meshcore/{IATA}/{PUBLIC_KEY}/status
 mqtt2_topic_packets = meshcore/{IATA}/{PUBLIC_KEY}/packets
 mqtt2_websocket_path = /mqtt
-mqtt2_client_id = 
-mqtt2_upload_packet_types = 
+mqtt2_client_id =
+mqtt2_upload_packet_types =
 
 # Stats and status publishing
 # Enable stats in status messages
@@ -1771,7 +1791,7 @@ api_url = https://map.meshcore.dev/api/v1/uploader/node
 # If not provided, the service will attempt to fetch the private key from the device
 # Supports 64-byte orlp format (128 hex chars) or 32-byte seed (64 hex chars)
 # Required only if device doesn't support private key export
-private_key_path = 
+private_key_path =
 
 # Minimum time between re-uploads of same node (seconds)
 # Prevents uploading the same node too frequently to avoid API spam
@@ -1804,10 +1824,10 @@ weather_alarm = 6:00
 
 # Bot position for weather forecasts and alerts
 # Latitude in decimal degrees
-my_position_lat = 
+my_position_lat =
 
 # Longitude in decimal degrees
-my_position_lon = 
+my_position_lon =
 
 # Channel for daily weather forecasts
 # Weather forecasts will be sent to this channel
