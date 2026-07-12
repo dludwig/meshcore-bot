@@ -95,15 +95,15 @@ def validate_field(field: dict, raw: Any) -> tuple[bool, Any, Optional[str]]:
 
     if ftype in ("int", "float"):
         try:
-            coerced = int(raw) if ftype == "int" else float(raw)
+            num = int(raw) if ftype == "int" else float(raw)
         except (ValueError, TypeError):
             return False, None, f"{label} must be a number"
         lo, hi = field.get("min"), field.get("max")
-        if lo is not None and coerced < lo:
+        if lo is not None and num < lo:
             return False, None, f"{label} must be ≥ {lo}"
-        if hi is not None and coerced > hi:
+        if hi is not None and num > hi:
             return False, None, f"{label} must be ≤ {hi}"
-        return True, coerced, None
+        return True, num, None
 
     if ftype == "enum":
         allowed = {str(o.get("value")) for o in field.get("options", [])}

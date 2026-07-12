@@ -3,9 +3,9 @@
 
 import pytest
 
-from modules.models import MeshMessage
 from modules.commands.alternatives.wx_international import GlobalWxCommand
 from modules.commands.wx_command import WxCommand
+from modules.models import MeshMessage
 
 
 @pytest.fixture

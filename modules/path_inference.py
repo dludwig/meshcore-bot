@@ -316,6 +316,9 @@ def get_node_location(node_id: str, cfg: PathInferenceConfig, *, db_manager, log
 
 def select_by_simple_proximity(repeaters_with_location, cfg: PathInferenceConfig, *, logger):
     """Select the closest repeater to the bot, with a strong recency bias."""
+    if cfg.bot_latitude is None or cfg.bot_longitude is None:
+        return None, 0.0
+
     scored_repeaters = calculate_recency_weighted_scores(repeaters_with_location, cfg)
     scored_repeaters = [(r, score) for r, score in scored_repeaters if score >= MIN_RECENCY_THRESHOLD]
 
@@ -1118,18 +1121,19 @@ def decode_path_nodes(
 
                 if selection.status == 'resolved':
                     selected_repeater = selection.repeater
-                    decoded_path.append({
-                        'node_id': node_id,
-                        'name': selected_repeater['name'],
-                        'public_key': selected_repeater['public_key'],
-                        'device_type': selected_repeater['device_type'],
-                        'role': selected_repeater.get('role', 'repeater'),
-                        'found': True,
-                        'geographic_guess': selection.confidence < 0.8,
-                        'collision': True,
-                        'matches': selection.matches,
-                        **_loc(selected_repeater),
-                    })
+                    if selected_repeater is not None:
+                        decoded_path.append({
+                            'node_id': node_id,
+                            'name': selected_repeater['name'],
+                            'public_key': selected_repeater['public_key'],
+                            'device_type': selected_repeater['device_type'],
+                            'role': selected_repeater.get('role', 'repeater'),
+                            'found': True,
+                            'geographic_guess': selection.confidence < 0.8,
+                            'collision': True,
+                            'matches': selection.matches,
+                            **_loc(selected_repeater),
+                        })
                 elif selection.status == 'collision':
                     fallback = selection.recent_repeaters[0]
                     decoded_path.append({
@@ -1146,18 +1150,19 @@ def decode_path_nodes(
                     })
                 elif selection.status == 'single':
                     repeater = selection.repeater
-                    decoded_path.append({
-                        'node_id': node_id,
-                        'name': repeater['name'],
-                        'public_key': repeater['public_key'],
-                        'device_type': repeater['device_type'],
-                        'role': repeater.get('role', 'repeater'),
-                        'found': True,
-                        'geographic_guess': False,
-                        'collision': False,
-                        'matches': 1,
-                        **_loc(repeater),
-                    })
+                    if repeater is not None:
+                        decoded_path.append({
+                            'node_id': node_id,
+                            'name': repeater['name'],
+                            'public_key': repeater['public_key'],
+                            'device_type': repeater['device_type'],
+                            'role': repeater.get('role', 'repeater'),
+                            'found': True,
+                            'geographic_guess': False,
+                            'collision': False,
+                            'matches': 1,
+                            **_loc(repeater),
+                        })
                 else:
                     decoded_path.append({
                         'node_id': node_id,

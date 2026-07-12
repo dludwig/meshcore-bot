@@ -53,7 +53,7 @@ class SettingsStore(ABC):
     def write_sections(
         self,
         updates: dict[str, dict[str, str]],
-        deletes: Optional[dict[str, list[str]]] = None,
+        deletes: Optional[dict[str, list[str] | set[str]]] = None,
     ) -> dict:
         """Persist multiple sections at once, with optional key deletions.
 
@@ -100,7 +100,7 @@ class ConfigIniStore(SettingsStore):
     def write_sections(
         self,
         updates: dict[str, dict[str, str]],
-        deletes: Optional[dict[str, list[str]]] = None,
+        deletes: Optional[dict[str, list[str] | set[str]]] = None,
     ) -> dict:
         # Mirror writes into the in-memory config so this process stays current.
         for section, values in (updates or {}).items():

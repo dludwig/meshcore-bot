@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for lazy NWS alert coverage handling (international / HTTP 400)."""
 
-import asyncio
 import configparser
 from unittest.mock import AsyncMock, Mock
 
