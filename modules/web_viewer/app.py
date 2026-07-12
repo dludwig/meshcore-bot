@@ -173,6 +173,16 @@ class BotDataViewer:
         self.app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
         self.app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
+        # Compress responses when the client supports it — /api/mesh/edges alone
+        # is ~16 MB of JSON uncompressed (~4 MB gzipped) on a large mesh
+        try:
+            from flask_compress import Compress
+            Compress(self.app)
+        except ImportError:
+            self.logger.warning(
+                "flask-compress not installed; web viewer responses will be sent uncompressed"
+            )
+
         # Flask-SocketIO configuration following 5.x best practices
         # CORS origins are configured after config is loaded; create without app for now
         self._socketio_kwargs = dict(

@@ -509,6 +509,27 @@ def _m0013_observed_paths_advert_covering_index(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _m0014_observed_paths_multibyte_covering_index(cursor: sqlite3.Cursor) -> None:
+    """Partial covering index for the mesh-graph multibyte evidence query.
+
+    /api/mesh/edges?evidence=multibyte reads every multi-byte path row
+    (bytes_per_hop >= 2, roughly a fifth of observed_paths); without an index
+    that is a full scan of the widest table in the database (~2s at 700k
+    rows). This partial index covers the query's columns, so it never touches
+    the table, and last_seen in slot 2 keeps the optional days filter indexed.
+    """
+    if not _table_exists(cursor, "observed_paths"):
+        return
+    cursor.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_observed_paths_multibyte
+            ON observed_paths(bytes_per_hop, last_seen, path_hex,
+                              observation_count, first_seen)
+            WHERE bytes_per_hop >= 2;
+        """
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -529,6 +550,7 @@ MIGRATIONS: list[MigrationEntry] = [
     (11, "repeater/graph indexes", _m0011_repeater_and_graph_indexes),
     (12, "purging_log: add details column", _m0012_purging_log_details_column),
     (13, "observed_paths: advert covering index for contacts page", _m0013_observed_paths_advert_covering_index),
+    (14, "observed_paths: multibyte covering index for mesh graph", _m0014_observed_paths_multibyte_covering_index),
 ]
 
 

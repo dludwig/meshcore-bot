@@ -1394,10 +1394,10 @@
         initMeshTheme();
 
         setupSocketIO();
-        // Load stats first to set initial filter value (but don't override saved filters)
-        await loadStats();
-        // Then load data (which will apply filters)
-        await loadData();
+        // Fetch stats and graph data concurrently; render once both are in so the
+        // initial map framing can use the bot location from stats
+        await Promise.all([loadStats(), loadData({ skipRender: true })]);
+        applyFilters();
         // Open graph tab if URL has #graph (e.g. /mesh#graph)
         if (window.location.hash === '#graph') {
             switchView('graph');
@@ -1486,20 +1486,27 @@
         const skipRender = options && options.skipRender === true;
         
         try {
-            // Load edges first so we can pass prefix_hex_chars to nodes (keeps node prefix in sync with edge prefixes)
             const evidence = document.getElementById('filter-evidence').value;
             const edgesUrl = evidence === 'multibyte' ? '/api/mesh/edges?evidence=multibyte' : '/api/mesh/edges';
-            const edgesResponse = await fetch(edgesUrl);
-            const edgesData = await edgesResponse.json();
+            // Fetch edges and nodes concurrently; node prefixes are recomputed locally
+            // below once the edge prefix length is known, so the nodes request does
+            // not have to wait for the edges response
+            const [edgesData, nodesData] = await Promise.all([
+                fetch(edgesUrl).then(r => r.json()),
+                fetch('/api/mesh/nodes').then(r => r.json())
+            ]);
             allEdges = edgesData.edges || [];
             graphPrefixHexChars = (edgesData.prefix_hex_chars && [2, 4, 6].includes(edgesData.prefix_hex_chars))
                 ? edgesData.prefix_hex_chars
                 : PREFIX_HEX_CHARS;
-            
-            // Load nodes with graph prefix length so node.prefix matches edge prefixes (e.g. 2-byte)
-            const nodesResponse = await fetch('/api/mesh/nodes?prefix_hex_chars=' + graphPrefixHexChars);
-            const nodesData = await nodesResponse.json();
+
             allNodes = nodesData.nodes || [];
+            // Keep node.prefix in sync with edge prefixes (e.g. 2-byte graphs)
+            allNodes.forEach(node => {
+                if (node.public_key) {
+                    node.prefix = node.public_key.substring(0, graphPrefixHexChars).toLowerCase();
+                }
+            });
             
             // Build node maps
             nodeMap = {};
@@ -1522,7 +1529,6 @@
             syncMinObsSlider();
 
             if (!skipRender) {
-                // Apply filters (will use the min observations value set by loadStats)
                 // Note: applyFilters() will preserve and re-apply path highlights via renderMap()
                 applyFilters();
             }
@@ -2146,6 +2152,9 @@
         // Prefer the home mesh component (multi-byte connectivity from the bot's
         // location) so wrong-GPS outliers don't stretch the frame.
         if (isInitialLoad && bounds.length > 0) {
+            // Refresh Leaflet's cached container size first: if the map was created
+            // while the container had no layout yet, fitBounds would compute max zoom
+            map.invalidateSize();
             map.fitBounds(getHomeComponentBounds() || bounds, { padding: [50, 50] });
             isInitialMapLoad = false; // Mark that initial load is complete
         } else if (mapViewState) {
@@ -2153,6 +2162,7 @@
             map.setView(mapViewState.center, mapViewState.zoom);
         } else if (bounds.length > 0) {
             // Fallback: fit to bounds if no saved state
+            map.invalidateSize();
             map.fitBounds(getHomeComponentBounds() || bounds, { padding: [50, 50] });
         }
         
