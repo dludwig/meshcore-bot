@@ -632,6 +632,33 @@ class TestFormatMessage:
         assert result.endswith("...")
         assert len(result) <= 23
 
+    def test_truncate_hard_function_on_title(self):
+        item = self._item(title="a" * 100)
+        result = self.fm.format_message(item, self._feed(fmt="{title|truncate_hard:20}"))
+        assert result == "a" * 20
+        assert not result.endswith("...")
+
+    def test_substr_function_on_title(self):
+        item = self._item(title="Hello World")
+        result = self.fm.format_message(item, self._feed(fmt="{title|substr:6,5}"))
+        assert result == "World"
+
+    def test_emoji_field_overrides_name_heuristic(self):
+        # A per-item emoji (e.g. from API emoji_field) wins over the feed-name heuristic
+        item = self._item(emoji="🔥")
+        result = self.fm.format_message(item, self._feed(fmt="{emoji}", name="emergency"))
+        assert result == "🔥"
+
+    def test_emoji_field_empty_falls_back_to_heuristic(self):
+        item = self._item(emoji="")
+        result = self.fm.format_message(item, self._feed(fmt="{emoji}", name="emergency"))
+        assert result == "🚨"
+
+    def test_emoji_absent_falls_back_to_default(self):
+        # No emoji key at all -> default heuristic emoji
+        result = self.fm.format_message(self._item(), self._feed(fmt="{emoji}"))
+        assert result == "📢"
+
 
 # ---------------------------------------------------------------------------
 # _should_send_item (pure logic — no DB)

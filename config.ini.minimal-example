@@ -27,22 +27,17 @@
 
 [Connection]
 # Connection type: serial, ble, or tcp
-# serial: Connect via USB serial port
-# ble: Connect via Bluetooth Low Energy
-# tcp: Connect via TCP/IP
+# Only keys for the active type are used; others are ignored (see config.ini.example).
 connection_type = serial
 
-# Serial port (for serial connection)
-# Common ports: /dev/ttyUSB0, /dev/tty.usbserial-*, COM3 (Windows)
+# serial
 serial_port = /dev/ttyUSB0
 
-# BLE device name (for BLE connection)
-# Leave commented out for auto-detection, or specify exact device name
-#ble_device_name = MeshCore
+# ble — uncomment when connection_type = ble (empty ble_device_name = auto-detect)
+#ble_device_name =
 
-# TCP hostname or IP address (for TCP connection)
+# tcp — uncomment when connection_type = tcp
 #hostname = 192.168.1.60
-# TCP port (for TCP connection)
 #tcp_port = 5000
 
 # Connection timeout in seconds
@@ -236,8 +231,7 @@ monitor_channels = general,test,emergency
 respond_to_dms = true
 
 # Maximum hops for a message to get a response
-# Default: 64 - for backwards compatibility
-# Suggested: 10
+# Code default when omitted: 64. This example uses 7 for a tighter local mesh.
 max_response_hops = 7
 
 # Optional: limit channel responses to certain keywords (e.g. help,ping,test).
@@ -428,6 +422,7 @@ enabled = true
 #                                                                                                  #
 #  The following commands are explicitly disabled in this minimal configuration.                   #
 #  To enable any of these commands, uncomment and set enabled = true in the appropriate section.   #
+#  See config.ini.example for full options for each command.                                       #
 #                                                                                                  #
 ####################################################################################################
 
@@ -466,8 +461,7 @@ enabled = false
 
 [Web_Viewer]
 # Enable or disable the web data viewer
-# SECURITY NOTE: Web viewer has NO AUTHENTICATION built-in
-# Only enable if you understand the security implications
+# Set web_viewer_password when host is not 127.0.0.1 (see config.ini.example)
 enabled = false
 
 [Wx_Command]

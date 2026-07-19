@@ -880,6 +880,96 @@ class TestSplitTextIntoChunks:
         assert all(len(c) == 1 for c in result)
 
 
+class TestSplitTextIntoUtf8Chunks:
+    """Tests for CommandManager.split_text_into_utf8_chunks."""
+
+    def test_short_text_single_chunk(self):
+        result = CommandManager.split_text_into_utf8_chunks("hello", 158)
+        assert result == ["hello"]
+
+    def test_empty_string(self):
+        result = CommandManager.split_text_into_utf8_chunks("", 158)
+        assert result == [""]
+
+    def test_splits_on_spaces_within_byte_budget(self):
+        text = "word " * 50  # 250 chars ASCII
+        result = CommandManager.split_text_into_utf8_chunks(text.strip(), 158)
+        assert len(result) >= 2
+        assert all(len(c.encode("utf-8")) <= 158 for c in result)
+
+    def test_never_splits_multibyte_codepoints(self):
+        # Each emoji is 4 UTF-8 bytes
+        text = "😀" * 50
+        result = CommandManager.split_text_into_utf8_chunks(text, 20)
+        assert all(len(c.encode("utf-8")) <= 20 for c in result)
+        assert "".join(result) == text
+        for chunk in result:
+            # Re-encoding round-trip must succeed (no truncated sequences)
+            chunk.encode("utf-8").decode("utf-8")
+
+    def test_prefers_newline_boundaries(self):
+        lines = [f"line-{i}-xxxxxxxx" for i in range(20)]
+        text = "\n".join(lines)
+        result = CommandManager.split_text_into_utf8_chunks(text, 80)
+        assert all(len(c.encode("utf-8")) <= 80 for c in result)
+        # Most chunks should be whole lines (no mid-line hard splits for this input)
+        for chunk in result:
+            for line in chunk.split("\n"):
+                if line:
+                    assert line.startswith("line-")
+
+
+class TestSendDMLengthGuard:
+    """Oversized DM payloads are auto-split before the radio send."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_dm_is_auto_split(self, cm_bot):
+        from meshcore import EventType
+
+        cm_bot.connected = True
+        cm_bot.meshcore = Mock()
+        contact = {"name": "Alice", "public_key": "ab12deadbeef"}
+        cm_bot.meshcore.get_contact_by_name = Mock(return_value=contact)
+        cm_bot.meshcore.commands = Mock(spec=["send_msg"])
+        cm_bot.meshcore.commands.send_msg = AsyncMock(
+            return_value=Mock(type=EventType.MSG_SENT, payload=None)
+        )
+        cm_bot.bot_tx_rate_limiter.wait_for_tx = AsyncMock(return_value=None)
+        cm_bot.config.set("Bot", "bot_tx_rate_limit_seconds", "0")
+        manager = make_manager(cm_bot)
+
+        oversized = "x" * 200
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("modules.command_manager.asyncio.sleep", AsyncMock())
+            result = await manager.send_dm("Alice", oversized)
+
+        assert result is True
+        assert cm_bot.meshcore.commands.send_msg.await_count >= 2
+        for call in cm_bot.meshcore.commands.send_msg.await_args_list:
+            payload = call.args[1]
+            assert len(payload.encode("utf-8")) <= 158
+
+    @pytest.mark.asyncio
+    async def test_under_budget_dm_sends_once(self, cm_bot):
+        from meshcore import EventType
+
+        cm_bot.connected = True
+        cm_bot.meshcore = Mock()
+        contact = {"name": "Alice", "public_key": "ab12deadbeef"}
+        cm_bot.meshcore.get_contact_by_name = Mock(return_value=contact)
+        cm_bot.meshcore.commands = Mock(spec=["send_msg"])
+        cm_bot.meshcore.commands.send_msg = AsyncMock(
+            return_value=Mock(type=EventType.MSG_SENT, payload=None)
+        )
+        cm_bot.bot_tx_rate_limiter.wait_for_tx = AsyncMock(return_value=None)
+        manager = make_manager(cm_bot)
+
+        result = await manager.send_dm("Alice", "short ok")
+
+        assert result is True
+        cm_bot.meshcore.commands.send_msg.assert_awaited_once()
+
+
 class TestGetMaxMessageLength:
     """Tests for CommandManager.get_max_message_length."""
 

@@ -3321,6 +3321,26 @@ class BotDataViewer:
                 self.logger.error(f"Error getting feed errors: {e}")
                 return jsonify({'error': str(e)}), 500
 
+        @self.app.route('/api/feeds/errors/reset', methods=['POST'])
+        def api_reset_all_feed_errors():
+            """Clear recorded errors for every feed"""
+            try:
+                deleted = self._reset_feed_errors()
+                return jsonify({'success': True, 'deleted': deleted})
+            except Exception as e:
+                self.logger.error(f"Error resetting feed errors: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/feeds/<int:feed_id>/errors/reset', methods=['POST'])
+        def api_reset_feed_errors(feed_id):
+            """Clear recorded errors for a single feed"""
+            try:
+                deleted = self._reset_feed_errors(feed_id)
+                return jsonify({'success': True, 'deleted': deleted})
+            except Exception as e:
+                self.logger.error(f"Error resetting feed errors: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/feeds/<int:feed_id>/refresh', methods=['POST'])
         def api_refresh_feed(feed_id):
             """Manually trigger a feed check"""
@@ -6367,6 +6387,29 @@ class BotDataViewer:
             if conn:
                 conn.close()
 
+    def _reset_feed_errors(self, feed_id=None):
+        """Clear recorded feed errors. Pass a feed_id to clear one feed, or None for all.
+
+        Returns the number of error rows deleted.
+        """
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            if feed_id is None:
+                cursor.execute('DELETE FROM feed_errors')
+            else:
+                cursor.execute('DELETE FROM feed_errors WHERE feed_id = ?', (feed_id,))
+            conn.commit()
+            return cursor.rowcount
+        except Exception:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+
     def _get_feed_activity(self, feed_id, limit=50):
         """Get activity log for a feed"""
         import sqlite3
@@ -6746,6 +6789,7 @@ class BotDataViewer:
                 title_field = parser_config.get('title_field', 'title')
                 description_field = parser_config.get('description_field', 'description')
                 timestamp_field = parser_config.get('timestamp_field', 'created_at')
+                emoji_field = parser_config.get('emoji_field', 'emoji')
 
                 # Helper function to get nested values
                 def get_nested_value(data, path, default=''):
@@ -6820,6 +6864,7 @@ class BotDataViewer:
 
                     items.append({
                         'title': get_nested_value(item_data, title_field, 'Untitled'),
+                        'emoji': get_nested_value(item_data, emoji_field, ''),
                         'description': description,
                         'link': item_data.get('link', '') if isinstance(item_data, dict) else '',
                         'published': published,
@@ -7038,15 +7083,18 @@ class BotDataViewer:
             except Exception:
                 pass
 
-        # Choose emoji
-        emoji = "📢"
-        feed_name_lower = (feed_name or '').lower()
-        if 'emergency' in feed_name_lower or 'alert' in feed_name_lower:
-            emoji = "🚨"
-        elif 'warning' in feed_name_lower:
-            emoji = "⚠️"
-        elif 'info' in feed_name_lower or 'news' in feed_name_lower:
-            emoji = "ℹ️"
+        # Choose emoji: a per-item emoji (e.g. from API emoji_field) wins; otherwise
+        # fall back to a heuristic based on the feed name.
+        emoji = item.get('emoji')
+        if not emoji:
+            emoji = "📢"
+            feed_name_lower = (feed_name or '').lower()
+            if 'emergency' in feed_name_lower or 'alert' in feed_name_lower:
+                emoji = "🚨"
+            elif 'warning' in feed_name_lower:
+                emoji = "⚠️"
+            elif 'info' in feed_name_lower or 'news' in feed_name_lower:
+                emoji = "ℹ️"
 
         # Build replacements
         replacements = {
@@ -7112,6 +7160,26 @@ class BotDataViewer:
                     if len(text) <= max_len:
                         return text
                     return text[:max_len] + "..."
+                except (ValueError, IndexError):
+                    return text
+            elif function.startswith('truncate_hard:'):
+                # Like truncate:N but never appends an ellipsis
+                try:
+                    max_len = int(function.split(':', 1)[1])
+                    if len(text) <= max_len:
+                        return text
+                    return text[:max_len]
+                except (ValueError, IndexError):
+                    return text
+            elif function.startswith('substr:'):
+                # substr:START[,LENGTH] - JS-style: START offset, optional LENGTH chars
+                try:
+                    args = function.split(':', 1)[1].split(',')
+                    start = int(args[0])
+                    if len(args) > 1 and args[1].strip() != '':
+                        length = int(args[1])
+                        return text[start:start + length]
+                    return text[start:]
                 except (ValueError, IndexError):
                     return text
             elif function.startswith('word_wrap:'):

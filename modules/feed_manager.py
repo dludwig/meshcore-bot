@@ -39,6 +39,7 @@ class FeedManager:
             self.enabled = False
             self.default_check_interval = 300
             self.max_items_per_check = 10
+            self.max_posts_per_check = 10
             self.request_timeout = 30
             self.user_agent = 'MeshCoreBot/1.0 FeedManager'
             self.rate_limit_seconds = 5.0
@@ -61,6 +62,10 @@ class FeedManager:
             self.enabled = bot.config.getboolean('Feed_Manager', 'feed_manager_enabled', fallback=False)
             self.default_check_interval = bot.config.getint('Feed_Manager', 'default_check_interval_seconds', fallback=300)
             self.max_items_per_check = bot.config.getint('Feed_Manager', 'max_items_per_check', fallback=10)
+            # Max items actually posted per check. Defaults to max_items_per_check so existing
+            # installs behave identically; raise max_items_per_check (the scan window) to reach
+            # older passing items while this caps how many post per poll.
+            self.max_posts_per_check = bot.config.getint('Feed_Manager', 'max_posts_per_check', fallback=self.max_items_per_check)
             self.request_timeout = bot.config.getint('Feed_Manager', 'feed_request_timeout', fallback=30)
             self.user_agent = bot.config.get('Feed_Manager', 'feed_user_agent', fallback='MeshCoreBot/1.0 FeedManager')
             self.rate_limit_seconds = bot.config.getfloat('Feed_Manager', 'feed_rate_limit_seconds', fallback=5.0)
@@ -232,14 +237,22 @@ class FeedManager:
                 self.logger.warning(f"Unknown feed type: {feed_type}")
                 return
 
-            # Process new items
+            # Process new items.
+            # Examine up to max_items_per_check items (the scan window) and post the ones that
+            # pass the filter, stopping once max_posts_per_check items have been queued. This
+            # keeps filtered-out items from consuming the post budget, so a long back-catalog
+            # with a restrictive filter (e.g. within_days) doesn't stall behind old items.
             if new_items:
                 self.logger.info(f"Found {len(new_items)} new items for feed {feed_id}")
                 filtered_count = 0
+                posted_count = 0
                 for item in new_items[:self.max_items_per_check]:
                     # Check if item passes filter conditions
                     if self._should_send_item(feed, item):
                         await self._send_feed_item(feed, item)
+                        posted_count += 1
+                        if posted_count >= self.max_posts_per_check:
+                            break
                     else:
                         filtered_count += 1
                         self.logger.debug(f"Filtered out item: {item.get('title', 'Untitled')[:50]}")
@@ -412,6 +425,7 @@ class FeedManager:
             title_field = parser_config.get('title_field', 'title')
             description_field = parser_config.get('description_field', 'description')  # New: allow custom description field
             timestamp_field = parser_config.get('timestamp_field', 'created_at')
+            emoji_field = parser_config.get('emoji_field', 'emoji')  # New: allow custom per-item emoji field
 
             # Collect ALL items first (don't break early, as sorting may reorder them)
             all_items = []
@@ -459,6 +473,7 @@ class FeedManager:
                 all_items.append({
                     'id': item_id,
                     'title': self._get_nested_value(item_data, title_field, 'Untitled'),
+                    'emoji': self._get_nested_value(item_data, emoji_field, ''),
                     'link': item_data.get('link', ''),
                     'description': description,
                     'published': published,
@@ -598,7 +613,9 @@ class FeedManager:
         Supported functions:
         - shorten - URL-shorten via [External_Data] short_url_website (v.gd / is.gd API)
         - shorten|truncate:N (etc.) - shorten first, then apply the rest (e.g. shorten|truncate:40)
-        - truncate:N - truncate to N characters
+        - truncate:N - truncate to N characters (appends "..." if cut)
+        - truncate_hard:N - truncate to N characters without appending "..."
+        - substr:N[,M] - substring from offset N (optional M-char length, JS-style)
         - word_wrap:N - wrap at N characters, breaking at word boundaries
         - first_words:N - take first N words
         - regex:pattern - extract using regex pattern (uses first capture group, or whole match)
@@ -636,6 +653,28 @@ class FeedManager:
                 if len(text) <= max_len:
                     return text
                 return text[:max_len] + "..."
+            except (ValueError, IndexError):
+                return text
+
+        elif function.startswith('truncate_hard:'):
+            # Like truncate:N but never appends an ellipsis
+            try:
+                max_len = int(function.split(':', 1)[1])
+                if len(text) <= max_len:
+                    return text
+                return text[:max_len]
+            except (ValueError, IndexError):
+                return text
+
+        elif function.startswith('substr:'):
+            # substr:START[,LENGTH] - JS-style: START offset, optional LENGTH chars
+            try:
+                args = function.split(':', 1)[1].split(',')
+                start = int(args[0])
+                if len(args) > 1 and args[1].strip() != '':
+                    length = int(args[1])
+                    return text[start:start + length]
+                return text[start:]
             except (ValueError, IndexError):
                 return text
 
@@ -948,7 +987,10 @@ class FeedManager:
 
         Supported shortening functions:
         - {field|shorten} - URL-shorten text (v.gd / is.gd); chain: {link|shorten|truncate:N}
-        - {field|truncate:N} - truncate to N characters
+        - {field|truncate:N} - truncate to N characters (appends "..." if cut)
+        - {field|truncate_hard:N} - truncate to N characters (no "..." appended)
+        - {field|substr:N} - substring from offset N to the end
+        - {field|substr:N,M} - substring of M characters starting at offset N (JS-style)
         - {field|word_wrap:N} - wrap at N characters
         - {field|first_words:N} - take first N words
         - {field|regex:pattern} - extract using regex (first group or whole match)
@@ -989,15 +1031,18 @@ class FeedManager:
         published = item.get('published')
         date_str = self._format_timestamp(published)
 
-        # Choose emoji based on feed type or content
-        emoji = "📢"
-        feed_name = (feed.get('feed_name') or '').lower()
-        if 'emergency' in feed_name or 'alert' in feed_name:
-            emoji = "🚨"
-        elif 'warning' in feed_name:
-            emoji = "⚠️"
-        elif 'info' in feed_name or 'news' in feed_name:
-            emoji = "ℹ️"
+        # Choose emoji: a per-item emoji (e.g. from API emoji_field) wins; otherwise
+        # fall back to a heuristic based on the feed name.
+        emoji = item.get('emoji')
+        if not emoji:
+            emoji = "📢"
+            feed_name = (feed.get('feed_name') or '').lower()
+            if 'emergency' in feed_name or 'alert' in feed_name:
+                emoji = "🚨"
+            elif 'warning' in feed_name:
+                emoji = "⚠️"
+            elif 'info' in feed_name or 'news' in feed_name:
+                emoji = "ℹ️"
 
         # Build replacement dictionary (link is always long URL; shortening is per-placeholder or global)
         replacements = {

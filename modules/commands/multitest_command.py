@@ -1109,10 +1109,10 @@ class MultitestCommand(BaseCommand):
                 except (KeyError, ValueError) as e:
                     # If formatting fails, fall back to default
                     self.logger.debug(f"Error formatting multitest response: {e}, using default format")
-                    response = f"Found {path_count} unique path(s):\n{paths_text}"
+                    response = f"Paths({path_count}):\n{paths_text}"
             else:
                 # Default format
-                response = f"Found {path_count} unique path(s):\n{paths_text}"
+                response = f"Paths({path_count}):\n{paths_text}"
         else:
             # Provide more helpful error message with diagnostic info
             matching_packets = 0
@@ -1143,8 +1143,13 @@ class MultitestCommand(BaseCommand):
                 self.logger.info(f"Waiting {wait_time:.1f} seconds for rate limiter")
                 await asyncio.sleep(wait_time + 0.1)  # Small buffer
 
-        # Send the response
-        await self.send_response(message, response)
+        # Send without truncating path tokens; chunk if over DM/channel budget
+        max_len = self.get_max_message_length(message)
+        if len(response.encode("utf-8")) <= max_len:
+            await self.send_response(message, response)
+        else:
+            chunks = self.bot.command_manager.split_text_into_utf8_chunks(response, max_len)
+            await self.send_response_chunked(message, chunks)
 
         return True
 

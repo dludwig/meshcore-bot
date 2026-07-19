@@ -48,7 +48,10 @@
       "score",
       "scores"
     ],
-    "worldcup": ["wc", "worldcup"],
+    "worldcup": [
+      "wc",
+      "worldcup"
+    ],
     "stats": [
       "stats"
     ],
@@ -516,7 +519,7 @@
       "category_other": "🛰️ Other: ",
       "examples": "\nExamples:\n• satpass iss\n• satpass noaa15\n• satpass 25544\n• satpass 27607 visual (visual passes only)",
       "labels": {
-        "geostationary": "{satname} appears to be geostationary or has invalid pass data. Geostationary satellites don't have traditional passes - they remain in a fixed position relative to Earth.",
+        "geostationary": "{satname}: GEO (no LEO pass)",
         "no_passes": "{satname} has no {pass_type} passes in the next 10 days from this location",
         "invalid_norad": "Provide NORAD# example use:🛰️satpass 25544,33591"
       }

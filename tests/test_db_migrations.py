@@ -10,6 +10,7 @@ from modules.db_migrations import (
     MigrationRunner,
     _add_column,
     _column_exists,
+    _m0017_feed_queue_item_uniqueness,
 )
 
 
@@ -232,6 +233,42 @@ class TestSchema:
         runner.run()
         cursor = conn.cursor()
         assert _column_exists(cursor, "feed_message_queue", "item_id") is True
+
+    def test_feed_queue_unique_index_deduplicates_valid_ids(self, conn):
+        conn.execute(
+            """
+            CREATE TABLE feed_message_queue (
+                id INTEGER PRIMARY KEY,
+                feed_id INTEGER NOT NULL,
+                item_id TEXT,
+                sent_at TIMESTAMP
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO feed_message_queue VALUES (?, ?, ?, ?)",
+            [
+                (1, 7, "same", None),
+                (2, 7, "same", "2026-01-01"),
+                (3, 7, "same", None),
+                (4, 7, "", None),
+                (5, 7, "", None),
+                (6, 7, None, None),
+                (7, 7, None, None),
+            ],
+        )
+
+        _m0017_feed_queue_item_uniqueness(conn.cursor())
+
+        rows = conn.execute(
+            "SELECT id, item_id FROM feed_message_queue ORDER BY id"
+        ).fetchall()
+        assert rows == [(2, "same"), (4, ""), (5, ""), (6, None), (7, None)]
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO feed_message_queue (feed_id, item_id) VALUES (7, 'same')"
+            )
+        conn.execute("INSERT INTO feed_message_queue (feed_id, item_id) VALUES (7, '')")
 
     def test_foreign_key_cascade_works_when_enabled(self, runner, conn):
         conn.execute("PRAGMA foreign_keys=ON")

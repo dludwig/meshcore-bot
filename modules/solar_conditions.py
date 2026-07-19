@@ -426,7 +426,7 @@ def get_next_satellite_pass(satellite, lat=None, lon=None, use_visual=False):
                     MAX_REASONABLE_PASS_DURATION = 7200  # 2 hours in seconds (very generous upper bound)
                     if pass_duration > MAX_REASONABLE_PASS_DURATION:
                         logger.warning(f"Satellite {satname} has unreasonable pass duration: {pass_duration}s. May be geostationary or invalid data.")
-                        pass_data = f"{satname} appears to be geostationary or has invalid pass data. Geostationary satellites don't have traditional passes - they remain in a fixed position relative to Earth."
+                        pass_data = f"{satname}: GEO (no LEO pass)"
                         return pass_data
 
                     # Convert UTC timestamp to local time

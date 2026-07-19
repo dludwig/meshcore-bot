@@ -102,12 +102,12 @@ class CommandManager:
         self.banned_users = self.load_banned_users()
         self.monitor_channels = self.load_monitor_channels()
         self.channel_keywords = self.load_channel_keywords()
-        self.command_prefixes, self.require_command_prefix = load_command_prefix_settings(self.bot.config)
-        self._command_prefix_default = self.command_prefixes[0] if self.command_prefixes else ""
 
         self.bot_backup_wait_time = 15
         self.bot_channel_backup = self.load_bot_channel_backup()
         self.bot_backup_channels = list(self.bot_channel_backup.keys())
+        self.command_prefixes, self.require_command_prefix = load_command_prefix_settings(self.bot.config)
+        self._command_prefix_default = self.command_prefixes[0] if self.command_prefixes else ""
 
         # Initialize plugin loader and load all plugins
         local_commands_dir = (
@@ -1151,6 +1151,57 @@ class CommandManager:
                 self.logger.debug(f"Error recording transmission for repeat tracking: {e}")
                 # Don't fail the send if transmission tracking fails
 
+            # Central DM length guard: firmware MAX_TEXT_LEN is 160; bot budget is 158.
+            dm_max_bytes = 158
+            content_bytes = len(content.encode("utf-8"))
+            if content_bytes > dm_max_bytes:
+                chunks = self.split_text_into_utf8_chunks(content, dm_max_bytes)
+                self.logger.warning(
+                    "DM to %s exceeds %d UTF-8 bytes (%d); auto-splitting into %d chunk(s)",
+                    sanitize_name(contact_name),
+                    dm_max_bytes,
+                    content_bytes,
+                    len(chunks),
+                )
+                rate_limit_seconds = self.bot.config.getfloat("Bot", "bot_tx_rate_limit_seconds", fallback=1.0)
+                sleep_time = max(rate_limit_seconds + 0.5, 1.0)
+                for i, chunk in enumerate(chunks):
+                    if i > 0:
+                        await self.bot.bot_tx_rate_limiter.wait_for_tx()
+                        await asyncio.sleep(sleep_time)
+                        can_send_chunk, reason = await self._check_rate_limits(
+                            skip_user_rate_limit=True, rate_limit_key=rate_limit_key
+                        )
+                        if not can_send_chunk:
+                            if reason:
+                                self.logger.warning(reason)
+                            return False
+                    if not await self._send_dm_payload(contact, contact_name, chunk, rate_limit_key=rate_limit_key):
+                        self.logger.warning(
+                            "Auto-split DM failed at chunk %d of %d to %s",
+                            i + 1,
+                            len(chunks),
+                            sanitize_name(contact_name),
+                        )
+                        return False
+                return True
+
+            return await self._send_dm_payload(contact, contact_name, content, rate_limit_key=rate_limit_key)
+
+        except Exception as e:
+            self.logger.error(f"Failed to send DM: {e}")
+            return False
+
+    async def _send_dm_payload(
+        self,
+        contact: Any,
+        contact_name: str,
+        content: str,
+        *,
+        rate_limit_key: str | None = None,
+    ) -> bool:
+        """Send a single DM payload that is already within the RF byte budget."""
+        try:
             # Try to use send_msg_with_retry if available (meshcore-2.1.6+)
             try:
                 # Use the meshcore commands interface for send_msg_with_retry
@@ -1193,9 +1244,8 @@ class CommandManager:
             return self._handle_send_result(
                 result, "DM", contact_name, used_retry_method, rate_limit_key=rate_limit_key
             )
-
         except Exception as e:
-            self.logger.error(f"Failed to send DM: {e}")
+            self.logger.error(f"Failed to send DM payload: {e}")
             return False
 
     async def send_channel_message(
@@ -1685,6 +1735,53 @@ class CommandManager:
             chunks.append(text[:split_at].rstrip())
             text = text[split_at:].lstrip()
         return chunks
+
+    @staticmethod
+    def split_text_into_utf8_chunks(text: str, max_bytes: int) -> list[str]:
+        """Split *text* into chunks each at most *max_bytes* UTF-8 bytes.
+
+        Prefers splitting on newlines, then spaces; never splits mid-codepoint.
+        Returns ``[""]`` when *text* is empty.
+        """
+        if max_bytes < 1:
+            max_bytes = 1
+        if len(text.encode("utf-8")) <= max_bytes:
+            return [text]
+
+        chunks: list[str] = []
+        remaining = text
+        while remaining:
+            if len(remaining.encode("utf-8")) <= max_bytes:
+                chunks.append(remaining)
+                break
+
+            # Binary-search the largest prefix that fits in max_bytes
+            low, high = 1, len(remaining)
+            fit = 1
+            while low <= high:
+                mid = (low + high) // 2
+                if len(remaining[:mid].encode("utf-8")) <= max_bytes:
+                    fit = mid
+                    low = mid + 1
+                else:
+                    high = mid - 1
+
+            window = remaining[:fit]
+            # Prefer newline, then space, within the fitting window
+            split_at = window.rfind("\n")
+            if split_at <= 0:
+                split_at = window.rfind(" ")
+            if split_at <= 0:
+                split_at = fit
+
+            chunk = remaining[:split_at].rstrip("\n ")
+            if not chunk:
+                # Hard split — still codepoint-safe via fit
+                chunk = remaining[:fit]
+                split_at = fit
+            chunks.append(chunk)
+            remaining = remaining[split_at:].lstrip("\n ")
+        return chunks if chunks else [""]
 
     async def send_response_chunked(
         self, message: MeshMessage, chunks: list[str], *, skip_user_rate_limit_first: bool = True

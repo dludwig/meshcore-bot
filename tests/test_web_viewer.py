@@ -1205,6 +1205,86 @@ class TestFeedManagementRoutes:
         resp = client.post("/api/feeds/1/refresh")
         assert resp.status_code in (200, 404, 500)
 
+    # --- Preview formatting parity with feed_manager (Skye feedback) ---
+
+    def test_preview_emoji_field_overrides_heuristic(self, viewer):
+        item = {"title": "Road closed", "description": "", "emoji": "🔥"}
+        result = viewer._format_feed_item(item, "{emoji}", feed_name="emergency alerts")
+        assert result == "🔥"
+
+    def test_preview_emoji_field_absent_falls_back(self, viewer):
+        item = {"title": "Road closed", "description": ""}
+        result = viewer._format_feed_item(item, "{emoji}", feed_name="emergency alerts")
+        assert result == "🚨"
+
+    def test_preview_truncate_hard_no_ellipsis(self, viewer):
+        item = {"title": "Roadwork", "description": ""}
+        result = viewer._format_feed_item(item, "{title|truncate_hard:4}", feed_name="x")
+        assert result == "Road"
+
+    def test_preview_substr_start_and_length(self, viewer):
+        item = {"title": "Roadwork ahead", "description": ""}
+        result = viewer._format_feed_item(item, "{title|substr:0,4}", feed_name="x")
+        assert result == "Road"
+
+    # --- Reset feed errors (global + per-feed) ---
+
+    def _seed_feed_errors(self, viewer):
+        """Create two feeds each with one error; return their (real) feed ids."""
+        import uuid
+
+        conn = viewer._get_db_connection()
+        try:
+            cur = conn.cursor()
+            ids = []
+            for _ in range(2):
+                url = f"http://example.com/{uuid.uuid4().hex}.xml"
+                cur.execute(
+                    "INSERT INTO feed_subscriptions (feed_type, feed_url, channel_name, enabled) "
+                    "VALUES ('rss', ?, 'general', 1)",
+                    (url,),
+                )
+                fid = cur.execute("SELECT last_insert_rowid()").fetchone()[0]
+                cur.execute(
+                    "INSERT INTO feed_errors (feed_id, error_type, error_message) VALUES (?, 'network', 'boom')",
+                    (fid,),
+                )
+                ids.append(fid)
+            conn.commit()
+            return ids
+        finally:
+            conn.close()
+
+    def _error_count(self, viewer, feed_id=None):
+        conn = viewer._get_db_connection()
+        try:
+            cur = conn.cursor()
+            if feed_id is None:
+                cur.execute("SELECT COUNT(*) FROM feed_errors")
+            else:
+                cur.execute("SELECT COUNT(*) FROM feed_errors WHERE feed_id = ?", (feed_id,))
+            return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_reset_single_feed_errors(self, client, viewer):
+        fid1, fid2 = self._seed_feed_errors(viewer)
+        assert self._error_count(viewer, fid1) > 0
+        resp = client.post(f"/api/feeds/{fid1}/errors/reset")
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["success"] is True
+        # Target feed cleared, the other untouched
+        assert self._error_count(viewer, fid1) == 0
+        assert self._error_count(viewer, fid2) > 0
+
+    def test_reset_all_feed_errors(self, client, viewer):
+        self._seed_feed_errors(viewer)
+        assert self._error_count(viewer) > 0
+        resp = client.post("/api/feeds/errors/reset")
+        assert resp.status_code == 200
+        assert json.loads(resp.data)["success"] is True
+        assert self._error_count(viewer) == 0
+
 
 # ===========================================================================
 # Channel management API

@@ -509,3 +509,72 @@ class TestQueueAndProcessMessageQueue:
                 (fid, "q1"),
             ).fetchone()[0]
             assert act == 1
+
+
+class TestPollFeedPosting:
+    """poll_feed: max_items_per_check (scan window) vs max_posts_per_check (post cap)."""
+
+    def _prep(self, fm, monkeypatch, items):
+        monkeypatch.setattr(
+            "modules.feed_manager.validate_external_url", lambda *a, **k: True
+        )
+        fm._ensure_session = AsyncMock()
+        fm._wait_for_rate_limit = AsyncMock()
+        fm._update_feed_last_check = Mock()
+        fm.process_rss_feed = AsyncMock(return_value=items)
+        fm._should_send_item = lambda feed, item: item["pass"]
+        sent = AsyncMock()
+        fm._send_feed_item = sent
+        return sent
+
+    @staticmethod
+    def _feed():
+        return {
+            "id": 1,
+            "feed_type": "rss",
+            "feed_url": "http://example.com/feed.xml",
+            "channel_name": "general",
+        }
+
+    @pytest.mark.asyncio
+    async def test_posted_cap_scans_past_filtered_items(self, fm_with_db, monkeypatch):
+        fm = fm_with_db
+        fm.max_items_per_check = 100
+        fm.max_posts_per_check = 2
+        # 5 items that fail the filter followed by 5 that pass
+        items = [{"id": f"f{i}", "title": f"f{i}", "pass": False} for i in range(5)]
+        items += [{"id": f"p{i}", "title": f"p{i}", "pass": True} for i in range(5)]
+        sent = self._prep(fm, monkeypatch, items)
+
+        await fm.poll_feed(self._feed())
+
+        # Scanned past the filtered items and stopped at the posted cap
+        assert sent.call_count == 2
+        assert [c.args[1]["title"] for c in sent.call_args_list] == ["p0", "p1"]
+
+    @pytest.mark.asyncio
+    async def test_examine_window_bounds_scan(self, fm_with_db, monkeypatch):
+        fm = fm_with_db
+        fm.max_items_per_check = 3
+        fm.max_posts_per_check = 10
+        # First 3 fail; passing items sit beyond the 3-item scan window
+        items = [{"id": f"f{i}", "title": f"f{i}", "pass": False} for i in range(3)]
+        items += [{"id": f"p{i}", "title": f"p{i}", "pass": True} for i in range(3)]
+        sent = self._prep(fm, monkeypatch, items)
+
+        await fm.poll_feed(self._feed())
+
+        assert sent.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_default_parity_posts_up_to_ten(self, fm_with_db, monkeypatch):
+        fm = fm_with_db
+        # Defaults: both 10 -> same behavior as before the max_posts_per_check change
+        fm.max_items_per_check = 10
+        fm.max_posts_per_check = 10
+        items = [{"id": f"p{i}", "title": f"p{i}", "pass": True} for i in range(12)]
+        sent = self._prep(fm, monkeypatch, items)
+
+        await fm.poll_feed(self._feed())
+
+        assert sent.call_count == 10

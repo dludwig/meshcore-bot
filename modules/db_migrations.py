@@ -29,7 +29,7 @@ VALID_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # DEFAULT and a literal value.  This prevents SQL injection through the
 # definition parameter of _add_column().
 _VALID_COL_DEF = re.compile(
-    r"^[A-Z]+(?:\s+[A-Z]+)*"                      # type name, e.g. "TEXT", "INTEGER", "BOOLEAN"
+    r"^[A-Z]+(?:\s+[A-Z]+)*"  # type name, e.g. "TEXT", "INTEGER", "BOOLEAN"
     r"(?:\s+DEFAULT\s+(?:'[^']*'|[0-9.]+|NULL|CURRENT_TIMESTAMP))?"  # optional DEFAULT clause
     r"$",
     re.IGNORECASE,
@@ -64,9 +64,7 @@ def _validate_col_definition(definition: str) -> None:
         raise ValueError(f"Invalid column definition: {definition!r}")
 
 
-def _add_column(
-    cursor: sqlite3.Cursor, table: str, column: str, definition: str
-) -> None:
+def _add_column(cursor: sqlite3.Cursor, table: str, column: str, definition: str) -> None:
     """Add *column* to *table* if it does not already exist."""
     _validate_ident(table, "table")
     _validate_ident(column, "column")
@@ -222,10 +220,7 @@ def _m0005_feed_message_queue_item_fields(cursor: sqlite3.Cursor) -> None:
     _add_column(cursor, "feed_message_queue", "item_id", "TEXT")
     _add_column(cursor, "feed_message_queue", "item_title", "TEXT")
     _add_column(cursor, "feed_message_queue", "priority", "INTEGER DEFAULT 0")
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_fmq_priority "
-        "ON feed_message_queue(priority DESC, queued_at ASC)"
-    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_fmq_priority ON feed_message_queue(priority DESC, queued_at ASC)")
 
 
 def _m0006_channel_operations_payload_data(cursor: sqlite3.Cursor) -> None:
@@ -250,9 +245,7 @@ def _m0007_packet_stream_table(cursor: sqlite3.Cursor) -> None:
         )
         """
     )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_packet_stream_timestamp ON packet_stream(timestamp)"
-    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_packet_stream_timestamp ON packet_stream(timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_packet_stream_type ON packet_stream(type)")
 
 
@@ -305,14 +298,10 @@ def _m0009_repeater_optional_indexes(cursor: sqlite3.Cursor) -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_unique_advert_date_pubkey ON unique_advert_packets(date, public_key)"
         )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_unique_advert_hash ON unique_advert_packets(packet_hash)"
-        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_unique_advert_hash ON unique_advert_packets(packet_hash)")
 
     if _table_exists(cursor, "mesh_connections"):
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_from_prefix ON mesh_connections(from_prefix)"
-        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_from_prefix ON mesh_connections(from_prefix)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_to_prefix ON mesh_connections(to_prefix)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_last_seen ON mesh_connections(last_seen)")
 
@@ -333,9 +322,7 @@ def _m0009_repeater_optional_indexes(cursor: sqlite3.Cursor) -> None:
         cursor.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_observed_paths_message_unique ON observed_paths(from_prefix, to_prefix, path_hex, packet_type) WHERE public_key IS NULL"
         )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_observed_paths_last_seen ON observed_paths(last_seen)"
-        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_observed_paths_last_seen ON observed_paths(last_seen)")
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_observed_paths_type_seen ON observed_paths(packet_type, last_seen)"
         )
@@ -530,6 +517,62 @@ def _m0014_observed_paths_multibyte_covering_index(cursor: sqlite3.Cursor) -> No
     )
 
 
+def _m0015_channel_operations_claimed_at(cursor: sqlite3.Cursor) -> None:
+    """Record when a queued hardware/config operation is durably claimed.
+
+    A ``processing`` row is deliberately not auto-requeued: after a process
+    crash the device may already have applied the operation, so retrying it
+    automatically could execute a non-idempotent command twice.  ``claimed_at``
+    gives operators enough information to diagnose and explicitly resolve such
+    an ambiguous operation.
+    """
+    if _table_exists(cursor, "channel_operations"):
+        _add_column(cursor, "channel_operations", "claimed_at", "TIMESTAMP")
+
+
+def _m0016_channel_operations_claim_owner(cursor: sqlite3.Cursor) -> None:
+    """Persist enough local-process identity to recover only provably dead claims."""
+    if not _table_exists(cursor, "channel_operations"):
+        return
+    _add_column(cursor, "channel_operations", "claim_owner_host", "TEXT")
+    _add_column(cursor, "channel_operations", "claim_owner_pid", "INTEGER")
+    _add_column(cursor, "channel_operations", "claim_owner_boot_id", "TEXT")
+
+
+def _m0017_feed_queue_item_uniqueness(cursor: sqlite3.Cursor) -> None:
+    """Deduplicate identifiable queue items and prevent future duplicates.
+
+    Blank and NULL item IDs deliberately remain unconstrained: without a stable
+    provider identifier they cannot safely be treated as the same feed item.
+    For duplicate valid IDs, retain a sent row when one exists (otherwise the
+    oldest queued row) so migration does not resurrect already-delivered work.
+    """
+    if not _table_exists(cursor, "feed_message_queue"):
+        return
+    cursor.execute(
+        """
+        DELETE FROM feed_message_queue
+        WHERE item_id IS NOT NULL AND trim(item_id) <> ''
+          AND id NOT IN (
+              SELECT COALESCE(
+                         MIN(CASE WHEN sent_at IS NOT NULL THEN id END),
+                         MIN(id)
+                     )
+              FROM feed_message_queue
+              WHERE item_id IS NOT NULL AND trim(item_id) <> ''
+              GROUP BY feed_id, item_id
+          )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fmq_feed_item_unique
+        ON feed_message_queue(feed_id, item_id)
+        WHERE item_id IS NOT NULL AND trim(item_id) <> ''
+        """
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -551,6 +594,9 @@ MIGRATIONS: list[MigrationEntry] = [
     (12, "purging_log: add details column", _m0012_purging_log_details_column),
     (13, "observed_paths: advert covering index for contacts page", _m0013_observed_paths_advert_covering_index),
     (14, "observed_paths: multibyte covering index for mesh graph", _m0014_observed_paths_multibyte_covering_index),
+    (15, "channel_operations: claimed_at", _m0015_channel_operations_claimed_at),
+    (16, "channel_operations: claim owner identity", _m0016_channel_operations_claim_owner),
+    (17, "feed_message_queue: unique identifiable items", _m0017_feed_queue_item_uniqueness),
 ]
 
 
@@ -583,9 +629,7 @@ class MigrationRunner:
             )
         """)
         # Legacy DBs may have been created without a uniqueness constraint.
-        self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_version_version ON schema_version(version)"
-        )
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_version_version ON schema_version(version)")
 
     def _applied_versions(self) -> set[int]:
         cursor = self.conn.execute("SELECT version FROM schema_version")
@@ -631,6 +675,5 @@ class MigrationRunner:
             raise
 
         self.logger.info(
-            f"Database migrations complete: {len(pending)} applied, "
-            f"schema now at version {pending[-1][0]}"
+            f"Database migrations complete: {len(pending)} applied, schema now at version {pending[-1][0]}"
         )

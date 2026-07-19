@@ -45,6 +45,7 @@ CANONICAL_NON_COMMAND_SECTIONS = frozenset({
     "Localization",
     "Admin_ACL",
     "Plugin_Overrides",
+    "Service_Overrides",
     "Companion_Purge",
     "Keywords",
     "RandomLine",
@@ -315,5 +316,9 @@ def validate_config(config_path: str) -> list[tuple[str, str]]:
             else:
                 msg = f"Unknown section [{section_stripped}] (not in canonical list and not a *_Command section)."
             results.append((SEVERITY_INFO, msg))
+
+    from modules.config_schema import validate_config_keys
+
+    results.extend(validate_config_keys(config))
 
     return results

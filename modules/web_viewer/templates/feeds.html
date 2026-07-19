@@ -50,9 +50,14 @@
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Feed Subscriptions</h5>
-                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addFeedModal">
-                        <i class="fas fa-plus"></i> Add Feed
-                    </button>
+                    <div>
+                        <button class="btn btn-outline-secondary me-2" onclick="feedManager.resetAllErrors()" title="Clear recorded errors for all feeds">
+                            <i class="fas fa-eraser"></i> Reset Errors
+                        </button>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addFeedModal">
+                            <i class="fas fa-plus"></i> Add Feed
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
@@ -212,7 +217,8 @@
     &quot;id_field&quot;: &quot;AlertID&quot;,
     &quot;title_field&quot;: &quot;HeadlineDescription&quot;,
     &quot;description_field&quot;: &quot;ExtendedDescription&quot;,
-    &quot;timestamp_field&quot;: &quot;LastUpdatedTime&quot;
+    &quot;timestamp_field&quot;: &quot;LastUpdatedTime&quot;,
+    &quot;emoji_field&quot;: &quot;emoji&quot;
   }
 }"></textarea>
                                     <small class="form-text text-muted mt-2 d-block">
@@ -916,7 +922,9 @@ class FeedManager {
                         })()}</p>
                         <p><strong>Last Item:</strong> ${feed.last_item_id ? feed.last_item_id.substring(0, 30) + '...' : 'None'}</p>
                         <p><strong>Total Items:</strong> ${feed.activity?.length || 0}</p>
-                        <p><strong>Errors:</strong> ${feed.errors?.length || 0}</p>
+                        <p><strong>Errors:</strong> ${feed.errors?.length || 0}
+                            ${(feed.errors?.length || 0) > 0 ? `<button class="btn btn-sm btn-outline-secondary ms-2" onclick="feedManager.resetFeedErrors(${feedId})" title="Clear recorded errors for this feed"><i class="fas fa-eraser"></i> Reset</button>` : ''}
+                        </p>
                     </div>
                 </div>
             `;
@@ -975,7 +983,47 @@ class FeedManager {
             this.showError('Error deleting feed: ' + error.message);
         }
     }
-    
+
+    async resetAllErrors() {
+        if (!confirm('Reset error counts for ALL feeds? This clears the recorded error history.')) {
+            return;
+        }
+        try {
+            const response = await fetch('/api/feeds/errors/reset', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (response.ok) {
+                this.showSuccess('Feed errors reset');
+                await this.loadFeeds();
+            } else {
+                const result = await response.json();
+                this.showError(result.error || 'Failed to reset feed errors');
+            }
+        } catch (error) {
+            this.showError('Error resetting feed errors: ' + error.message);
+        }
+    }
+
+    async resetFeedErrors(feedId) {
+        try {
+            const response = await fetch(`/api/feeds/${feedId}/errors/reset`, {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (response.ok) {
+                this.showSuccess('Feed errors reset');
+                await this.loadFeeds();
+                await this.viewFeed(feedId);
+            } else {
+                const result = await response.json();
+                this.showError(result.error || 'Failed to reset feed errors');
+            }
+        } catch (error) {
+            this.showError('Error resetting feed errors: ' + error.message);
+        }
+    }
+
     showError(message) {
         const alert = document.createElement('div');
         alert.className = 'alert alert-danger alert-dismissible fade show position-fixed';

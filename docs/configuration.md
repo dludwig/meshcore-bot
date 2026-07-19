@@ -20,6 +20,20 @@ The main sections include:
 | `[Weather]` | Units and settings shared by `wx` / `gwx` and Weather Service |
 | `[Logging]` | Log file path and level |
 
+### Connection: type and precedence
+
+`connection_type` in `[Connection]` selects the transport. **Only the matching keys are read**; other keys in the section are ignored at runtime (no error).
+
+| `connection_type` | Keys used | Notes |
+|-------------------|-----------|--------|
+| `serial` | `serial_port` | USB serial device path |
+| `ble` | `ble_device_name` | Empty = auto-detect first BLE device |
+| `tcp` | `hostname`, `tcp_port` | `hostname` required; `tcp_port` defaults to 5000 |
+
+Do not use `host` or `port` under `[Connection]` — those names are for `[Web_Viewer]` and `[Webhook]` listen addresses. TCP client connect uses `hostname` and `tcp_port`.
+
+`config.ini.example` lists all connection keys uncommented so the config TUI and migrate tool recognize them. Lean templates (`minimal-example`, `quickstart`) comment out BLE/TCP keys by default because they ship with `connection_type = serial`.
+
 ### Connection: transport reconnect
 
 `[Connection]` options `reconnect_max_retries` (0 = unlimited), `reconnect_delay_seconds`, and `reconnect_max_delay_seconds` apply to **serial, BLE, and TCP**. When the meshcore transport drops, the bot schedules reconnect with exponential backoff.
@@ -136,6 +150,13 @@ Under `[Bot]`:
 - **`require_command_prefix`** – When `true` (default), messages must start with a configured prefix. When `false`, configured prefix(es) are stripped when present but bare commands also work. Ignored when `command_prefix` is empty.
 
 Full reference: see `config.ini.example` in the repository for every section and option, with inline comments.
+
+### Config templates
+
+- **`config.ini.example`** – Authoritative full reference; edit this when adding options or sections.
+- **`config.ini.minimal-example`** – Lean config for core testing commands only (ping, version, test, path, prefix, multitest). Hand-maintained; see its header for purpose. Point users to `config.ini.example` for full options when enabling more features.
+- **`config.ini.quickstart`** – Short easy-start config with a few common commands enabled. Hand-maintained.
+- **`scripts/config_tui.py`** (`make config`) – Uses documented keys from `config.ini.example` (including commented `#key =` lines) for validation and migrate.
 
 ## Data retention
 

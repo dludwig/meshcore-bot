@@ -718,23 +718,15 @@ class MeshCoreBot:
         """
         default_config = """[Connection]
 # Connection type: serial, ble, or tcp
-# serial: Connect via USB serial port
-# ble: Connect via Bluetooth Low Energy
-# tcp: Connect via TCP/IP
+# Precedence: only keys for the active connection_type are used; others are ignored.
+#   serial -> serial_port | ble -> ble_device_name | tcp -> hostname, tcp_port
 connection_type = serial
 
-# Serial port (for serial connection)
-# Common ports: /dev/ttyUSB0, /dev/tty.usbserial-*, COM3 (Windows)
 serial_port = /dev/ttyUSB0
 
-# BLE device name (for BLE connection)
-# Leave commented out for auto-detection, or specify exact device name
-#ble_device_name = MeshCore
-
-# TCP hostname or IP address (for TCP connection)
-#hostname = 192.168.1.60
-# TCP port (for TCP connection)
-#tcp_port = 5000
+ble_device_name =
+hostname =
+tcp_port = 5000
 
 # Connection timeout in seconds
 timeout = 30
