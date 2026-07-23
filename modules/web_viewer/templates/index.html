@@ -61,8 +61,7 @@
                         </div>
                         <h3 class="text-primary mb-1">
                             <a href="#" id="connected-clients" class="text-primary text-decoration-none"
-                               data-bs-toggle="modal" data-bs-target="#connectedClientsModal"
-                               onclick="window.dashboard && window.dashboard.loadConnectedClients()">0</a>
+                               data-bs-toggle="modal" data-bs-target="#connectedClientsModal">0</a>
                         </h3>
                         <small class="text-muted text-uppercase">Connected Clients</small>
                     </div>
@@ -429,17 +428,17 @@
                         </div>
                     </div>
                     <!-- Scroll buttons -->
-                    <button class="btn btn-sm btn-outline-secondary" id="live-scroll-top" onclick="scrollLiveFeed('top')" title="Scroll to newest">
+                    <button class="btn btn-sm btn-outline-secondary" id="live-scroll-top" title="Scroll to newest">
                         <i class="fas fa-arrow-up"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-secondary" id="live-scroll-bottom" onclick="scrollLiveFeed('bottom')" title="Scroll to oldest">
+                    <button class="btn btn-sm btn-outline-secondary" id="live-scroll-bottom" title="Scroll to oldest">
                         <i class="fas fa-arrow-down"></i>
                     </button>
                     <span id="live-count" class="badge bg-secondary">0</span>
-                    <button class="btn btn-sm btn-outline-secondary" id="live-pause-btn" onclick="toggleLivePause()">
+                    <button class="btn btn-sm btn-outline-secondary" id="live-pause-btn">
                         <i class="fas fa-pause" id="live-pause-icon"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="clearLiveFeed()">
+                    <button class="btn btn-sm btn-outline-secondary" id="live-clear-btn">
                         <i class="fas fa-trash-alt"></i>
                     </button>
                     <a href="/realtime" class="btn btn-sm btn-outline-primary">
@@ -494,7 +493,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script>
+<script nonce="{{ g.csp_nonce }}">
 class ModernDashboard {
     constructor() {
         this.botStartTime = null;
@@ -935,8 +934,7 @@ class ModernDashboard {
             if (data.top_commands && data.top_commands.length > 0) {
                 this.updateTopCommands(data.top_commands);
             } else {
-                const container = document.getElementById('top-commands-list');
-                container.innerHTML = '<div class="text-muted text-center">No commands found</div>';
+                this.setEmptyList('top-commands-list', 'No commands found');
             }
         } catch (error) {
             console.error('Error loading top commands:', error);
@@ -945,15 +943,19 @@ class ModernDashboard {
     
     updateTopCommands(commands) {
         const container = document.getElementById('top-commands-list');
-        container.innerHTML = commands.map((cmd, index) => `
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div class="d-flex align-items-center">
-                    <span class="badge bg-primary me-2">${index + 1}</span>
-                    <span class="fw-bold">${cmd.command}</span>
-                </div>
-                <span class="badge bg-secondary">${cmd.count} uses</span>
-            </div>
-        `).join('');
+        container.replaceChildren();
+        commands.forEach((cmd, index) => {
+            const row = document.createElement('div');
+            row.className = 'd-flex justify-content-between align-items-center mb-2';
+            const identity = document.createElement('div');
+            identity.className = 'd-flex align-items-center';
+            identity.append(
+                this.makeBadge(index + 1, 'bg-primary me-2'),
+                this.makeTextElement('span', cmd.command, 'fw-bold'),
+            );
+            row.append(identity, this.makeBadge(`${cmd.count} uses`, 'bg-secondary'));
+            container.appendChild(row);
+        });
     }
     
     async loadTopUsers(timeWindow = 'all') {
@@ -969,8 +971,7 @@ class ModernDashboard {
             if (data.top_users && data.top_users.length > 0) {
                 this.updateTopUsers(data.top_users);
             } else {
-                const container = document.getElementById('top-users-list');
-                container.innerHTML = '<div class="text-muted text-center">No users found</div>';
+                this.setEmptyList('top-users-list', 'No users found');
             }
         } catch (error) {
             console.error('Error loading top users:', error);
@@ -979,15 +980,19 @@ class ModernDashboard {
     
     updateTopUsers(users) {
         const container = document.getElementById('top-users-list');
-        container.innerHTML = users.map((user, index) => `
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div class="d-flex align-items-center">
-                    <span class="badge bg-success me-2">${index + 1}</span>
-                    <span class="fw-bold text-truncate" style="max-width: 200px;" title="${user.user}">${user.user}</span>
-                </div>
-                <span class="badge bg-info">${user.count} messages</span>
-            </div>
-        `).join('');
+        container.replaceChildren();
+        users.forEach((user, index) => {
+            const row = document.createElement('div');
+            row.className = 'd-flex justify-content-between align-items-center mb-2';
+            const identity = document.createElement('div');
+            identity.className = 'd-flex align-items-center';
+            const username = this.makeTextElement('span', user.user, 'fw-bold text-truncate');
+            username.style.maxWidth = '200px';
+            username.title = String(user.user ?? '');
+            identity.append(this.makeBadge(index + 1, 'bg-success me-2'), username);
+            row.append(identity, this.makeBadge(`${user.count} messages`, 'bg-info'));
+            container.appendChild(row);
+        });
     }
     
     async loadLongestPaths(timeWindow = 'all') {
@@ -1003,8 +1008,7 @@ class ModernDashboard {
             if (data.top_paths && data.top_paths.length > 0) {
                 this.updateLongestPaths(data.top_paths);
             } else {
-                const container = document.getElementById('longest-paths-list');
-                container.innerHTML = '<div class="text-muted text-center">No paths found</div>';
+                this.setEmptyList('longest-paths-list', 'No paths found');
             }
         } catch (error) {
             console.error('Error loading longest paths:', error);
@@ -1013,21 +1017,34 @@ class ModernDashboard {
     
     updateLongestPaths(paths) {
         const container = document.getElementById('longest-paths-list');
-        container.innerHTML = paths.map((path, index) => `
-            <div class="mb-3 p-2 border rounded">
-                <div class="d-flex align-items-center mb-2">
-                    <span class="badge bg-warning me-2">${index + 1}</span>
-                    <span class="fw-bold text-truncate" style="max-width: 150px;" title="${path.user}">${path.user}</span>
-                    <span class="badge bg-danger ms-2">${path.path_length} hops</span>
-                </div>
-                <div class="small text-muted mb-1">
-                    <code class="text-break" style="word-break: break-all; font-size: 0.75rem;">${path.path_string}</code>
-                </div>
-                <div class="small text-muted">
-                    ${new Date(path.timestamp * 1000).toLocaleString()}
-                </div>
-            </div>
-        `).join('');
+        container.replaceChildren();
+        paths.forEach((path, index) => {
+            const card = document.createElement('div');
+            card.className = 'mb-3 p-2 border rounded';
+            const heading = document.createElement('div');
+            heading.className = 'd-flex align-items-center mb-2';
+            const username = this.makeTextElement('span', path.user, 'fw-bold text-truncate');
+            username.style.maxWidth = '150px';
+            username.title = String(path.user ?? '');
+            heading.append(
+                this.makeBadge(index + 1, 'bg-warning me-2'),
+                username,
+                this.makeBadge(`${path.path_length} hops`, 'bg-danger ms-2'),
+            );
+            const pathLine = document.createElement('div');
+            pathLine.className = 'small text-muted mb-1';
+            const pathCode = this.makeTextElement('code', path.path_string, 'text-break');
+            pathCode.style.wordBreak = 'break-all';
+            pathCode.style.fontSize = '0.75rem';
+            pathLine.appendChild(pathCode);
+            const timestamp = this.makeTextElement(
+                'div',
+                new Date(Number(path.timestamp) * 1000).toLocaleString(),
+                'small text-muted',
+            );
+            card.append(heading, pathLine, timestamp);
+            container.appendChild(card);
+        });
     }
     
     async loadTopChannels(timeWindow = 'all') {
@@ -1043,8 +1060,7 @@ class ModernDashboard {
             if (data.top_channels && data.top_channels.length > 0) {
                 this.updateTopChannels(data.top_channels);
             } else {
-                const container = document.getElementById('top-channels-list');
-                container.innerHTML = '<div class="text-muted text-center">No channels found</div>';
+                this.setEmptyList('top-channels-list', 'No channels found');
             }
         } catch (error) {
             console.error('Error loading top channels:', error);
@@ -1053,28 +1069,52 @@ class ModernDashboard {
     
     updateTopChannels(channels) {
         const container = document.getElementById('top-channels-list');
-        container.innerHTML = channels.map((channel, index) => `
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <div class="d-flex align-items-center">
-                    <span class="badge bg-primary me-2">${index + 1}</span>
-                    <span class="fw-bold text-truncate" style="max-width: 200px;" title="${channel.channel}">${channel.channel}</span>
-                </div>
-                <div class="text-end">
-                    <span class="badge bg-secondary me-1">${channel.messages} msgs</span>
-                    <span class="badge bg-info">${channel.users} users</span>
-                </div>
-            </div>
-        `).join('');
+        container.replaceChildren();
+        channels.forEach((channel, index) => {
+            const row = document.createElement('div');
+            row.className = 'd-flex justify-content-between align-items-center mb-2';
+            const identity = document.createElement('div');
+            identity.className = 'd-flex align-items-center';
+            const channelName = this.makeTextElement('span', channel.channel, 'fw-bold text-truncate');
+            channelName.style.maxWidth = '200px';
+            channelName.title = String(channel.channel ?? '');
+            identity.append(this.makeBadge(index + 1, 'bg-primary me-2'), channelName);
+            const counts = document.createElement('div');
+            counts.className = 'text-end';
+            counts.append(
+                this.makeBadge(`${channel.messages} msgs`, 'bg-secondary me-1'),
+                this.makeBadge(`${channel.users} users`, 'bg-info'),
+            );
+            row.append(identity, counts);
+            container.appendChild(row);
+        });
+    }
+
+    makeTextElement(tagName, value, className = '') {
+        const element = document.createElement(tagName);
+        element.className = className;
+        element.textContent = String(value ?? '');
+        return element;
+    }
+
+    makeBadge(value, classes) {
+        return this.makeTextElement('span', value, `badge ${classes}`);
+    }
+
+    setEmptyList(containerId, message) {
+        const empty = this.makeTextElement('div', message, 'text-muted text-center');
+        document.getElementById(containerId).replaceChildren(empty);
     }
     
     updateDatabaseStatus(status, type) {
         const statusElement = document.getElementById('database-status');
-        statusElement.innerHTML = `
-            <div class="d-flex align-items-center justify-content-center mb-2">
-                <span class="status-indicator status-${type} me-2"></span>
-                <span>${status}</span>
-            </div>
-        `;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'd-flex align-items-center justify-content-center mb-2';
+        const indicator = document.createElement('span');
+        const safeType = ['success', 'danger', 'warning'].includes(type) ? type : 'warning';
+        indicator.className = `status-indicator status-${safeType} me-2`;
+        wrapper.append(indicator, this.makeTextElement('span', status));
+        statusElement.replaceChildren(wrapper);
     }
     
     updateUptime() {
@@ -1168,7 +1208,7 @@ class ModernDashboard {
         loading.style.display = '';
         empty.style.display   = 'none';
         table.style.display   = 'none';
-        tbody.innerHTML       = '';
+        tbody.replaceChildren();
         try {
             const resp = await fetch('/api/connected_clients');
             const clients = await resp.json();
@@ -1186,7 +1226,11 @@ class ModernDashboard {
                     ? new Date(c.last_activity * 1000).toLocaleTimeString()
                     : '—';
                 const tr = document.createElement('tr');
-                tr.innerHTML = `<td><code>${c.client_id}</code></td><td>${connAt}</td><td>${lastAct}</td>`;
+                const clientCell = document.createElement('td');
+                clientCell.appendChild(this.makeTextElement('code', c.client_id));
+                const connectedCell = this.makeTextElement('td', connAt);
+                const activityCell = this.makeTextElement('td', lastAct);
+                tr.append(clientCell, connectedCell, activityCell);
                 tbody.appendChild(tr);
             }
         } catch (e) {
@@ -1199,10 +1243,14 @@ class ModernDashboard {
     showError(message) {
         const errorDiv = document.createElement('div');
         errorDiv.className = 'alert alert-danger alert-dismissible fade show';
-        errorDiv.innerHTML = `
-            ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        `;
+        const errorText = document.createElement('span');
+        errorText.textContent = String(message ?? '');
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.className = 'btn-close';
+        closeButton.setAttribute('data-bs-dismiss', 'alert');
+        closeButton.setAttribute('aria-label', 'Close');
+        errorDiv.append(errorText, closeButton);
         
         // Insert at the top of the content
         const content = document.querySelector('.container-fluid');
@@ -1242,6 +1290,10 @@ function initMultibyteCapableTooltips() {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM loaded, initializing dashboard...');
     window.dashboard = new ModernDashboard();
+    document.getElementById('connected-clients')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        window.dashboard.loadConnectedClients();
+    });
     initMultibyteCapableTooltips();
 });
 
@@ -1253,7 +1305,7 @@ window.addEventListener('beforeunload', () => {
 });
 </script>
 
-<script>
+<script nonce="{{ g.csp_nonce }}">
 // ── Live Activity Feed (SocketIO) ─────────────────────────────────────────────
 (function () {
     const feed      = document.getElementById('live-feed');
@@ -1269,10 +1321,6 @@ window.addEventListener('beforeunload', () => {
         command: '#198754',
         message: '#0dcaf0',
     };
-
-    function escHtml(s) {
-        return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
 
     // Track active type filters
     const activeFilters = { packet: true, command: true, message: true };
@@ -1301,7 +1349,15 @@ window.addEventListener('beforeunload', () => {
         const el = document.createElement('div');
         el.dataset.type = type;
         el.style.cssText = `border-left:3px solid ${color};padding:3px 8px;margin-bottom:3px;font-size:0.82rem;border-radius:2px;`;
-        el.innerHTML = `<span class="text-muted me-2">${ts}</span><strong>${escHtml(label)}</strong> <span class="text-muted">${escHtml(text)}</span>`;
+        const time = document.createElement('span');
+        time.className = 'text-muted me-2';
+        time.textContent = ts;
+        const entryLabel = document.createElement('strong');
+        entryLabel.textContent = String(label ?? '');
+        const entryText = document.createElement('span');
+        entryText.className = 'text-muted';
+        entryText.textContent = ` ${String(text ?? '')}`;
+        el.append(time, entryLabel, entryText);
         if (!activeFilters[type]) el.style.display = 'none';
         feed.insertBefore(el, feed.firstChild);
         total++;
@@ -1317,13 +1373,17 @@ window.addEventListener('beforeunload', () => {
         icon.className = paused ? 'fas fa-play' : 'fas fa-pause';
     };
     window.clearLiveFeed = function () {
-        feed.innerHTML = '';
+        feed.replaceChildren();
         total = 0;
         countBadge.textContent = '0';
     };
     window.scrollLiveFeed = function (dir) {
         feed.scrollTop = dir === 'top' ? 0 : feed.scrollHeight;
     };
+    document.getElementById('live-pause-btn')?.addEventListener('click', window.toggleLivePause);
+    document.getElementById('live-clear-btn')?.addEventListener('click', window.clearLiveFeed);
+    document.getElementById('live-scroll-top')?.addEventListener('click', () => window.scrollLiveFeed('top'));
+    document.getElementById('live-scroll-bottom')?.addEventListener('click', () => window.scrollLiveFeed('bottom'));
 
     const socket = window.connectionManager.socket;
 

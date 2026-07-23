@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -31,6 +32,7 @@ from flask import (
     Response,
     abort,
     current_app,
+    g,
     jsonify,
     make_response,
     redirect,
@@ -42,9 +44,17 @@ from flask import (
 )
 from flask_socketio import SocketIO, disconnect, emit
 
+from modules.database_restore import (
+    DEFAULT_MAX_RESTORE_BYTES,
+    DatabaseRestoreError,
+    stage_database_restore,
+)
 from modules.ini_writer import update_ini_values
 from modules.security_utils import (
     VALID_JOURNAL_MODES,
+    SafeUrlPolicy,
+    create_safe_requests_session,
+    safe_requests_request,
     validate_external_url,
     validate_sql_identifier,
 )
@@ -112,12 +122,50 @@ def _strip_ansi_codes(text: str) -> str:
 
 
 from modules.config_snapshot import config_to_redacted_sections
-from modules.feed_manager import FeedManager
+from modules.feed_manager import (
+    DEFAULT_MAX_FEED_RESPONSE_BYTES,
+    DEFAULT_MAX_PARSED_FEED_ITEMS,
+    FeedManager,
+    _useful_feed_content_type,
+)
 from modules.repeater_manager import RepeaterManager
 from modules.url_shortener import _coerce_url_string
 from modules.utils import resolve_path
 from modules.web_viewer.config_panels import CONFIG_PANELS, PANEL_CATEGORIES
 from modules.web_viewer.integration import normalized_web_viewer_password
+
+
+def _read_limited_requests_response(
+    response: Any,
+    *,
+    max_bytes: int,
+    feed_type: str,
+) -> bytes:
+    """Read a streamed, decompressed requests response under a hard byte cap."""
+    response.raise_for_status()
+    content_type = response.headers.get('Content-Type', '')
+    if not _useful_feed_content_type(content_type, feed_type):
+        raise ValueError(f"Unexpected {feed_type.upper()} content type: {content_type}")
+
+    declared_length = response.headers.get('Content-Length')
+    if declared_length:
+        try:
+            content_length = int(declared_length)
+        except ValueError:
+            content_length = None
+        if content_length is not None and content_length > max_bytes:
+            raise ValueError(f"Feed response exceeds {max_bytes} byte limit")
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024, decode_unicode=False):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"Feed response exceeds {max_bytes} byte limit")
+        chunks.append(chunk)
+    return b''.join(chunks)
 
 
 class BotDataViewer:
@@ -621,6 +669,11 @@ class BotDataViewer:
         ])
 
         @self.app.before_request
+        def create_csp_nonce():
+            """Create a per-response nonce for templates migrated off inline-script CSP."""
+            g.csp_nonce = secrets.token_urlsafe(24)
+
+        @self.app.before_request
         def require_auth():
             if not self.web_viewer_password:
                 return  # Auth disabled — no password configured
@@ -664,10 +717,33 @@ class BotDataViewer:
             response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
             # Allow CDNs used by templates (base.html, login.html, mesh.html).
             # Without these hosts, browsers block external CSS/JS/fonts (not CSRF).
+            # The highest-risk admin screens have migrated their inline handlers
+            # and authorize their remaining template scripts with a per-request
+            # nonce. Other legacy screens retain unsafe-inline until their inline
+            # scripts/handlers are migrated, rather than silently breaking them.
+            nonce_hardened_endpoints = {
+                'index',
+                'feeds',
+                'config_page',
+                'radio',
+                'realtime',
+                'contacts',
+                'stats',
+                'plugins_page',
+                'greeter',
+                'logs',
+                'multibyte_rollout',
+                'mesh',
+                'api_explorer',
+            }
+            if request.endpoint in nonce_hardened_endpoints:
+                script_source = f"script-src 'self' 'nonce-{g.csp_nonce}' "
+            else:
+                script_source = "script-src 'self' 'unsafe-inline' "
             response.headers['Content-Security-Policy'] = (
                 "default-src 'self'; "
-                "script-src 'self' 'unsafe-inline' "
-                "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
+                + script_source
+                + "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
                 "style-src 'self' 'unsafe-inline' "
                 "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
                 "img-src 'self' data: https://*.tile.openstreetmap.org "
@@ -1535,10 +1611,11 @@ class BotDataViewer:
 
         @self.app.route('/api/maintenance/restore', methods=['POST'])
         def api_maintenance_restore():
-            """Restore DB from a backup file.
+            """Stage a verified DB backup for the next full service restart.
 
             Body: {"db_file": "/absolute/path/to/backup.db"}
-            The active DB is overwritten; the caller must restart the bot.
+            The active DB is never modified by this request.  Normal bot startup
+            applies the sibling pending file before any DB connection is opened.
             """
             try:
                 data = request.get_json(silent=True) or {}
@@ -1574,25 +1651,37 @@ class BotDataViewer:
 
                 if not src.exists():
                     return jsonify({'error': f'File not found: {db_file}'}), 400
-                # Validate it is a real SQLite file by checking the magic header
-                _SQLITE_MAGIC = b"SQLite format 3\x00"
                 try:
-                    with open(str(src), 'rb') as _fh:
-                        _header = _fh.read(16)
-                    if _header != _SQLITE_MAGIC:
-                        raise ValueError("bad magic")
-                except Exception:
-                    return jsonify({'error': f'Not a valid SQLite file: {db_file}'}), 400
-                # Copy to active DB path
-                import shutil
-                shutil.copy2(str(src), self.db_path)
-                self.logger.info(f"Database restored from {src} to {self.db_path}")
+                    max_restore_bytes = self.config.getint(
+                        'Web_Viewer',
+                        'restore_max_bytes',
+                        fallback=DEFAULT_MAX_RESTORE_BYTES,
+                    )
+                    pending = stage_database_restore(
+                        src,
+                        self.db_path,
+                        max_bytes=max_restore_bytes,
+                    )
+                except (DatabaseRestoreError, OSError, ValueError) as exc:
+                    self.logger.warning("Database restore staging rejected for %s: %s", src, exc)
+                    return jsonify({'error': str(exc)}), 400
+
+                self.logger.warning(
+                    "Database restore staged from %s at %s; a full service restart is required",
+                    src,
+                    pending,
+                )
                 return jsonify({
                     'success': True,
-                    'restored_from': db_file,
+                    'staged_from': db_file,
+                    'pending_path': str(pending),
                     'active_db': self.db_path,
-                    'warning': 'Restart the bot for the restored database to take effect.',
-                })
+                    'requires_restart': True,
+                    'warning': (
+                        'Restore verified and staged. Restart the complete MeshCore Bot service '
+                        'to apply it before any database writer starts.'
+                    ),
+                }), 202
             except Exception as e:
                 self.logger.error(f"Error in restore: {e}", exc_info=True)
                 return jsonify({'error': str(e)}), 500
@@ -3450,7 +3539,7 @@ class BotDataViewer:
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT status, error_message, result_data, processed_at
+                    SELECT status, error_message, result_data, processed_at, claimed_at
                     FROM channel_operations
                     WHERE id = ?
                 ''', (operation_id,))
@@ -3460,12 +3549,13 @@ class BotDataViewer:
                 if not result:
                     return jsonify({'error': 'Operation not found'}), 404
 
-                status, error_msg, result_data, processed_at = result
+                status, error_msg, result_data, processed_at, claimed_at = result
 
                 return jsonify({
                     'operation_id': operation_id,
                     'status': status,
                     'error_message': error_msg,
+                    'claimed_at': claimed_at,
                     'processed_at': processed_at,
                     'result_data': json.loads(result_data) if result_data else None
                 })
@@ -6677,7 +6767,6 @@ class BotDataViewer:
         from datetime import datetime
 
         import feedparser
-        import requests
 
         try:
             items = []
@@ -6701,17 +6790,53 @@ class BotDataViewer:
                 if self.config.has_section('Feed_Manager')
                 else feed_command_allow_private
             )
-            if not validate_external_url(feed_url, allow_private=allow_private_feeds):
+            url_policy = SafeUrlPolicy(allow_private=allow_private_feeds)
+            if not url_policy.validate(feed_url):
                 raise ValueError("Invalid or unsafe feed URL")
+            max_response_bytes = max(
+                1024,
+                self.config.getint(
+                    'Feed_Manager',
+                    'max_response_bytes',
+                    fallback=DEFAULT_MAX_FEED_RESPONSE_BYTES,
+                )
+                if self.config.has_section('Feed_Manager')
+                else DEFAULT_MAX_FEED_RESPONSE_BYTES,
+            )
+            max_parsed_items = max(
+                1,
+                self.config.getint(
+                    'Feed_Manager',
+                    'max_parsed_items',
+                    fallback=DEFAULT_MAX_PARSED_FEED_ITEMS,
+                )
+                if self.config.has_section('Feed_Manager')
+                else DEFAULT_MAX_PARSED_FEED_ITEMS,
+            )
+            preview_parse_limit = min(20, max_parsed_items)
 
             if feed_type == 'rss':
                 # Fetch RSS feed
-                response = requests.get(feed_url, timeout=30, headers={'User-Agent': 'MeshCoreBot/1.0 FeedManager'})
-                response.raise_for_status()
-                parsed = feedparser.parse(response.text)
+                with create_safe_requests_session(url_policy) as http_session:
+                    response = safe_requests_request(
+                        http_session,
+                        'GET',
+                        feed_url,
+                        policy=url_policy,
+                        timeout=30,
+                        headers={'User-Agent': 'MeshCoreBot/1.0 FeedManager'},
+                        stream=True,
+                    )
+                    with closing(response):
+                        content = _read_limited_requests_response(
+                            response,
+                            max_bytes=max_response_bytes,
+                            feed_type='rss',
+                        )
+                parsed = feedparser.parse(content)
 
                 # Get items (we'll filter and limit later)
-                for entry in parsed.entries[:20]:  # Fetch more items to account for filtering
+                for entry in parsed.entries[:preview_parse_limit]:
                     # Parse published date
                     published = None
                     if hasattr(entry, 'published_parsed') and entry.published_parsed:
@@ -6736,18 +6861,31 @@ class BotDataViewer:
                 body = api_config.get('body')
                 parser_config = api_config.get('response_parser', {})
 
-                if method == 'POST':
-                    response = requests.post(feed_url, headers=headers, params=params, json=body, timeout=30)
-                else:
-                    response = requests.get(feed_url, headers=headers, params=params, timeout=30)
-                response.raise_for_status()
+                with create_safe_requests_session(url_policy) as http_session:
+                    response = safe_requests_request(
+                        http_session,
+                        method,
+                        feed_url,
+                        policy=url_policy,
+                        headers=headers,
+                        params=params,
+                        json=body if method == 'POST' else None,
+                        timeout=30,
+                        stream=True,
+                    )
+                    with closing(response):
+                        content = _read_limited_requests_response(
+                            response,
+                            max_bytes=max_response_bytes,
+                            feed_type='api',
+                        )
 
                 # Try to parse JSON, handle cases where response might be a string
                 try:
-                    data = response.json()
-                except ValueError:
+                    data = json.loads(content)
+                except (UnicodeDecodeError, json.JSONDecodeError):
                     # If JSON parsing fails, try to get text and see if it's an error message
-                    text = response.text
+                    text = content[:200].decode('utf-8', errors='replace')
                     raise Exception(f"API returned non-JSON response: {text[:200]}")
 
                 # Check if response is an error message (string)
@@ -6815,7 +6953,7 @@ class BotDataViewer:
                             return default
                     return value if value is not None else default
 
-                for item_data in items_data[:20]:  # Fetch more items to account for filtering
+                for item_data in items_data[:preview_parse_limit]:
                     # Ensure item_data is a dict
                     if not isinstance(item_data, dict):
                         # If it's not a dict, try to convert or skip

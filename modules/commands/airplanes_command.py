@@ -341,6 +341,15 @@ class AirplanesCommand(BaseCommand):
             self.logger.warning(f"Invalid JSON response: {e}")
             return None
 
+    async def _fetch_aircraft_data_async(
+        self,
+        lat: float,
+        lon: float,
+        radius: float,
+    ) -> Optional[dict[str, Any]]:
+        """Fetch aircraft data without blocking the bot's event loop."""
+        return await asyncio.to_thread(self._fetch_aircraft_data, lat, lon, radius)
+
     def _filter_aircraft(self, aircraft_list: list[dict[str, Any]], filters: dict[str, Any], query_lat: float, query_lon: float) -> list[dict[str, Any]]:
         """Filter and sort aircraft based on criteria.
 
@@ -749,7 +758,9 @@ class AirplanesCommand(BaseCommand):
                 filters['sort'] = 'distance'
 
             # Fetch aircraft data
-            api_data = self._fetch_aircraft_data(location[0], location[1], filters['radius'])
+            api_data = await self._fetch_aircraft_data_async(
+                location[0], location[1], filters['radius']
+            )
 
             if api_data is None:
                 error_msg = self.translate('commands.airplanes.api_error')

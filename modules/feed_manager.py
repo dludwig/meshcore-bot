@@ -22,8 +22,40 @@ import aiohttp
 import feedparser
 
 from modules.feed_filter_eval import item_passes_filter_config
-from modules.security_utils import sanitize_input, validate_external_url
+from modules.security_utils import (
+    SafeAiohttpResolver,
+    SafeUrlPolicy,
+    UnsafeUrlError,
+    safe_aiohttp_request,
+    sanitize_input,
+)
 from modules.url_shortener import _coerce_url_string, shorten_url_sync
+
+DEFAULT_MAX_FEED_RESPONSE_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_PARSED_FEED_ITEMS = 500
+
+
+def _useful_feed_content_type(content_type: str, feed_type: str) -> bool:
+    """Accept common feed/API media types while rejecting clearly unrelated bodies."""
+    media_type = content_type.partition(';')[0].strip().lower()
+    if not media_type:
+        return True
+    shared_fallbacks = {'text/plain', 'application/octet-stream'}
+    if media_type in shared_fallbacks:
+        return True
+    if feed_type == 'rss':
+        return (
+            media_type in {
+                'application/rss+xml',
+                'application/atom+xml',
+                'application/xml',
+                'text/xml',
+                'application/xhtml+xml',
+                'text/html',
+            }
+            or media_type.endswith('+xml')
+        )
+    return media_type in {'application/json', 'text/json'} or media_type.endswith('+json')
 
 
 class FeedManager:
@@ -46,6 +78,8 @@ class FeedManager:
             self.max_message_length = 130
             self.default_output_format = '{emoji} {body|truncate:100} - {date}\n{link|truncate:50}'
             self.default_send_interval = 2.0
+            self.max_response_bytes = DEFAULT_MAX_FEED_RESPONSE_BYTES
+            self.max_parsed_items = DEFAULT_MAX_PARSED_FEED_ITEMS
             self.shorten_feed_urls = False
             if bot.config.has_section('Feed_Command'):
                 try:
@@ -72,6 +106,22 @@ class FeedManager:
             self.max_message_length = bot.config.getint('Feed_Manager', 'max_message_length', fallback=130)
             self.default_output_format = bot.config.get('Feed_Manager', 'default_output_format', fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
             self.default_send_interval = bot.config.getfloat('Feed_Manager', 'default_message_send_interval_seconds', fallback=2.0)
+            self.max_response_bytes = max(
+                1024,
+                bot.config.getint(
+                    'Feed_Manager',
+                    'max_response_bytes',
+                    fallback=DEFAULT_MAX_FEED_RESPONSE_BYTES,
+                ),
+            )
+            self.max_parsed_items = max(
+                1,
+                bot.config.getint(
+                    'Feed_Manager',
+                    'max_parsed_items',
+                    fallback=DEFAULT_MAX_PARSED_FEED_ITEMS,
+                ),
+            )
             self.shorten_feed_urls = bot.config.getboolean(
                 'Feed_Manager', 'shorten_urls', fallback=False
             )
@@ -94,9 +144,12 @@ class FeedManager:
 
         # Rate limiting per domain
         self._domain_last_request: dict[str, float] = {}
+        self._domain_rate_locks: dict[str, asyncio.Lock] = {}
+        self._feed_poll_locks: dict[int, asyncio.Lock] = {}
 
         # HTTP session
         self.session: Optional[aiohttp.ClientSession] = None
+        self._url_policy = SafeUrlPolicy(allow_private=self.allow_private_urls)
 
         # Semaphore to limit concurrent requests
         self._request_semaphore = asyncio.Semaphore(5)
@@ -201,12 +254,55 @@ class FeedManager:
         if self.session is None or self.session.closed:
             # Create session in the current event loop context
             self.session = aiohttp.ClientSession(
-                headers={'User-Agent': self.user_agent}
+                headers={'User-Agent': self.user_agent},
+                connector=aiohttp.TCPConnector(
+                    resolver=SafeAiohttpResolver(self._url_policy),
+                    use_dns_cache=False,
+                ),
             )
             self.logger.debug("Created FeedManager HTTP session in current event loop")
 
+    async def _read_limited_response(
+        self,
+        response: aiohttp.ClientResponse,
+        feed_type: str,
+    ) -> bytes:
+        """Read a decompressed response body without exceeding the configured cap."""
+        content_type = response.headers.get('Content-Type', '')
+        if not _useful_feed_content_type(content_type, feed_type):
+            raise ValueError(f"Unexpected {feed_type.upper()} content type: {content_type}")
+
+        declared_length = response.headers.get('Content-Length')
+        if declared_length:
+            try:
+                content_length = int(declared_length)
+            except ValueError:
+                content_length = None
+            if content_length is not None and content_length > self.max_response_bytes:
+                raise ValueError(
+                    f"Feed response exceeds {self.max_response_bytes} byte limit"
+                )
+
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            total += len(chunk)
+            if total > self.max_response_bytes:
+                raise ValueError(
+                    f"Feed response exceeds {self.max_response_bytes} byte limit"
+                )
+            chunks.append(chunk)
+        return b''.join(chunks)
+
     async def poll_feed(self, feed: dict[str, Any]):
-        """Poll a single feed and process new items"""
+        """Poll a single feed, serializing concurrent attempts for that feed."""
+        feed_id = int(feed['id'])
+        lock = self._feed_poll_locks.setdefault(feed_id, asyncio.Lock())
+        async with lock:
+            await self._poll_feed_locked(feed)
+
+    async def _poll_feed_locked(self, feed: dict[str, Any]) -> None:
+        """Poll a feed while its per-feed exclusion lock is held."""
         # Ensure session exists in current event loop
         await self._ensure_session()
 
@@ -217,7 +313,9 @@ class FeedManager:
 
         try:
             # Validate URL for SSRF protection
-            if not validate_external_url(feed_url, allow_private=self.allow_private_urls):
+            try:
+                await self._url_policy.validate_async(feed_url)
+            except UnsafeUrlError:
                 self.logger.error(f"Feed URL validation failed: {feed_url}")
                 self._record_feed_error(feed_id, 'security', 'Invalid or unsafe URL')
                 return
@@ -225,8 +323,8 @@ class FeedManager:
             self.logger.debug(f"Polling {feed_type} feed {feed_id}: {feed_url}")
 
             # Rate limit per domain
-            domain = urlparse(feed_url).netloc
-            await self._wait_for_rate_limit(domain)
+            host = self._normalized_host(feed_url)
+            await self._wait_for_rate_limit(host)
 
             # Fetch feed data
             if feed_type == 'rss':
@@ -281,10 +379,20 @@ class FeedManager:
 
             async with self._request_semaphore:
                 try:
-                    async with self.session.get(feed_url, timeout=timeout) as response:
+                    assert self.session is not None
+                    response = await safe_aiohttp_request(
+                        self.session,
+                        "GET",
+                        feed_url,
+                        policy=self._url_policy,
+                        timeout=timeout,
+                    )
+                    try:
                         if response.status != 200:
                             raise Exception(f"HTTP {response.status}")
-                        content = await response.text()
+                        content = await self._read_limited_response(response, 'rss')
+                    finally:
+                        response.release()
                 except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
                     raise Exception(f"Request timeout after {self.request_timeout} seconds")
 
@@ -296,7 +404,7 @@ class FeedManager:
 
             # Extract items - collect ALL items first (don't break early if sorting is configured)
             all_items = []
-            for entry in parsed.entries:
+            for entry in parsed.entries[:self.max_parsed_items]:
                 # Get item ID (prefer guid, then link, then hash of title+link)
                 item_id = entry.get('id') or entry.get('guid') or entry.get('link')
                 if not item_id:
@@ -346,9 +454,12 @@ class FeedManager:
                 with self.bot.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute('''
-                        SELECT DISTINCT item_id FROM feed_activity
-                        WHERE feed_id = ?
-                    ''', (feed['id'],))
+                        SELECT item_id FROM feed_activity WHERE feed_id = ?
+                        UNION
+                        SELECT item_id FROM feed_message_queue
+                        WHERE feed_id = ? AND sent_at IS NULL
+                          AND item_id IS NOT NULL AND trim(item_id) <> ''
+                    ''', (feed['id'], feed['id']))
                     for row in cursor.fetchall():
                         processed_item_ids.add(row[0])
             except Exception as e:
@@ -395,16 +506,24 @@ class FeedManager:
 
             async with self._request_semaphore:
                 try:
-                    if method == 'POST':
-                        async with self.session.post(feed_url, headers=headers, params=params, json=body, timeout=timeout) as response:
-                            if response.status != 200:
-                                raise Exception(f"HTTP {response.status}")
-                            data = await response.json()
-                    else:
-                        async with self.session.get(feed_url, headers=headers, params=params, timeout=timeout) as response:
-                            if response.status != 200:
-                                raise Exception(f"HTTP {response.status}")
-                            data = await response.json()
+                    assert self.session is not None
+                    response = await safe_aiohttp_request(
+                        self.session,
+                        method,
+                        feed_url,
+                        policy=self._url_policy,
+                        headers=headers,
+                        params=params,
+                        json=body if method == 'POST' else None,
+                        timeout=timeout,
+                    )
+                    try:
+                        if response.status != 200:
+                            raise Exception(f"HTTP {response.status}")
+                        content = await self._read_limited_response(response, 'api')
+                        data = json.loads(content)
+                    finally:
+                        response.release()
                 except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
                     raise Exception(f"Request timeout after {self.request_timeout} seconds")
 
@@ -429,7 +548,11 @@ class FeedManager:
 
             # Collect ALL items first (don't break early, as sorting may reorder them)
             all_items = []
-            for item_data in items_data:
+            if not isinstance(items_data, list):
+                items_data = [items_data]
+            for item_data in items_data[:self.max_parsed_items]:
+                if not isinstance(item_data, dict):
+                    continue
                 item_id = str(self._get_nested_value(item_data, id_field, ''))
                 if not item_id:
                     continue
@@ -507,9 +630,12 @@ class FeedManager:
                 with self.bot.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute('''
-                        SELECT DISTINCT item_id FROM feed_activity
-                        WHERE feed_id = ?
-                    ''', (feed['id'],))
+                        SELECT item_id FROM feed_activity WHERE feed_id = ?
+                        UNION
+                        SELECT item_id FROM feed_message_queue
+                        WHERE feed_id = ? AND sent_at IS NULL
+                          AND item_id IS NOT NULL AND trim(item_id) <> ''
+                    ''', (feed['id'], feed['id']))
                     for row in cursor.fetchall():
                         processed_item_ids.add(row[0])
             except Exception as e:
@@ -1158,8 +1284,13 @@ class FeedManager:
 
         return message
 
-    def _queue_feed_message(self, feed: dict[str, Any], item: dict[str, Any], message: str):
-        """Queue a feed message for later sending"""
+    def _queue_feed_message(
+        self,
+        feed: dict[str, Any],
+        item: dict[str, Any],
+        message: str,
+    ) -> bool:
+        """Queue a feed message, returning whether a new row was inserted."""
         try:
             with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
@@ -1167,6 +1298,9 @@ class FeedManager:
                     INSERT INTO feed_message_queue
                     (feed_id, channel_name, message, item_id, item_title, priority)
                     VALUES (?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(feed_id, item_id)
+                    WHERE item_id IS NOT NULL AND trim(item_id) <> ''
+                    DO NOTHING
                 ''', (
                     feed['id'],
                     feed['channel_name'],
@@ -1175,10 +1309,19 @@ class FeedManager:
                     item.get('title', '')[:200]  # Limit title length
                 ))
                 conn.commit()
-                self.logger.debug(f"Queued feed message for {feed['channel_name']}: {item.get('title', '')[:50]}")
+                inserted = cursor.rowcount == 1
+                if inserted:
+                    self.logger.debug(f"Queued feed message for {feed['channel_name']}: {item.get('title', '')[:50]}")
+                else:
+                    self.logger.debug(
+                        f"Skipped duplicate queued item {item.get('id', '')!r} "
+                        f"for feed {feed['id']}"
+                    )
+                return inserted
         except Exception as e:
             self.logger.error(f"Error queuing feed message: {e}")
             self._record_feed_error(feed['id'], 'queue', str(e))
+            return False
 
     def _should_send_item(self, feed: dict[str, Any], item: dict[str, Any]) -> bool:
         """Check if an item should be sent based on filter configuration.
@@ -1204,16 +1347,25 @@ class FeedManager:
             self.logger.error(f"Error processing feed item: {e}")
             self._record_feed_error(feed['id'], 'other', str(e))
 
-    async def _wait_for_rate_limit(self, domain: str):
-        """Wait if needed to respect rate limits"""
-        if domain in self._domain_last_request:
-            last_request = self._domain_last_request[domain]
-            elapsed = time.time() - last_request
-            if elapsed < self.rate_limit_seconds:
-                wait_time = self.rate_limit_seconds - elapsed
-                await asyncio.sleep(wait_time)
+    @staticmethod
+    def _normalized_host(url: str) -> str:
+        """Return a stable host key independent of case, port, or trailing dot."""
+        host = (urlparse(url).hostname or '').rstrip('.').lower()
+        try:
+            return host.encode('idna').decode('ascii')
+        except UnicodeError:
+            return host
 
-        self._domain_last_request[domain] = time.time()
+    async def _wait_for_rate_limit(self, host: str):
+        """Serialize and space requests to the same normalized host."""
+        lock = self._domain_rate_locks.setdefault(host, asyncio.Lock())
+        async with lock:
+            last_request = self._domain_last_request.get(host)
+            if last_request is not None:
+                elapsed = time.monotonic() - last_request
+                if elapsed < self.rate_limit_seconds:
+                    await asyncio.sleep(self.rate_limit_seconds - elapsed)
+            self._domain_last_request[host] = time.monotonic()
 
     def _get_enabled_feeds(self) -> list[dict[str, Any]]:
         """Get all enabled feed subscriptions from database"""
@@ -1386,4 +1538,3 @@ class FeedManager:
                     self.logger.error(f"Parent directory: {parent} (exists: {parent.exists()}, writable: {os.access(str(parent), os.W_OK) if parent.exists() else False})")
             else:
                 self.logger.error(f"Database path: {db_path_str}")
-

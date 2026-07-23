@@ -100,11 +100,38 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -e ".[test]"
+          pip install -e ".[test,geo]"
           pip install mypy
 
       - name: mypy — strict overrides on typed modules
         run: mypy modules/ --ignore-missing-imports
+
+  package:
+    name: Build and smoke-test distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Install and smoke-test wheel outside the source tree
+        run: |
+          python -m venv /tmp/meshcore-wheel-smoke
+          /tmp/meshcore-wheel-smoke/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/meshcore-wheel-smoke/bin/python "$GITHUB_WORKSPACE/scripts/smoke_test_wheel.py"
+          /tmp/meshcore-wheel-smoke/bin/meshcore-bot --help >/dev/null
+          /tmp/meshcore-wheel-smoke/bin/meshcore-viewer --help >/dev/null
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -112,7 +139,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -125,7 +152,10 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -e ".[test]"
+          # `geo` (us, pycountry) is optional at runtime but drives US state and
+          # country normalization; without it ~27 location tests skip and the AQI
+          # prefix-budget behavior silently differs from a real install.
+          pip install -e ".[test,geo]"
 
       - name: Run tests with coverage
         run: pytest tests/ -v --tb=short

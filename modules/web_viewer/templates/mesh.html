@@ -173,10 +173,10 @@
     </div>
     <div class="ms-auto d-flex align-items-center flex-wrap gap-2">
         <div class="btn-group mesh-view-switch" role="group" aria-label="View">
-            <button type="button" class="btn btn-sm active" id="btn-view-map" onclick="switchView('map')" title="Map view">
+            <button type="button" class="btn btn-sm active" id="btn-view-map" title="Map view">
                 <i class="fas fa-map"></i><span class="mesh-btn-text"> Map</span>
             </button>
-            <button type="button" class="btn btn-sm" id="btn-view-graph" onclick="switchView('graph')" title="Graph view">
+            <button type="button" class="btn btn-sm" id="btn-view-graph" title="Graph view">
                 <i class="fas fa-project-diagram"></i><span class="mesh-btn-text"> Graph</span>
             </button>
         </div>
@@ -184,19 +184,19 @@
             <button class="btn btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#filterPanel" title="Filters">
                 <i class="fas fa-filter"></i>
             </button>
-            <button class="btn btn-sm" type="button" id="btn-heat" onclick="toggleHeatMode()" title="Hot connections: color edges by traffic (viridis)">
+            <button class="btn btn-sm" type="button" id="btn-heat" title="Hot connections: color edges by traffic (viridis)">
                 <i class="fas fa-fire"></i>
             </button>
-            <button class="btn btn-sm" type="button" id="btn-mesh-theme" onclick="toggleMeshTheme()" title="Toggle map dark mode (independent of site theme)">
+            <button class="btn btn-sm" type="button" id="btn-mesh-theme" title="Toggle map dark mode (independent of site theme)">
                 <i class="fas fa-moon" id="mesh-theme-icon"></i>
             </button>
-            <button class="btn btn-sm" type="button" onclick="refreshData()" title="Refresh data">
+            <button class="btn btn-sm" type="button" id="btn-mesh-refresh" title="Refresh data">
                 <i class="fas fa-sync-alt"></i>
             </button>
-            <button class="btn btn-sm" type="button" onclick="exportView()" title="Export JSON">
+            <button class="btn btn-sm" type="button" id="btn-mesh-export" title="Export JSON">
                 <i class="fas fa-download"></i>
             </button>
-            <button class="btn btn-sm" type="button" id="btn-fullscreen" onclick="toggleFullscreen()" title="Fullscreen">
+            <button class="btn btn-sm" type="button" id="btn-fullscreen" title="Fullscreen">
                 <i class="fas fa-expand"></i>
             </button>
         </div>
@@ -214,12 +214,12 @@
                 <div class="row">
                     <div class="col-md-2">
                         <label for="filter-min-obs" class="form-label">Min Observations</label>
-                        <input type="range" class="form-range" id="filter-min-obs" min="0" max="100" value="0" oninput="onMinObsInput();">
+                        <input type="range" class="form-range" id="filter-min-obs" min="0" max="100" value="0">
                         <small id="label-min-obs" class="text-muted">1</small>
                     </div>
                     <div class="col-md-2">
                         <label for="filter-edge-days" class="form-label">Edge Timeframe</label>
-                        <select class="form-select" id="filter-edge-days" onchange="applyFilters(); saveFilters();">
+                        <select class="form-select" id="filter-edge-days">
                             <option value="">All Time</option>
                             <option value="1">Last 24 Hours</option>
                             <option value="2">Last 48 Hours</option>
@@ -231,7 +231,7 @@
                     </div>
                     <div class="col-md-2">
                         <label for="filter-node-days" class="form-label">Node Timeframe</label>
-                        <select class="form-select" id="filter-node-days" onchange="applyFilters(); saveFilters();">
+                        <select class="form-select" id="filter-node-days">
                             <option value="">All Time</option>
                             <option value="1">Last 24 Hours</option>
                             <option value="2">Last 48 Hours</option>
@@ -243,7 +243,7 @@
                     </div>
                     <div class="col-md-2">
                         <label for="filter-evidence" class="form-label">Evidence</label>
-                        <select class="form-select" id="filter-evidence" onchange="onEvidenceChange();" title="Multi-byte only: build the graph solely from unique multi-byte path observations, ignoring ambiguous single-byte evidence">
+                        <select class="form-select" id="filter-evidence" title="Multi-byte only: build the graph solely from unique multi-byte path observations, ignoring ambiguous single-byte evidence">
                             <option value="all">All Evidence</option>
                             <option value="multibyte" selected>Multi-byte Only</option>
                         </select>
@@ -252,14 +252,14 @@
                         <label for="filter-starred" class="form-label">&nbsp;</label>
                         <div class="d-flex align-items-center" style="min-height: 38px;">
                             <div class="form-check mb-0">
-                                <input type="checkbox" class="form-check-input" id="filter-starred" onchange="applyFilters(); saveFilters();">
+                                <input type="checkbox" class="form-check-input" id="filter-starred">
                                 <label class="form-check-label" for="filter-starred">Show Only Starred</label>
                             </div>
                         </div>
                     </div>
                     <div class="col-md-2">
                         <label for="filter-search" class="form-label">Search Node</label>
-                        <input type="text" class="form-control" id="filter-search" placeholder="Name, prefix, or path..." oninput="handleSearchInput();">
+                        <input type="text" class="form-control" id="filter-search" placeholder="Name, prefix, or path...">
                     </div>
                 </div>
             </div>
@@ -619,7 +619,7 @@
 <!-- vis-network JS -->
 <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 
-<script>
+<script nonce="{{ g.csp_nonce }}">
     // Global state
     let currentView = 'map';
     let map = null;
@@ -1376,6 +1376,23 @@
     
     // Initialize on page load
     document.addEventListener('DOMContentLoaded', async function() {
+        document.getElementById('btn-view-map').addEventListener('click', () => switchView('map'));
+        document.getElementById('btn-view-graph').addEventListener('click', () => switchView('graph'));
+        document.getElementById('btn-heat').addEventListener('click', toggleHeatMode);
+        document.getElementById('btn-mesh-theme').addEventListener('click', toggleMeshTheme);
+        document.getElementById('btn-mesh-refresh').addEventListener('click', refreshData);
+        document.getElementById('btn-mesh-export').addEventListener('click', exportView);
+        document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
+        document.getElementById('filter-min-obs').addEventListener('input', onMinObsInput);
+        ['filter-edge-days', 'filter-node-days', 'filter-starred'].forEach(id => {
+            document.getElementById(id).addEventListener('change', () => {
+                applyFilters();
+                saveFilters();
+            });
+        });
+        document.getElementById('filter-evidence').addEventListener('change', onEvidenceChange);
+        document.getElementById('filter-search').addEventListener('input', handleSearchInput);
+
         // Initialize modal instances once
         const nodeModalElement = document.getElementById('nodeDetailsModal');
         if (nodeModalElement) {
@@ -3061,18 +3078,28 @@
         const outgoing = connections.filter(e => prefixesCompatible(e.from_prefix, node.prefix)).length;
         
         document.getElementById('nodeDetailsTitle').textContent = node.name;
-        document.getElementById('nodeDetailsBody').innerHTML = `
-            <table class="table">
-                <tr><th>Prefix</th><td>${escapeHtml(node.prefix)}</td></tr>
-                <tr><th>Public Key</th><td><code>${formatPublicKey(node.public_key)}</code></td></tr>
-                <tr><th>Role</th><td>${escapeHtml(node.role)}</td></tr>
-                <tr><th>Location</th><td>${node.latitude.toFixed(6)}, ${node.longitude.toFixed(6)}</td></tr>
-                <tr><th>Starred</th><td>${node.is_starred ? '<i class="fas fa-star text-warning"></i> Yes' : 'No'}</td></tr>
-                <tr><th>Last Heard</th><td>${node.last_heard || 'Never'}</td></tr>
-                <tr><th>Last Advert</th><td>${node.last_advert_timestamp || 'Never'}</td></tr>
-                <tr><th>Connections</th><td>${connections.length} total (${incoming} incoming, ${outgoing} outgoing)</td></tr>
-            </table>
-        `;
+        const table = document.createElement('table');
+        table.className = 'table';
+        const addRow = (label, value, code = false) => {
+            const row = document.createElement('tr');
+            const heading = document.createElement('th');
+            heading.textContent = label;
+            const cell = document.createElement('td');
+            const valueElement = document.createElement(code ? 'code' : 'span');
+            valueElement.textContent = String(value ?? '');
+            cell.appendChild(valueElement);
+            row.append(heading, cell);
+            table.appendChild(row);
+        };
+        addRow('Prefix', node.prefix);
+        addRow('Public Key', formatPublicKeyText(node.public_key), true);
+        addRow('Role', node.role);
+        addRow('Location', `${Number(node.latitude).toFixed(6)}, ${Number(node.longitude).toFixed(6)}`);
+        addRow('Starred', node.is_starred ? 'Yes' : 'No');
+        addRow('Last Heard', node.last_heard || 'Never');
+        addRow('Last Advert', node.last_advert_timestamp || 'Never');
+        addRow('Connections', `${connections.length} total (${incoming} incoming, ${outgoing} outgoing)`);
+        document.getElementById('nodeDetailsBody').replaceChildren(table);
         
         // Reuse modal instance or create new one
         if (!nodeModal) {
@@ -3093,13 +3120,17 @@
     }
     
     function formatPublicKey(publicKey) {
+        return escapeHtml(formatPublicKeyText(publicKey));
+    }
+
+    function formatPublicKeyText(publicKey) {
         if (!publicKey || publicKey.length < 32) {
-            return escapeHtml(publicKey || '');
+            return String(publicKey || '');
         }
         // First 8 bytes = 16 hex characters, last 8 bytes = 16 hex characters
         const first8Bytes = publicKey.substring(0, 16);
         const last8Bytes = publicKey.substring(publicKey.length - 16);
-        return escapeHtml(`${first8Bytes}...${last8Bytes}`);
+        return `${first8Bytes}...${last8Bytes}`;
     }
     
     function refreshData() {
@@ -3151,7 +3182,7 @@
             const exitBtn = document.createElement('button');
             exitBtn.className = 'fullscreen-exit-btn';
             exitBtn.innerHTML = '<i class="fas fa-times"></i> Exit Fullscreen';
-            exitBtn.onclick = toggleFullscreen;
+            exitBtn.addEventListener('click', toggleFullscreen);
             mapContainer.appendChild(exitBtn);
 
             setTimeout(() => { if (map) map.invalidateSize(); }, 100);

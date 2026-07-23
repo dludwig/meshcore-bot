@@ -142,6 +142,29 @@ def main():
     except Exception as exc:  # noqa: BLE001 - never block startup on the linter itself
         print(f"Config validation skipped: {exc}", file=sys.stderr)
 
+    # A restore requested by the viewer is applied only here, before importing
+    # and constructing MeshCoreBot (which opens the DB and launches writers).
+    # The service manager must restart the bot and viewer as one unit.
+    from modules.database_restore import (
+        DatabaseRestoreError,
+        apply_pending_restores_from_config,
+    )
+
+    try:
+        restore_results = apply_pending_restores_from_config(args.config)
+    except DatabaseRestoreError as exc:
+        print(f"Error: pending database restore was not applied: {exc}", file=sys.stderr)
+        print(
+            "The active database was left unchanged. Correct or remove the pending restore "
+            "file before restarting.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    for restore_result in restore_results:
+        recovery = restore_result.recovery_backup_path
+        recovery_note = f"; recovery backup: {recovery}" if recovery else ""
+        print(f"Applied pending database restore: {restore_result.database_path}{recovery_note}")
+
     from modules.core import MeshCoreBot
     bot = MeshCoreBot(config_file=args.config)
 
@@ -236,6 +259,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 

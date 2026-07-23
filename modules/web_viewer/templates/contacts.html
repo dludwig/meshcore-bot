@@ -386,12 +386,12 @@
                                 </li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><h6 class="dropdown-header">Export Contacts</h6></li>
-                                <li><a class="dropdown-item" href="#" onclick="exportData('contacts','csv');return false;"><i class="fas fa-file-csv me-2 text-success"></i>CSV</a></li>
-                                <li><a class="dropdown-item" href="#" onclick="exportData('contacts','json');return false;"><i class="fas fa-file-code me-2 text-warning"></i>JSON</a></li>
+                                <li><a class="dropdown-item contacts-export-action" href="#" data-export-kind="contacts" data-export-format="csv"><i class="fas fa-file-csv me-2 text-success"></i>CSV</a></li>
+                                <li><a class="dropdown-item contacts-export-action" href="#" data-export-kind="contacts" data-export-format="json"><i class="fas fa-file-code me-2 text-warning"></i>JSON</a></li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><h6 class="dropdown-header">Export Paths</h6></li>
-                                <li><a class="dropdown-item" href="#" onclick="exportData('paths','csv');return false;"><i class="fas fa-file-csv me-2 text-success"></i>CSV</a></li>
-                                <li><a class="dropdown-item" href="#" onclick="exportData('paths','json');return false;"><i class="fas fa-file-code me-2 text-warning"></i>JSON</a></li>
+                                <li><a class="dropdown-item contacts-export-action" href="#" data-export-kind="paths" data-export-format="csv"><i class="fas fa-file-csv me-2 text-success"></i>CSV</a></li>
+                                <li><a class="dropdown-item contacts-export-action" href="#" data-export-kind="paths" data-export-format="json"><i class="fas fa-file-code me-2 text-warning"></i>JSON</a></li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><h6 class="dropdown-header">Time range</h6></li>
                                 <li>
@@ -467,8 +467,7 @@
                                     <button type="button" class="btn btn-link p-0 border-0 align-baseline text-muted path-encoding-info-btn"
                                             id="contacts-list-multibyte-badge-info"
                                             aria-label="How Multibyte and 1-byte only badges are determined"
-                                            data-bs-toggle="tooltip" data-bs-placement="top"
-                                            onclick="event.stopPropagation();">
+                                            data-bs-toggle="tooltip" data-bs-placement="top">
                                         <i class="fas fa-info-circle" aria-hidden="true"></i>
                                     </button>
                                 </span>
@@ -538,7 +537,7 @@
 {% endblock %}
 
 {% block extra_js %}
-        <script>
+        <script nonce="{{ g.csp_nonce }}">
 class ModernContactsManager {
     constructor() {
         this.contactsData = [];
@@ -594,6 +593,14 @@ class ModernContactsManager {
     }
     
     setupEventHandlers() {
+        document.querySelectorAll('.contacts-export-action').forEach(link => {
+            link.addEventListener('click', (event) => {
+                event.preventDefault();
+                exportData(link.dataset.exportKind, link.dataset.exportFormat);
+            });
+        });
+        document.getElementById('contacts-list-multibyte-badge-info')
+            ?.addEventListener('click', event => event.stopPropagation());
         document.getElementById('refresh-contacts').addEventListener('click', () => {
             this.loadContactsData().then(() => {
                 this.applySearch();
@@ -655,12 +662,25 @@ class ModernContactsManager {
                     this.updateBulkDeleteButton();
                     this.updateSelectAllCheckbox();
                 } else if (t.classList.contains('contact-row-checkbox')) {
-                    const userId = t.dataset.userId;
+                    const contact = this.filteredData[Number(t.dataset.contactIndex)];
+                    if (!contact) return;
+                    const userId = contact.user_id;
                     if (t.checked) this.selectedContactIds.add(userId);
                     else this.selectedContactIds.delete(userId);
                     this.updateBulkDeleteButton();
                     this.updateSelectAllCheckbox();
                 }
+            });
+            listPanel.addEventListener('click', (event) => {
+                const action = event.target.closest('[data-contact-action]');
+                if (!action) return;
+                const contact = this.filteredData[Number(action.dataset.contactIndex)];
+                if (!contact) return;
+                const kind = action.dataset.contactAction;
+                if (kind === 'star') this.toggleStar(contact.user_id, action);
+                else if (kind === 'advert') this.viewAdvertData(contact.user_id);
+                else if (kind === 'geocode') this.geocodeContact(contact.user_id, action);
+                else if (kind === 'delete') this.showDeleteConfirmation(contact.user_id);
             });
         }
 
@@ -760,9 +780,9 @@ class ModernContactsManager {
     
     getLocationString(contact) {
         if (contact.city && contact.state) {
-            return `${contact.city}, ${contact.state}`;
+            return `${this.escapeHtml(contact.city)}, ${this.escapeHtml(contact.state)}`;
         } else if (contact.city) {
-            return contact.city;
+            return this.escapeHtml(contact.city);
         } else if (contact.latitude && contact.longitude) {
             return `${contact.latitude}, ${contact.longitude}`;
         } else {
@@ -863,24 +883,22 @@ class ModernContactsManager {
         });
     }
     
-    renderContactCardHtml(contact) {
-        const uidEsc = this.escapeHtml(contact.user_id);
-        const uidJs = contact.user_id.replace(/'/g, "\\'");
+    renderContactCardHtml(contact, contactIndex) {
         const checked = this.selectedContactIds.has(contact.user_id) ? 'checked' : '';
         const hasGeo = !!(contact.latitude && contact.longitude && contact.latitude !== 0 && contact.longitude !== 0);
         const starLabel = contact.is_starred ? 'Unstar contact' : 'Star contact';
         const geoMenuItem = hasGeo
-            ? `<li><button type="button" class="dropdown-item" onclick="contactsManager.geocodeContact('${uidJs}', this)"><i class="fas fa-map-marker-alt me-2 text-primary"></i>Geocode location</button></li>`
+            ? `<li><button type="button" class="dropdown-item" data-contact-action="geocode" data-contact-index="${contactIndex}"><i class="fas fa-map-marker-alt me-2 text-primary"></i>Geocode location</button></li>`
             : '';
         return `
             <div class="contact-mobile-card">
                 <div class="d-flex align-items-start gap-2">
-                    <input type="checkbox" class="form-check-input contact-row-checkbox mt-1 flex-shrink-0" data-user-id="${uidEsc}" ${checked}>
+                    <input type="checkbox" class="form-check-input contact-row-checkbox mt-1 flex-shrink-0" data-contact-index="${contactIndex}" ${checked}>
                     <div class="flex-grow-1 min-w-0">
                         <div class="d-flex justify-content-between align-items-start gap-2">
                             <div class="min-w-0">
                                 <div class="fw-bold">${this.escapeHtml(contact.username || 'Unknown')}</div>
-                                <small class="text-muted text-break d-block">${contact.user_id ? contact.user_id.substring(0, 16) + '...' : 'Unknown'}</small>
+                                <small class="text-muted text-break d-block">${this.escapeHtml(contact.user_id ? contact.user_id.substring(0, 16) + '...' : 'Unknown')}</small>
                             </div>
                             <div class="contact-mobile-device text-end flex-shrink-0">${this.formatDeviceType(contact)}</div>
                         </div>
@@ -894,7 +912,7 @@ class ModernContactsManager {
                                 ${this.formatPathEncodingBadge(contact)}
                                 </div>
                                 <div class="d-flex align-items-center gap-1">
-                                    <span class="badge bg-success">${contact.advert_count || 0}</span>
+                                    <span class="badge bg-success">${Number(contact.advert_count) || 0}</span>
                                     <span class="text-muted small">adverts</span>
                                 </div>
                             </div>
@@ -905,11 +923,11 @@ class ModernContactsManager {
                                     <i class="fas fa-ellipsis-vertical" aria-hidden="true"></i>
                                 </button>
                                 <ul class="dropdown-menu dropdown-menu-end">
-                                    <li><button type="button" class="dropdown-item" onclick="contactsManager.toggleStar('${uidJs}', this)"><i class="fas fa-star me-2 text-warning"></i>${starLabel}</button></li>
-                                    <li><button type="button" class="dropdown-item" onclick="contactsManager.viewAdvertData('${contact.user_id}')"><i class="fas fa-info-circle me-2 text-info"></i>View advertisement data</button></li>
+                                    <li><button type="button" class="dropdown-item" data-contact-action="star" data-contact-index="${contactIndex}"><i class="fas fa-star me-2 text-warning"></i>${starLabel}</button></li>
+                                    <li><button type="button" class="dropdown-item" data-contact-action="advert" data-contact-index="${contactIndex}"><i class="fas fa-info-circle me-2 text-info"></i>View advertisement data</button></li>
                                     ${geoMenuItem}
                                     <li><hr class="dropdown-divider"></li>
-                                    <li><button type="button" class="dropdown-item text-danger" onclick="contactsManager.showDeleteConfirmation('${uidJs}')"><i class="fas fa-trash me-2"></i>Delete contact</button></li>
+                                    <li><button type="button" class="dropdown-item text-danger" data-contact-action="delete" data-contact-index="${contactIndex}"><i class="fas fa-trash me-2"></i>Delete contact</button></li>
                                 </ul>
                             </div>
                         </div>
@@ -927,30 +945,33 @@ class ModernContactsManager {
             const message = this.searchTerm ?
                 `No contacts match "${this.searchTerm}"` :
                 'No contacts data available';
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="11" class="text-center text-muted">
-                        ${message}
-                    </td>
-                </tr>
-            `;
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 11;
+            cell.className = 'text-center text-muted';
+            cell.textContent = message;
+            row.appendChild(cell);
+            tbody.replaceChildren(row);
             if (mobileStack) {
-                mobileStack.innerHTML = `<div class="text-center text-muted py-4">${message}</div>`;
+                const empty = document.createElement('div');
+                empty.className = 'text-center text-muted py-4';
+                empty.textContent = message;
+                mobileStack.replaceChildren(empty);
             }
             this.updateBulkDeleteButton();
             this.updateSelectAllCheckbox();
             return;
         }
 
-        tbody.innerHTML = this.filteredData.map(contact => `
+        tbody.innerHTML = this.filteredData.map((contact, contactIndex) => `
             <tr>
                 <td class="text-center align-middle">
-                    <input type="checkbox" class="form-check-input contact-row-checkbox" data-user-id="${this.escapeHtml(contact.user_id)}" ${this.selectedContactIds.has(contact.user_id) ? 'checked' : ''}>
+                    <input type="checkbox" class="form-check-input contact-row-checkbox" data-contact-index="${contactIndex}" ${this.selectedContactIds.has(contact.user_id) ? 'checked' : ''}>
                 </td>
                 <td>
                     <strong>${this.escapeHtml(contact.username || 'Unknown')}</strong>
                     <br>
-                    <small class="text-muted">${contact.user_id ? contact.user_id.substring(0, 16) + '...' : 'Unknown'}</small>
+                    <small class="text-muted">${this.escapeHtml(contact.user_id ? contact.user_id.substring(0, 16) + '...' : 'Unknown')}</small>
                 </td>
                 <td>${this.formatDeviceType(contact)}</td>
                 <td>${this.formatLocation(contact)}</td>
@@ -959,22 +980,22 @@ class ModernContactsManager {
                 <td><div class="d-flex flex-column align-items-start gap-1">${this.formatHops(contact)}${this.formatPathEncodingBadge(contact)}</div></td>
                 <td>${this.formatTimestamp(contact.first_heard)}</td>
                 <td>${this.formatTimeAgo(contact.last_seen)}</td>
-                <td><span class="badge bg-success">${contact.advert_count || 0}</span></td>
+                <td><span class="badge bg-success">${Number(contact.advert_count) || 0}</span></td>
                 <td>
                     <div class="btn-group" role="group">
-                        <button class="btn btn-sm ${contact.is_starred ? 'btn-warning' : 'btn-outline-warning'}" onclick="contactsManager.toggleStar('${contact.user_id.replace(/'/g, "\\'")}', this)" title="${contact.is_starred ? 'Unstar contact' : 'Star contact'}">
+                        <button class="btn btn-sm ${contact.is_starred ? 'btn-warning' : 'btn-outline-warning'}" data-contact-action="star" data-contact-index="${contactIndex}" title="${contact.is_starred ? 'Unstar contact' : 'Star contact'}">
                             <i class="fas fa-star"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-info" onclick="contactsManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
+                        <button class="btn btn-sm btn-outline-info" data-contact-action="advert" data-contact-index="${contactIndex}" title="View Advertisement Data">
                             <i class="fas fa-info-circle"></i>
                         </button>
                         ${contact.latitude && contact.longitude && contact.latitude !== 0 && contact.longitude !== 0 ? 
-                            `<button class="btn btn-sm btn-outline-primary" onclick="contactsManager.geocodeContact('${contact.user_id.replace(/'/g, "\\'")}', this)" title="Geocode Location">
+                            `<button class="btn btn-sm btn-outline-primary" data-contact-action="geocode" data-contact-index="${contactIndex}" title="Geocode Location">
                                 <i class="fas fa-map-marker-alt"></i>
                             </button>` : 
                             ''
                         }
-                        <button class="btn btn-sm btn-outline-danger" onclick="contactsManager.showDeleteConfirmation('${contact.user_id.replace(/'/g, "\\'")}')" title="Delete Contact">
+                        <button class="btn btn-sm btn-outline-danger" data-contact-action="delete" data-contact-index="${contactIndex}" title="Delete Contact">
                             <i class="fas fa-trash"></i>
                         </button>
                     </div>
@@ -983,7 +1004,7 @@ class ModernContactsManager {
         `).join('');
 
         if (mobileStack) {
-            mobileStack.innerHTML = this.filteredData.map(contact => this.renderContactCardHtml(contact)).join('');
+            mobileStack.innerHTML = this.filteredData.map((contact, contactIndex) => this.renderContactCardHtml(contact, contactIndex)).join('');
         }
 
         // Setup path tooltips after rendering
@@ -1401,9 +1422,9 @@ class ModernContactsManager {
     
     formatLocation(contact) {
         if (contact.city && contact.state) {
-            return `${contact.city}, ${contact.state}`;
+            return `${this.escapeHtml(contact.city)}, ${this.escapeHtml(contact.state)}`;
         } else if (contact.city) {
-            return contact.city;
+            return this.escapeHtml(contact.city);
         } else if (contact.latitude && contact.longitude) {
             return `${contact.latitude.toFixed(4)}, ${contact.longitude.toFixed(4)}`;
         } else {
@@ -1441,7 +1462,7 @@ class ModernContactsManager {
             badgeClass = 'bg-info'; // Light blue for Sensor
         }
         
-        return `<span class="badge ${badgeClass}">${displayText}</span>`;
+        return `<span class="badge ${badgeClass}">${this.escapeHtml(displayText)}</span>`;
     }
     
     formatSignal(contact) {
@@ -1458,16 +1479,16 @@ class ModernContactsManager {
     }
     
     formatHops(contact) {
-        const hopCount = contact.hop_count || 0;
+        const hopCount = Number(contact.hop_count) || 0;
         const outPath = contact.out_path || '';
-        const outPathLen = contact.out_path_len || -1;
+        const outPathLen = Number(contact.out_path_len ?? -1);
         // Full paths are loaded on demand in the modal; the list only needs the count.
-        const pathsCount = contact.paths_count || 0;
+        const pathsCount = Number(contact.paths_count) || 0;
         const hasMultiplePaths = pathsCount > 1;
         
         // Escape the path for use in HTML attributes
-        const escapedPath = outPath.replace(/"/g, '&quot;');
-        const escapedUserId = contact.user_id.replace(/"/g, '&quot;');
+        const escapedPath = this.escapeAttribute(outPath);
+        const escapedUserId = this.escapeAttribute(contact.user_id);
         
         // If we have path data, add tooltip and click functionality
         if (outPath && outPathLen > 0) {
@@ -1481,7 +1502,6 @@ class ModernContactsManager {
                           data-path-len="${outPathLen}"
                           data-bytes-per-hop="${bytesPerHop}"
                           data-user-id="${escapedUserId}"
-                          onclick="contactsManager.showPathsModal('${escapedUserId}')"
                           style="cursor: pointer; position: relative;" 
                           title="${hasMultiplePaths ? 'Click to view all paths' : 'Click to view path'}">
                       ${hopCount}${pathCountText}
@@ -1532,6 +1552,7 @@ class ModernContactsManager {
             if (badge.dataset.tooltipSetup === 'true') return;
             
             badge.dataset.tooltipSetup = 'true';
+            badge.addEventListener('click', () => this.showPathsModal(badge.dataset.userId));
             
             // Load path data on first hover (for tooltip)
             let pathLoaded = false;
@@ -1539,7 +1560,8 @@ class ModernContactsManager {
             
             const showTooltip = (event) => {
                 const rect = badge.getBoundingClientRect();
-                customTooltip.innerHTML = pathContent;
+                customTooltip.textContent = pathContent;
+                customTooltip.style.whiteSpace = 'pre-line';
                 customTooltip.style.display = 'block';
                 customTooltip.style.left = (rect.left + rect.width / 2 - customTooltip.offsetWidth / 2) + 'px';
                 customTooltip.style.top = (rect.top - customTooltip.offsetHeight - 8) + 'px';
@@ -1607,8 +1629,7 @@ class ModernContactsManager {
                         // Format the path response
                         const pathLines = data.path.map(node => {
                             if (node.found) {
-                                // Escape HTML to prevent XSS
-                                const name = this.escapeHtml(node.name);
+                                const name = String(node.name ?? '');
                                 // Add ❓ emoji if this is a geographic guess (collision)
                                 const guessIndicator = node.geographic_guess ? ' ❓' : '';
                                 return `${node.node_id}: ${name}${guessIndicator}`;
@@ -1617,7 +1638,7 @@ class ModernContactsManager {
                             }
                         });
                         
-                        pathContent = pathLines.length > 0 ? pathLines.join('<br>') : 'No path data';
+                        pathContent = pathLines.length > 0 ? pathLines.join('\n') : 'No path data';
                         pathLoaded = true;
                         badge.dataset.loading = 'false';
                         
@@ -1701,6 +1722,7 @@ class ModernContactsManager {
     }
     
     renderPathsInModal(paths, primaryPath) {
+        this.renderedModalPaths = paths;
         if (paths.length === 0) {
             return '<p class="text-muted">No path data available for this contact.</p>';
         }
@@ -1721,12 +1743,12 @@ class ModernContactsManager {
                         <div class="flex-grow-1">
                             <h6 class="mb-1">
                                 Path ${i + 1} ${primaryBadge}
-                                <small class="text-muted">(${hopLabel}${path.path_length} bytes, ${path.observation_count} observations)</small>
+                                <small class="text-muted">(${hopLabel}${Number(path.path_length) || 0} bytes, ${Number(path.observation_count) || 0} observations)</small>
                             </h6>
                             <p class="mb-1"><code class="path-hex-code">${this.escapeHtml(formattedPathHex)}</code></p>
                             <small class="text-muted">Last seen: ${this.formatTimeAgo(path.last_seen)}</small>
                         </div>
-                        <button class="btn btn-sm btn-outline-primary" onclick="contactsManager.decodePathInModal('${String(path.path_hex).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}', ${i}, ${bph != null ? bph : 'null'})">
+                        <button class="btn btn-sm btn-outline-primary" data-decode-path-index="${i}">
                             <i class="fas fa-code"></i> Decode
                         </button>
                     </div>
@@ -1819,6 +1841,19 @@ class ModernContactsManager {
         
         // Add modal to page
         document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+        const pathsListContainer = document.getElementById('paths-list-container');
+        pathsListContainer.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-decode-path-index]');
+            if (!button) return;
+            const index = Number(button.dataset.decodePathIndex);
+            const path = this.renderedModalPaths[index];
+            if (!path) return;
+            const bph = path.bytes_per_hop != null && [1, 2, 3].includes(Number(path.bytes_per_hop))
+                ? Number(path.bytes_per_hop)
+                : null;
+            this.decodePathInModal(String(path.path_hex ?? ''), index, bph);
+        });
         
         // Setup sort dropdown event handler
         const sortSelect = document.getElementById('pathSortOrder');
@@ -1894,31 +1929,35 @@ class ModernContactsManager {
                 throw new Error('Invalid path data format');
             }
             
-            // Format the decoded path
-            const pathLines = data.path.map(node => {
-                if (node.found) {
-                    const name = this.escapeHtml(node.name);
-                    const guessIndicator = node.geographic_guess ? ' <span class="badge bg-warning">Guess</span>' : '';
-                    return `<div class="mb-1"><strong>${node.node_id}:</strong> ${name}${guessIndicator}</div>`;
-                } else {
-                    return `<div class="mb-1 text-muted"><strong>${node.node_id}:</strong> Unknown</div>`;
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-info decoded-path-alert mb-0';
+            const heading = document.createElement('strong');
+            heading.textContent = 'Decoded Path:';
+            const content = document.createElement('div');
+            content.className = 'mt-2 decoded-path-content';
+            data.path.forEach(node => {
+                const line = document.createElement('div');
+                line.className = node.found ? 'mb-1' : 'mb-1 text-muted';
+                const id = document.createElement('strong');
+                id.textContent = `${String(node.node_id ?? '')}:`;
+                line.append(id, document.createTextNode(` ${node.found ? String(node.name ?? '') : 'Unknown'}`));
+                if (node.found && node.geographic_guess) {
+                    const guess = document.createElement('span');
+                    guess.className = 'badge bg-warning ms-1';
+                    guess.textContent = 'Guess';
+                    line.appendChild(guess);
                 }
+                content.appendChild(line);
             });
-            
-            decodedDiv.innerHTML = `
-                <div class="alert alert-info decoded-path-alert mb-0">
-                    <strong>Decoded Path:</strong>
-                    <div class="mt-2 decoded-path-content">${pathLines.join('')}</div>
-                </div>
-            `;
+            alert.append(heading, content);
+            decodedDiv.replaceChildren(alert);
             
         } catch (error) {
             console.error('Error decoding path:', error);
-            decodedDiv.innerHTML = `
-                <div class="alert alert-danger mb-0">
-                    <strong>Error:</strong> ${this.escapeHtml(error.message)}
-                </div>
-            `;
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-danger mb-0';
+            alert.textContent = `Error: ${error.message}`;
+            decodedDiv.replaceChildren(alert);
         } finally {
             button.disabled = false;
             button.innerHTML = originalHtml;
@@ -2199,7 +2238,7 @@ class ModernContactsManager {
                             <div class="alert alert-warning">
                                 <strong>Contact Information:</strong><br>
                                 <strong>Name:</strong> ${this.escapeHtml(username || 'Unknown')}<br>
-                                <strong>Public Key:</strong> <code>${userId.substring(0, 16)}...</code>
+                                <strong>Public Key:</strong> <code>${this.escapeHtml(userId.substring(0, 16))}...</code>
                             </div>
                             <div class="alert alert-danger">
                                 <i class="fas fa-exclamation-triangle"></i>
@@ -2433,15 +2472,28 @@ class ModernContactsManager {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    escapeAttribute(text) {
+        return String(text ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
     
     showError(message) {
         const errorDiv = document.createElement('div');
         errorDiv.className = 'alert alert-danger alert-dismissible fade show';
         errorDiv.setAttribute('role', 'alert');
-        errorDiv.innerHTML = `
-            <strong>Error:</strong> ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-        `;
+        const text = document.createElement('span');
+        text.textContent = `Error: ${String(message ?? '')}`;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'btn-close';
+        close.dataset.bsDismiss = 'alert';
+        close.setAttribute('aria-label', 'Close');
+        errorDiv.append(text, close);
         
         const content = document.querySelector('.container-fluid');
         if (content) {
@@ -2459,10 +2511,14 @@ class ModernContactsManager {
         const successDiv = document.createElement('div');
         successDiv.className = 'alert alert-success alert-dismissible fade show';
         successDiv.setAttribute('role', 'alert');
-        successDiv.innerHTML = `
-            <strong>Success:</strong> ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-        `;
+        const text = document.createElement('span');
+        text.textContent = `Success: ${String(message ?? '')}`;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'btn-close';
+        close.dataset.bsDismiss = 'alert';
+        close.setAttribute('aria-label', 'Close');
+        successDiv.append(text, close);
         
         const content = document.querySelector('.container-fluid');
         if (content) {
@@ -2490,17 +2546,17 @@ class ModernContactsManager {
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.error || 'Failed to load preview');
             if (data.count === 0) {
-                previewText.innerHTML = `<i class="fas fa-check-circle text-success me-1"></i>No contacts found that are older than <strong>${days} days</strong>.`;
+                previewText.textContent = `No contacts found that are older than ${days} days.`;
                 confirmBtn.disabled = true;
             } else {
-                const sampleNames = (data.samples || []).map(s => `<em>${this.escapeHtml(s.name)}</em>`).join(', ');
+                const sampleNames = (data.samples || []).map(s => String(s.name ?? '')).join(', ');
                 const more = data.count > 5 ? ` and ${data.count - 5} more` : '';
-                previewText.innerHTML = `<i class="fas fa-exclamation-triangle text-warning me-1"></i><strong>${data.count}</strong> contact(s) will be deleted: ${sampleNames}${more}.`;
+                previewText.textContent = `${data.count} contact(s) will be deleted: ${sampleNames}${more}.`;
                 confirmLabel.textContent = `Purge ${data.count} contact(s)`;
                 confirmBtn.disabled = false;
             }
         } catch (err) {
-            previewText.innerHTML = `<i class="fas fa-times-circle text-danger me-1"></i>Error: ${err.message}`;
+            previewText.textContent = `Error: ${err.message}`;
             confirmBtn.disabled = true;
         }
     }

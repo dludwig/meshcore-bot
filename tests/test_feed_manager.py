@@ -93,7 +93,7 @@ class TestQueueFeedMessage:
         _seed_feed(fm_bot.db_manager)
         feed = {"id": 1, "channel_name": "general"}
         item = {"id": "item-1", "title": "Hello Feed"}
-        fm._queue_feed_message(feed, item, "Hello Feed message")
+        assert fm._queue_feed_message(feed, item, "Hello Feed message") is True
         with fm_bot.db_manager.connection() as conn:
             row = conn.execute(
                 "SELECT message, channel_name FROM feed_message_queue WHERE feed_id = 1"
@@ -122,6 +122,28 @@ class TestQueueFeedMessage:
                 "SELECT COUNT(*) FROM feed_message_queue WHERE feed_id = 1"
             ).fetchone()[0]
         assert count == 3
+
+    def test_duplicate_valid_item_id_is_not_queued_twice(self, fm, fm_bot):
+        _seed_feed(fm_bot.db_manager)
+        feed = {"id": 1, "channel_name": "general"}
+        item = {"id": "stable-id", "title": "Same item"}
+
+        assert fm._queue_feed_message(feed, item, "first") is True
+        assert fm._queue_feed_message(feed, item, "second") is False
+
+        with fm_bot.db_manager.connection() as conn:
+            rows = conn.execute(
+                "SELECT message FROM feed_message_queue WHERE feed_id = 1"
+            ).fetchall()
+        assert [row[0] for row in rows] == ["first"]
+
+    def test_blank_item_ids_remain_repeatable(self, fm, fm_bot):
+        _seed_feed(fm_bot.db_manager)
+        feed = {"id": 1, "channel_name": "general"}
+        item = {"id": "", "title": "No stable identifier"}
+
+        assert fm._queue_feed_message(feed, item, "first") is True
+        assert fm._queue_feed_message(feed, item, "second") is True
 
 
 # ---------------------------------------------------------------------------

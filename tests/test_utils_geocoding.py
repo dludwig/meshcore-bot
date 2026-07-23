@@ -7,6 +7,7 @@ geocode_city (async + sync), check_internet_connectivity_async.
 
 import asyncio
 import configparser
+import threading
 import urllib.error
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -338,6 +339,57 @@ class TestRateLimitedNominatimGeocode:
             result = await rate_limited_nominatim_geocode(mock_bot, "nowhere")
         assert result is None
 
+    async def test_geocoder_exception_propagates_without_recording(self, mock_bot):
+        from modules.utils import rate_limited_nominatim_geocode
+        mock_geocoder = Mock()
+        mock_geocoder.geocode = Mock(side_effect=RuntimeError("geocoder failed"))
+
+        with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
+            with pytest.raises(RuntimeError, match="geocoder failed"):
+                await rate_limited_nominatim_geocode(mock_bot, "Seattle")
+
+        mock_bot.nominatim_rate_limiter.wait_for_request.assert_awaited_once()
+        mock_bot.nominatim_rate_limiter.record_request.assert_not_called()
+
+    async def test_blocking_geocoder_does_not_stall_event_loop(self, mock_bot):
+        from modules.utils import rate_limited_nominatim_geocode
+        events = []
+        entered = threading.Event()
+        release = threading.Event()
+        mock_loc = _make_location()
+
+        async def wait_for_request():
+            events.append("wait")
+
+        def geocode(query, *, timeout):
+            events.append("geocode")
+            entered.set()
+            if not release.wait(0.5):
+                raise AssertionError("event loop did not run while geocoder was blocked")
+            return mock_loc
+
+        def record_request():
+            events.append("record")
+
+        mock_bot.nominatim_rate_limiter.wait_for_request = wait_for_request
+        mock_bot.nominatim_rate_limiter.record_request = record_request
+        mock_geocoder = Mock()
+        mock_geocoder.geocode = geocode
+
+        async def heartbeat():
+            while not entered.is_set():
+                await asyncio.sleep(0)
+            release.set()
+
+        with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
+            result, _ = await asyncio.gather(
+                rate_limited_nominatim_geocode(mock_bot, "Seattle"),
+                heartbeat(),
+            )
+
+        assert result is mock_loc
+        assert events == ["wait", "geocode", "record"]
+
 
 # ---------------------------------------------------------------------------
 # rate_limited_nominatim_reverse (async)
@@ -363,6 +415,35 @@ class TestRateLimitedNominatimReverse:
         with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
             result = await rate_limited_nominatim_reverse(mock_bot, "47.6, -122.3")
         mock_bot.nominatim_rate_limiter.wait_for_request.assert_called_once()
+        assert result is mock_loc
+
+    async def test_blocking_geocoder_without_limiter_does_not_stall_event_loop(self):
+        from modules.utils import rate_limited_nominatim_reverse
+        bot = Mock(spec=[])
+        entered = threading.Event()
+        release = threading.Event()
+        mock_loc = _make_location()
+        mock_geocoder = Mock()
+
+        def reverse(coordinates, *, timeout):
+            entered.set()
+            if not release.wait(0.5):
+                raise AssertionError("event loop did not run while geocoder was blocked")
+            return mock_loc
+
+        mock_geocoder.reverse = reverse
+
+        async def heartbeat():
+            while not entered.is_set():
+                await asyncio.sleep(0)
+            release.set()
+
+        with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
+            result, _ = await asyncio.gather(
+                rate_limited_nominatim_reverse(bot, "47.6, -122.3"),
+                heartbeat(),
+            )
+
         assert result is mock_loc
 
 

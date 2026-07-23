@@ -1522,6 +1522,12 @@ max_posts_per_check = 10
 # HTTP request timeout (seconds)
 feed_request_timeout = 30
 
+# Maximum decompressed response body size (bytes)
+max_response_bytes = 2097152
+
+# Maximum feed/API items parsed from one response
+max_parsed_items = 500
+
 # User agent for HTTP requests
 feed_user_agent = MeshCoreBot/1.0 FeedManager
 

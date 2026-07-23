@@ -50,19 +50,24 @@ meshcore-bot = "meshcore_bot:main"
 meshcore-viewer = "modules.web_viewer.app:main"
 
 [tool.setuptools]
-# Include both the main module and the modules package
 py-modules = ["meshcore_bot"]
-packages = ["modules", "modules.commands", "modules.commands.alternatives", 
-            "modules.commands.alternatives.inactive", "modules.service_plugins", "modules.web_viewer"]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["modules*", "translations*", "data*"]
+exclude = ["tests*", "local*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.json"]
 modules = [
     "web_viewer/templates/*.html",
+    "web_viewer/templates/**/*.html",
     "web_viewer/static/*",
     "web_viewer/static/*/*",
     "web_viewer/static/*/*/*",
 ]
+translations = ["*.json"]
+"data.randomlines" = ["*.txt"]
 
 [tool.ruff]
 # Match CI/Makefile installs so lint rules do not drift on unpinned `pip install ruff`.

@@ -17,11 +17,12 @@
 #
 # Prerequisites:
 #   - Linux system with systemd OR macOS
-#   - Python 3.9+ installed
+#   - Python 3.10+ installed
 #   - sudo access (script will prompt if needed)
 #   - Run from the meshcore-bot directory
 
 set -e
+umask 077
 
 # Colors for output
 RED='\033[0;31m'
@@ -53,6 +54,8 @@ if [[ "$IS_MACOS" == true ]]; then
     SERVICE_USER="$(whoami)"  # macOS: use current user or _meshcore
     SERVICE_GROUP="staff"
     INSTALL_DIR="/usr/local/meshcore-bot"
+    CONF_DIR="/usr/local/etc/meshcore-bot"
+    STATE_DIR="/usr/local/var/lib/meshcore-bot"
     LOG_DIR="/usr/local/var/log/meshcore-bot"
     SERVICE_FILE="com.meshcore.bot.plist"
     LAUNCHD_DIR="/Library/LaunchDaemons"
@@ -60,10 +63,14 @@ else
     SERVICE_USER="meshcore"
     SERVICE_GROUP="meshcore"
     INSTALL_DIR="/opt/meshcore-bot"
+    CONF_DIR="/etc/meshcore-bot"
+    STATE_DIR="/var/lib/meshcore-bot"
     LOG_DIR="/var/log/meshcore-bot"
     SERVICE_FILE="meshcore-bot.service"
     SYSTEMD_DIR="/etc/systemd/system"
 fi
+
+CONFIG_FILE="$CONF_DIR/config.ini"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -222,8 +229,33 @@ fi
 # Check if Python 3 is available
 if ! command -v python3 &> /dev/null; then
     print_error "Python 3 is not installed or not in PATH"
-    print_error "Please install Python 3.9 or higher before running this script"
+    print_error "Please install Python 3.10 or higher before running this script"
     exit 1
+fi
+if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+    print_error "Python 3.10 or higher is required"
+    print_error "Found: $(python3 --version 2>&1)"
+    exit 1
+fi
+
+# Stop a running legacy service before changing code or taking the SQLite
+# backup used for layout migration.  This runs only after sudo re-execution and
+# service-manager validation, so --help and unprivileged discovery stay inert.
+SERVICE_WAS_ACTIVE=false
+if [[ "$IS_MACOS" == true ]]; then
+    if launchctl list "$PLIST_NAME" &>/dev/null; then
+        SERVICE_WAS_ACTIVE=true
+        if ! launchctl unload "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null; then
+            launchctl stop "$PLIST_NAME" 2>/dev/null || true
+        fi
+        if launchctl list "$PLIST_NAME" &>/dev/null; then
+            print_error "The launchd service is still running; refusing an unsafe live database migration"
+            exit 1
+        fi
+    fi
+elif systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    SERVICE_WAS_ACTIVE=true
+    systemctl stop "$SERVICE_NAME"
 fi
 
 print_section "Step 1: Setting Up Service User"
@@ -291,160 +323,53 @@ else
     print_success "Created installation directory: $INSTALL_DIR"
 fi
 
-# Create log directory
-mkdir -p "$LOG_DIR"
+# Create mutable runtime directories separately from executable code.
+mkdir -p "$CONF_DIR" "$STATE_DIR" "$LOG_DIR"
+print_success "Created configuration directory: $CONF_DIR"
+print_success "Created state directory: $STATE_DIR"
 print_success "Created log directory: $LOG_DIR"
 
 print_section "Step 3: Copying Bot Files"
 if [[ "$UPGRADE_MODE" == true ]]; then
     print_info "Upgrading files in $INSTALL_DIR"
-    print_info "Only newer files will be copied, preserving existing configuration"
+    print_info "Replacing executable files from the trusted source while preserving explicit runtime state"
 else
     print_info "Copying bot files to $INSTALL_DIR"
-    print_info "Existing files will be updated only if source is newer"
+    print_info "Executable files will exactly match the trusted source"
 fi
 
-# Function to copy files intelligently
+# Synchronize executable code authoritatively.  Using --update or a merge-only
+# fallback can preserve a newer/stale Python file written by a previously
+# compromised service account and then cement it as root-owned executable code.
+# Only the explicitly excluded runtime paths survive an upgrade.
 copy_files_smart() {
     local source_dir="$1"
     local dest_dir="$2"
-    local files_copied=0
-    local files_skipped=0
-    local files_updated=0
-    
-    # Use rsync if available (better for this use case)
-    if command -v rsync &> /dev/null; then
-        print_info "Using rsync for efficient file copying"
-        # Preserve config.ini if it exists
-        local preserve_config=""
-        if [ -f "$dest_dir/config.ini" ]; then
-            preserve_config="--exclude=config.ini"
-            print_info "Preserving existing config.ini (not overwriting)"
-        fi
-        
-        # Note: --update flag preserves files in alternatives/ if destination is newer or same
-        # This protects user's custom alternative commands while allowing updates to repository files
-        if [ -d "$dest_dir/modules/commands/alternatives" ]; then
-            print_info "Preserving existing alternative commands (only updating if source is newer)"
-        fi
-        
-        # Preserve install dir's local/ entirely (user custom commands and service plugins)
-        # Never overwrite or delete anything under $dest_dir/local/
-        if [ -d "$dest_dir/local" ]; then
-            print_info "Preserving existing local/ directory (not overwriting)"
-        fi
-        
-        # Exclude patterns
-        rsync -a --update --exclude='.git' \
-              --exclude='__pycache__' \
-              --exclude='*.pyc' \
-              --exclude='*.pyo' \
-              --exclude='.DS_Store' \
-              --exclude='venv' \
-              --exclude='*.db' \
-              --exclude='*.db-shm' \
-              --exclude='*.db-wal' \
-              --exclude='*.log' \
-              --exclude='backups' \
-              --exclude='local/' \
-              $preserve_config \
-              "$source_dir/" "$dest_dir/" 2>/dev/null || {
-            print_warning "rsync had some issues, falling back to manual copy"
-        }
-        # If install dir has no local/, create minimal structure from source so service has valid layout
-        if [ ! -d "$dest_dir/local" ]; then
-            print_info "Creating local/ directory structure (first-time install)"
-            mkdir -p "$dest_dir/local/commands" "$dest_dir/local/service_plugins"
-            [ -f "$source_dir/local/README.md" ] && cp "$source_dir/local/README.md" "$dest_dir/local/" || true
-            [ -f "$source_dir/local/__init__.py" ] && cp "$source_dir/local/__init__.py" "$dest_dir/local/" || true
-            [ -f "$source_dir/local/commands/.gitkeep" ] && cp "$source_dir/local/commands/.gitkeep" "$dest_dir/local/commands/" || true
-            [ -f "$source_dir/local/service_plugins/.gitkeep" ] && cp "$source_dir/local/service_plugins/.gitkeep" "$dest_dir/local/service_plugins/" || true
-        fi
-        print_success "Files synchronized using rsync"
-        return 0
+    if ! command -v rsync &> /dev/null; then
+        print_error "rsync is required for a source-authoritative secure install; install rsync and retry"
+        return 1
     fi
-    
-    # Fallback: manual copy with find
-    print_info "Using manual file copy (consider installing rsync for better performance)"
-    
-    # Preserve alternatives directory if it exists
-    if [ -d "$dest_dir/modules/commands/alternatives" ]; then
-        print_info "Preserving existing alternative commands (not overwriting)"
+
+    print_info "Using rsync for source-authoritative executable synchronization"
+    if ! rsync -a --delete --exclude='.git' \
+          --exclude='__pycache__' \
+          --exclude='*.pyc' \
+          --exclude='*.pyo' \
+          --exclude='.DS_Store' \
+          --exclude='venv' \
+          --exclude='*.db' \
+          --exclude='*.db-shm' \
+          --exclude='*.db-wal' \
+          --exclude='*.log' \
+          --exclude='backups' \
+          --exclude='local/' \
+          --exclude='config.ini' \
+          "$source_dir/" "$dest_dir/"; then
+        print_error "rsync failed; refusing to continue with a partially synchronized code tree"
+        return 1
     fi
-    
-    # Preserve install dir's local/ entirely - never overwrite when it exists
-    if [ -d "$dest_dir/local" ]; then
-        print_info "Preserving existing local/ directory (not overwriting)"
-    fi
-    
-    # Copy files, preserving config.ini if it exists
-    while IFS= read -r file; do
-        local rel_path="${file#$source_dir/}"
-        local dest_file="$dest_dir/$rel_path"
-        local dest_dir_path
-        dest_dir_path="$(dirname "$dest_file")"
-        
-        # Skip excluded patterns
-        [[ "$rel_path" == *".git"* ]] && continue
-        [[ "$rel_path" == *"__pycache__"* ]] && continue
-        [[ "$rel_path" == *".pyc" ]] && continue
-        [[ "$rel_path" == *".pyo" ]] && continue
-        [[ "$rel_path" == *".DS_Store"* ]] && continue
-        [[ "$rel_path" == *"/venv/"* ]] && continue
-        [[ "$rel_path" == *".db" ]] && continue
-        [[ "$rel_path" == *".db-shm" ]] && continue
-        [[ "$rel_path" == *".db-wal" ]] && continue
-        [[ "$rel_path" == *".log" ]] && continue
-        [[ "$rel_path" == *"/backups/"* ]] && continue
-        
-        # Preserve install dir's local/ entirely - skip all files under local/ when dest has local/
-        if [[ "$rel_path" == "local/"* ]] && [ -d "$dest_dir/local" ]; then
-            files_skipped=$((files_skipped + 1))
-            continue
-        fi
-        
-        # Preserve alternatives directory - only update if source file is newer
-        if [[ "$rel_path" == "modules/commands/alternatives/"* ]] && [ -d "$dest_dir/modules/commands/alternatives" ]; then
-            if [ -f "$dest_file" ]; then
-                # File exists in destination - only update if source is newer
-                if [ "$file" -nt "$dest_file" ]; then
-                    # Source is newer, will update below
-                    :
-                else
-                    # Destination is same or newer - preserve user's version
-                    files_skipped=$((files_skipped + 1))
-                    continue
-                fi
-            fi
-            # File doesn't exist in destination, or source is newer - will copy below
-        fi
-        
-        # Create destination directory if needed
-        mkdir -p "$dest_dir_path"
-        
-        # Special handling for config.ini - preserve existing if it exists
-        if [[ "$rel_path" == "config.ini" ]] && [ -f "$dest_file" ]; then
-            files_skipped=$((files_skipped + 1))
-            continue
-        fi
-        
-        # Copy if destination doesn't exist or source is newer
-        if [ ! -f "$dest_file" ] || [ "$file" -nt "$dest_file" ]; then
-            if cp "$file" "$dest_file" 2>/dev/null; then
-                if [ -f "$dest_file" ]; then
-                    files_updated=$((files_updated + 1))
-                else
-                    files_copied=$((files_copied + 1))
-                fi
-            else
-                print_warning "Could not copy $rel_path"
-            fi
-        else
-            files_skipped=$((files_skipped + 1))
-        fi
-    done < <(find "$source_dir" -type f 2>/dev/null)
-    
-    print_success "File sync complete: $files_updated updated, $files_copied new, $files_skipped unchanged"
+
+    print_success "Executable files synchronized authoritatively using rsync"
 }
 
 # Copy files using smart copy function
@@ -465,52 +390,63 @@ if command -v git &>/dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
     print_success "Wrote version info (${INSTALLER_VER}) to $INSTALL_DIR/.version_info"
 fi
 
-# If no config.ini in install dir, create it from config.ini.example
-if [ ! -f "$INSTALL_DIR/config.ini" ]; then
-    if [ -f "$INSTALL_DIR/config.ini.example" ]; then
-        cp "$INSTALL_DIR/config.ini.example" "$INSTALL_DIR/config.ini"
-        print_success "Created $INSTALL_DIR/config.ini from config.ini.example (no config was present)"
+# Keep configuration out of the root-owned application tree.  On upgrade, copy
+# the legacy config once so existing credentials and settings are preserved.
+if [ ! -f "$CONFIG_FILE" ]; then
+    if [ -f "$INSTALL_DIR/config.ini" ] && [ ! -L "$INSTALL_DIR/config.ini" ]; then
+        cp -p "$INSTALL_DIR/config.ini" "$CONFIG_FILE"
+        print_success "Migrated existing configuration to $CONFIG_FILE"
+    elif [ -f "$INSTALL_DIR/config.ini.example" ]; then
+        cp "$INSTALL_DIR/config.ini.example" "$CONFIG_FILE"
+        print_success "Created $CONFIG_FILE from config.ini.example"
     elif [ -f "$SCRIPT_DIR/config.ini.example" ]; then
-        cp "$SCRIPT_DIR/config.ini.example" "$INSTALL_DIR/config.ini"
-        print_success "Created $INSTALL_DIR/config.ini from config.ini.example (no config was present)"
+        cp "$SCRIPT_DIR/config.ini.example" "$CONFIG_FILE"
+        print_success "Created $CONFIG_FILE from config.ini.example"
     else
-        print_warning "config.ini.example not found. Create $INSTALL_DIR/config.ini manually before starting the bot."
+        print_warning "config.ini.example not found. Create $CONFIG_FILE manually before starting the bot."
     fi
 fi
 
-# Create venv and install dependencies before chown so the service user ends up
-# owning a complete, working venv (avoids partial root-owned venv and import errors).
+# Rewrite all relative runtime paths and coherently migrate an existing SQLite
+# database.  Absolute custom paths are left untouched; operators can grant an
+# additional systemd path explicitly when they intentionally store state there.
+if [ -f "$CONFIG_FILE" ]; then
+    python3 "$INSTALL_DIR/scripts/migrate_service_layout.py" \
+        --config "$CONFIG_FILE" \
+        --legacy-base "$INSTALL_DIR" \
+        --state-dir "$STATE_DIR" \
+        --log-dir "$LOG_DIR"
+fi
+
+# Remove a source-tree config copied into the application tree only when it is
+# identical to the active service config; otherwise retain it root-only as a
+# migration backup.
+if [ -f "$INSTALL_DIR/config.ini" ] && [ ! -L "$INSTALL_DIR/config.ini" ]; then
+    chmod 0600 "$INSTALL_DIR/config.ini"
+fi
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    # Retain the old diagnostic wording for automation which looks for it.
+    if [ -f "$INSTALL_DIR/config.ini.example" ]; then
+        print_warning "Failed to create $CONFIG_FILE; check directory permissions"
+    fi
+fi
+
+# Build dependencies in a fresh environment.  The legacy venv was writable by
+# the service account; reusing it could preserve a malicious .pth/module and
+# turn that persistence into root-owned executable code during hardening.
 print_section "Step 4: Setting Up Python Virtual Environment"
-if [ -d "$INSTALL_DIR/venv" ]; then
-    print_info "Virtual environment already exists at $INSTALL_DIR/venv"
-    print_info "Preserving existing virtual environment"
-    if [[ "$UPGRADE_MODE" == true ]]; then
-        print_info "Upgrade mode: will update dependencies"
-    else
-        print_info "Will update dependencies if requirements.txt changed"
-    fi
-else
-    print_info "Creating an isolated Python environment for the bot"
-    print_info "This ensures dependencies don't conflict with system Python packages"
-    python3 -m venv "$INSTALL_DIR/venv"
-    print_success "Created virtual environment at $INSTALL_DIR/venv"
-fi
-
-# Verify virtual environment looks healthy
-VENV_PYTHON="$INSTALL_DIR/venv/bin/python"
-if [ ! -x "$VENV_PYTHON" ]; then
-    print_error "Python virtual environment at $INSTALL_DIR/venv appears to be incomplete or corrupted"
-    print_error "Expected Python executable not found at: $VENV_PYTHON"
-    print_info "Try removing $INSTALL_DIR/venv and re-running this installer to recreate it:"
-    echo "  sudo rm -rf $INSTALL_DIR/venv"
-    echo "  sudo ./install-service.sh"
-    exit 1
-fi
+VENV_BUILD="$INSTALL_DIR/.venv-build-$$"
+VENV_OLD="$INSTALL_DIR/.venv-old-$$"
+rm -rf "$VENV_BUILD" "$VENV_OLD"
+print_info "Creating a fresh isolated Python environment"
+python3 -m venv "$VENV_BUILD"
+VENV_BUILD_PYTHON="$VENV_BUILD/bin/python"
 
 # Ensure pip is available and up to date inside the venv
 print_info "Ensuring pip is available and up to date in the virtual environment"
-$VENV_PYTHON -m ensurepip --upgrade >/dev/null 2>&1 || true
-$VENV_PYTHON -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+$VENV_BUILD_PYTHON -m ensurepip --upgrade >/dev/null 2>&1 || true
+$VENV_BUILD_PYTHON -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
 
 # Install dependencies in venv using python -m pip (more portable than calling pip directly)
 print_info "Installing Python dependencies from requirements.txt"
@@ -519,12 +455,22 @@ if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
     print_error "requirements.txt not found in installation directory"
     exit 1
 fi
-$VENV_PYTHON -m pip install --quiet -r "$INSTALL_DIR/requirements.txt" || {
+$VENV_BUILD_PYTHON -m pip install --quiet -r "$INSTALL_DIR/requirements.txt" || {
     print_error "Failed to install Python dependencies"
     print_info "You may need to check your internet connection or Python version"
+    rm -rf "$VENV_BUILD"
     exit 1
 }
-print_success "Installed all Python dependencies"
+if [ -d "$INSTALL_DIR/venv" ]; then
+    mv "$INSTALL_DIR/venv" "$VENV_OLD"
+fi
+if ! mv "$VENV_BUILD" "$INSTALL_DIR/venv"; then
+    [ -d "$VENV_OLD" ] && mv "$VENV_OLD" "$INSTALL_DIR/venv"
+    print_error "Failed to activate the newly built virtual environment"
+    exit 1
+fi
+rm -rf "$VENV_OLD"
+print_success "Installed all Python dependencies into a fresh virtual environment"
 
 # Optional extras
 echo ""
@@ -555,19 +501,37 @@ fi
 
 print_section "Step 5: Setting File Permissions"
 print_info "Configuring file ownership and permissions for security"
-print_info "The service user will own all files, with appropriate read/write permissions"
-# Set ownership
-chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
+print_info "Executable code is root-owned; the service owns only configuration and runtime state"
+# Executable code and the virtual environment must not be writable by the
+# network-facing service account.
+# The service group receives read-only access to any explicitly installed key
+# material while root remains the only account able to modify it.
+CODE_GROUP="$SERVICE_GROUP"
+chown -R "root:$CODE_GROUP" "$INSTALL_DIR"
 chown -R "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR"
-print_success "Set ownership to $SERVICE_USER:$SERVICE_GROUP"
+chown -R "$SERVICE_USER:$SERVICE_GROUP" "$CONF_DIR" "$STATE_DIR"
+print_success "Separated root-owned code from service-owned runtime state"
 
-# Set permissions
+# Code is readable/executable but never service-writable.  Preserve executable
+# bits created by the virtualenv and source scripts while dropping group/other
+# write access.
 chmod 755 "$INSTALL_DIR"
+chmod -R go-w "$INSTALL_DIR"
 find "$INSTALL_DIR" -type f -name "*.py" -exec chmod 644 {} \; 2>/dev/null || true
-find "$INSTALL_DIR" -type f -name "*.ini" -exec chmod 644 {} \; 2>/dev/null || true
 find "$INSTALL_DIR" -type f -name "*.txt" -exec chmod 644 {} \; 2>/dev/null || true
 find "$INSTALL_DIR" -type f -name "*.json" -exec chmod 644 {} \; 2>/dev/null || true
 find "$INSTALL_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
+find "$INSTALL_DIR" -type f -name "*.ini" -exec chmod 600 {} \; 2>/dev/null || true
+find "$INSTALL_DIR" -type f \( -name ".env" -o -name "*.key" -o -name "*.pem" -o -name "*.p12" -o -name "*.pfx" \) -exec chmod 640 {} \; 2>/dev/null || true
+find "$INSTALL_DIR" -type f \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "*.log" -o -name "*.log.*" \) -exec chmod 600 {} \; 2>/dev/null || true
+
+# Credentials, databases, backups, and local-plugin settings are private to the
+# service user.  Directories must be writable for SQLite sidecars and atomic
+# config updates; the 0700 boundary prevents local disclosure.
+find "$CONF_DIR" "$STATE_DIR" -type d -exec chmod 700 {} \; 2>/dev/null || true
+find "$CONF_DIR" "$STATE_DIR" -type f -exec chmod 600 {} \; 2>/dev/null || true
+chmod 750 "$LOG_DIR"
+find "$LOG_DIR" -type f -exec chmod 600 {} \; 2>/dev/null || true
 
 # Make main script executable
 chmod 755 "$INSTALL_DIR/meshcore_bot.py"
@@ -594,13 +558,16 @@ import re
 with open('$SERVICE_FILE', 'r') as f:
     content = f.read()
 content = content.replace('/usr/local/meshcore-bot', '$INSTALL_DIR')
+content = content.replace('/usr/local/etc/meshcore-bot', '$CONF_DIR')
+content = content.replace('/usr/local/var/lib/meshcore-bot', '$STATE_DIR')
 content = content.replace('/usr/local/var/log/meshcore-bot', '$LOG_DIR')
+content = content.replace('__MESHCORE_SERVICE_USER__', '$SERVICE_USER')
 with open('$LAUNCHD_DIR/$SERVICE_FILE', 'w') as f:
     f.write(content)
 "
         else
             # Fallback to sed (works on both macOS and Linux)
-            sed "s|/usr/local/meshcore-bot|$INSTALL_DIR|g; s|/usr/local/var/log/meshcore-bot|$LOG_DIR|g" "$SERVICE_FILE" > "$LAUNCHD_DIR/$SERVICE_FILE"
+            sed "s|/usr/local/meshcore-bot|$INSTALL_DIR|g; s|/usr/local/etc/meshcore-bot|$CONF_DIR|g; s|/usr/local/var/lib/meshcore-bot|$STATE_DIR|g; s|/usr/local/var/log/meshcore-bot|$LOG_DIR|g; s|__MESHCORE_SERVICE_USER__|$SERVICE_USER|g" "$SERVICE_FILE" > "$LAUNCHD_DIR/$SERVICE_FILE"
         fi
         print_success "Copied and configured plist file to $LAUNCHD_DIR/"
     fi
@@ -668,6 +635,15 @@ else
     print_info "Note: The service is enabled but not started yet. You'll start it after configuration."
 fi
 
+if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
+    print_info "Restarting the service because it was running before the upgrade"
+    if [[ "$IS_MACOS" == true ]]; then
+        launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || true
+    else
+        systemctl start "$SERVICE_NAME"
+    fi
+fi
+
 if [[ "$UPGRADE_MODE" == true ]]; then
     print_section "Upgrade Complete!"
     echo ""
@@ -684,7 +660,7 @@ echo -e "${BLUE}📋 Next Steps${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "${CYAN}1. Configure the bot:${NC}"
-echo -e "   ${YELLOW}sudo nano $INSTALL_DIR/config.ini${NC}"
+echo -e "   ${YELLOW}sudo nano $CONFIG_FILE${NC}"
 echo "   Edit the configuration file with your bot settings, API keys, and device information"
 echo ""
 
@@ -744,7 +720,8 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}📁 Important File Locations${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "  ${CYAN}Configuration file:${NC}  ${YELLOW}$INSTALL_DIR/config.ini${NC}"
+echo -e "  ${CYAN}Configuration file:${NC}  ${YELLOW}$CONFIG_FILE${NC}"
+echo -e "  ${CYAN}State directory:${NC}       ${YELLOW}$STATE_DIR${NC}"
 echo -e "  ${CYAN}Log directory:${NC}        ${YELLOW}$LOG_DIR${NC}"
 echo -e "  ${CYAN}Installation directory:${NC} ${YELLOW}$INSTALL_DIR${NC}"
 if [[ "$IS_MACOS" == true ]]; then

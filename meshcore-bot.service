@@ -9,7 +9,7 @@ Type=simple
 User=meshcore
 Group=meshcore
 WorkingDirectory=/opt/meshcore-bot
-ExecStart=/opt/meshcore-bot/venv/bin/python /opt/meshcore-bot/meshcore_bot.py
+ExecStart=/opt/meshcore-bot/venv/bin/python /opt/meshcore-bot/meshcore_bot.py --config /etc/meshcore-bot/config.ini
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
@@ -26,7 +26,15 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/meshcore-bot
+UMask=0077
+ConfigurationDirectory=meshcore-bot
+ConfigurationDirectoryMode=0700
+StateDirectory=meshcore-bot
+StateDirectoryMode=0700
+LogsDirectory=meshcore-bot
+LogsDirectoryMode=0750
+ReadWritePaths=/etc/meshcore-bot
+ReadWritePaths=/var/lib/meshcore-bot
 ReadWritePaths=/var/log/meshcore-bot
 
 # Resource limits

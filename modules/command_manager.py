@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from importlib import resources
+from pathlib import Path
 from typing import Any
 
 from meshcore import EventType
@@ -993,13 +995,13 @@ class CommandManager:
             if not self._is_channel_trigger_allowed(key, message):
                 return None
 
-        file_path = self.bot.config.get("RandomLine", f"file.{key}", fallback="").strip()
-        if not file_path:
+        configured_file_path = self.bot.config.get("RandomLine", f"file.{key}", fallback="").strip()
+        if not configured_file_path:
             self.logger.warning(f"RandomLine matched '{key}' but missing config file.{key}")
             return None
 
         try:
-            validated_path = validate_safe_path(file_path, allow_absolute=True)
+            validated_path = validate_safe_path(configured_file_path, allow_absolute=True)
         except ValueError:
             validated_path = None
         if validated_path is None:
@@ -1009,8 +1011,25 @@ class CommandManager:
 
         # Read usable lines
         try:
-            with open(file_path, encoding="utf-8") as f:
-                lines = [ln.strip() for ln in f.readlines()]
+            if Path(file_path).is_file():
+                with open(file_path, encoding="utf-8") as f:
+                    lines = [ln.strip() for ln in f.readlines()]
+            else:
+                # Shipped RandomLine defaults live in package data in wheels.
+                # Only map the documented data/randomlines path; arbitrary
+                # missing custom files must still fail instead of silently
+                # selecting a same-named bundled file.
+                normalized = configured_file_path.replace("\\", "/").lstrip("./")
+                marker = "data/randomlines/"
+                if not normalized.startswith(marker):
+                    raise FileNotFoundError(file_path)
+                resource_name = normalized.removeprefix(marker)
+                if not resource_name or "/" in resource_name:
+                    raise FileNotFoundError(file_path)
+                bundled = resources.files("data.randomlines").joinpath(resource_name)
+                if not bundled.is_file():
+                    raise FileNotFoundError(file_path)
+                lines = [ln.strip() for ln in bundled.read_text(encoding="utf-8").splitlines()]
             lines = [ln for ln in lines if ln]  # drop blank lines
         except Exception as e:
             self.logger.error(f"RandomLine error reading {file_path} for '{key}': {e}", exc_info=True)

@@ -152,7 +152,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script>
+<script nonce="{{ g.csp_nonce }}">
 class PluginsManager {
     constructor() {
         this.loadingEl = document.getElementById('plugins-loading');
@@ -181,8 +181,8 @@ class PluginsManager {
     async load() {
         this.loadingEl.classList.remove('d-none');
         this.errorEl.classList.add('d-none');
-        this.commandsList.innerHTML = '';
-        this.servicesList.innerHTML = '';
+        this.commandsList.replaceChildren();
+        this.servicesList.replaceChildren();
         this.cards = [];
         try {
             const resp = await fetch('/api/plugins');
@@ -246,17 +246,30 @@ class PluginsManager {
 
         const header = document.createElement('div');
         header.className = 'plugin-header';
-        header.innerHTML = `
-            <div class="form-check form-switch mb-0">
-                <input class="form-check-input" type="checkbox" role="switch" id="${toggleId}" ${plugin.enabled ? 'checked' : ''}>
-            </div>
-            <div class="flex-grow-1 plugin-headtext">
-                <span class="plugin-title">${escapeHtml(plugin.label)}</span>
-                <span class="plugin-section-label">[${escapeHtml(plugin.section)}]</span>
-                <div class="plugin-desc">${escapeHtml(plugin.description || '')}</div>
-            </div>
-            <i class="fas fa-chevron-down plugin-chevron"></i>
-        `;
+        const switchWrapper = document.createElement('div');
+        switchWrapper.className = 'form-check form-switch mb-0';
+        const toggle = document.createElement('input');
+        toggle.className = 'form-check-input';
+        toggle.type = 'checkbox';
+        toggle.role = 'switch';
+        toggle.id = toggleId;
+        toggle.checked = Boolean(plugin.enabled);
+        switchWrapper.appendChild(toggle);
+        const headText = document.createElement('div');
+        headText.className = 'flex-grow-1 plugin-headtext';
+        const title = document.createElement('span');
+        title.className = 'plugin-title';
+        title.textContent = String(plugin.label ?? '');
+        const section = document.createElement('span');
+        section.className = 'plugin-section-label';
+        section.textContent = `[${String(plugin.section ?? '')}]`;
+        const description = document.createElement('div');
+        description.className = 'plugin-desc';
+        description.textContent = String(plugin.description ?? '');
+        headText.append(title, section, description);
+        const chevron = document.createElement('i');
+        chevron.className = 'fas fa-chevron-down plugin-chevron';
+        header.append(switchWrapper, headText, chevron);
         card.appendChild(header);
 
         const body = document.createElement('div');
@@ -388,7 +401,6 @@ class PluginsManager {
         body.appendChild(inner);
         card.appendChild(body);
 
-        const toggle = header.querySelector('#' + CSS.escape(toggleId));
         const collapse = new bootstrap.Collapse(body, { toggle: false });
 
         // Header click expands/collapses; clicking the enable switch must not.
@@ -645,16 +657,23 @@ function buildDynamicEditor(ds) {
     el.className = 'dynamic-section mt-3';
 
     const head = document.createElement('div');
-    head.innerHTML = `<div class="fw-semibold small mb-1">${escapeHtml(ds.label)}</div>`;
+    const heading = document.createElement('div');
+    heading.className = 'fw-semibold small mb-1';
+    heading.textContent = String(ds.label ?? '');
+    head.appendChild(heading);
     if (ds.help) head.appendChild(helpText(ds.help));
     el.appendChild(head);
 
     // Column headers
     const colhead = document.createElement('div');
     colhead.className = 'row g-2 text-muted small mt-1 d-none d-md-flex';
-    colhead.innerHTML =
-        `<div class="col-md-5">${escapeHtml(ds.key_label)}</div>` +
-        `<div class="col-md-6">${escapeHtml(ds.value_label)}</div>`;
+    const keyHeading = document.createElement('div');
+    keyHeading.className = 'col-md-5';
+    keyHeading.textContent = String(ds.key_label ?? '');
+    const valueHeading = document.createElement('div');
+    valueHeading.className = 'col-md-6';
+    valueHeading.textContent = String(ds.value_label ?? '');
+    colhead.append(keyHeading, valueHeading);
     el.appendChild(colhead);
 
     const rowsContainer = document.createElement('div');
@@ -730,7 +749,10 @@ function buildRepeatingBlockEditor(rb) {
     const el = document.createElement('div');
     el.className = 'repeating-section mt-3';
     const head = document.createElement('div');
-    head.innerHTML = `<div class="fw-semibold small mb-1">${escapeHtml(rb.label)}</div>`;
+    const heading = document.createElement('div');
+    heading.className = 'fw-semibold small mb-1';
+    heading.textContent = String(rb.label ?? '');
+    head.appendChild(heading);
     if (rb.help) head.appendChild(helpText(rb.help));
     el.appendChild(head);
 
@@ -801,7 +823,9 @@ function buildRepeatingBlockEditor(rb) {
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.className = 'btn btn-outline-secondary btn-sm mt-1';
-    addBtn.innerHTML = `<i class="fas fa-plus me-1"></i>Add ${escapeHtml(rb.item_label)}`;
+    const addIcon = document.createElement('i');
+    addIcon.className = 'fas fa-plus me-1';
+    addBtn.append(addIcon, document.createTextNode(`Add ${String(rb.item_label ?? '')}`));
     addBtn.addEventListener('click', () => addBlock({ enabled: true, values: {} }));
     el.appendChild(addBtn);
 

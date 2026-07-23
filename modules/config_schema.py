@@ -161,6 +161,8 @@ SECTIONS: dict[str, SectionMeta] = {
     "Feed_Manager": SectionMeta(keys={
         "feed_manager_enabled": KeyMeta(type="bool"),
         "allow_private_urls": KeyMeta(type="bool"),
+        "max_response_bytes": KeyMeta(type="int", default="2097152"),
+        "max_parsed_items": KeyMeta(type="int", default="500"),
     }),
     "Weather_Service": SectionMeta(keys={
         "enabled": KeyMeta(type="bool"),

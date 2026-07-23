@@ -9,9 +9,11 @@ import datetime
 import hashlib
 import json
 import os
+import socket
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,7 +28,24 @@ from .scheduled_message_cron import (
     parse_scheduled_message_value,
 )
 from .security_utils import validate_external_url
-from .utils import decode_escape_sequences, format_keyword_response_with_placeholders, get_config_timezone
+from .utils import (
+    decode_escape_sequences,
+    format_keyword_response_with_placeholders,
+    get_config_timezone,
+)
+
+_CHANNEL_OPERATION_TYPES = ('add', 'remove')
+_RADIO_OPERATION_TYPES = (
+    'radio_reboot',
+    'radio_connect',
+    'radio_disconnect',
+    'firmware_read',
+    'firmware_write',
+    'radio_params_read',
+    'radio_params_write',
+    'radio_advert',
+)
+_CONFIG_OPERATION_TYPES = ('config_reload',)
 
 
 class MessageScheduler:
@@ -35,6 +54,12 @@ class MessageScheduler:
     def __init__(self, bot):
         self.bot = bot
         self.logger = bot.logger
+        self._claim_owner_host = socket.gethostname()
+        self._claim_owner_pid = os.getpid()
+        # Unique to this scheduler/process start; retained with the PID to make
+        # ownership auditable and prevent one scheduler instance finalizing a
+        # claim made by another instance in the same process.
+        self._claim_owner_boot_id = uuid.uuid4().hex
         self.scheduled_messages = {}
         self.scheduler_thread = None
         self._apscheduler: Optional[BackgroundScheduler] = None
@@ -48,6 +73,10 @@ class MessageScheduler:
         self.last_db_backup_run = 0
         self.last_log_rotation_check_time = 0
         self.maintenance = MaintenanceRunner(bot, get_current_time=self.get_current_time)
+        db_manager = getattr(bot, 'db_manager', None)
+        db_path = getattr(db_manager, 'db_path', None)
+        if db_manager is not None and isinstance(db_path, (str, os.PathLike)):
+            self._recover_interrupted_operations()
 
     def get_current_time(self):
         """Get current time in configured timezone"""
@@ -727,7 +756,7 @@ class MessageScheduler:
             if hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph and hasattr(self.bot.mesh_graph, 'delete_expired_edges_from_db'):
                 self.bot.mesh_graph.delete_expired_edges_from_db(mesh_connections_days)
 
-            ran_at = datetime.datetime.now(datetime.UTC).isoformat()
+            ran_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
             self._last_retention_stats['ran_at'] = ran_at
             try:
                 self.bot.db_manager.set_metadata('maint.status.data_retention_ran_at', ran_at)
@@ -739,7 +768,7 @@ class MessageScheduler:
             self.logger.exception(f"Error during data retention cleanup: {e}")
             self._last_retention_stats['error'] = str(e)
             try:
-                ran_at = datetime.datetime.now(datetime.UTC).isoformat()
+                ran_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 self.bot.db_manager.set_metadata('maint.status.data_retention_ran_at', ran_at)
                 self.bot.db_manager.set_metadata('maint.status.data_retention_outcome', f'error: {e}')
             except Exception:
@@ -835,106 +864,237 @@ class MessageScheduler:
             raise RuntimeError(f"send_advert failed: {reason}")
         self.logger.info("Interval-based flood advert sent successfully")
 
-    async def _process_channel_operations(self):
-        """Process pending channel operations from the web viewer"""
+    def _claim_operation(self, operation_types: tuple[str, ...]) -> Optional[dict[str, Any]]:
+        """Atomically claim the oldest pending operation in one serialized group.
+
+        ``BEGIN IMMEDIATE`` prevents two scheduler ticks (or two bot processes)
+        from selecting the same pending row.  A group permits only one
+        ``processing`` operation at a time, preserving device-operation order
+        when an earlier command is slow.
+
+        Processing rows are never auto-requeued.  If a previous same-host owner
+        is provably dead at startup, its claim becomes ``interrupted`` so later
+        work can proceed without replaying the ambiguous action.  Live or
+        unprovable owners continue to block the group conservatively.
+        """
+        if not operation_types:
+            raise ValueError("operation_types must not be empty")
+
+        placeholders = ', '.join('?' for _ in operation_types)
+        with self.bot.db_manager.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('BEGIN IMMEDIATE')
+
+            cursor.execute(
+                f'''SELECT id
+                    FROM channel_operations
+                    WHERE status = 'processing'
+                      AND operation_type IN ({placeholders})
+                    LIMIT 1''',
+                operation_types,
+            )
+            if cursor.fetchone() is not None:
+                conn.commit()
+                return None
+
+            cursor.execute(
+                f'''SELECT *
+                    FROM channel_operations
+                    WHERE status = 'pending'
+                      AND operation_type IN ({placeholders})
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT 1''',
+                operation_types,
+            )
+            row = cursor.fetchone()
+            if row is None:
+                conn.commit()
+                return None
+
+            cursor.execute(
+                '''UPDATE channel_operations
+                   SET status = 'processing',
+                       claimed_at = CURRENT_TIMESTAMP,
+                       claim_owner_host = ?,
+                       claim_owner_pid = ?,
+                       claim_owner_boot_id = ?,
+                       processed_at = NULL,
+                       error_message = NULL,
+                       result_data = NULL
+                   WHERE id = ? AND status = 'pending' ''',
+                (
+                    self._claim_owner_host,
+                    self._claim_owner_pid,
+                    self._claim_owner_boot_id,
+                    row['id'],
+                ),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return None
+
+            conn.commit()
+            claimed = dict(row)
+            claimed['status'] = 'processing'
+            return claimed
+
+    @staticmethod
+    def _is_local_pid_alive(pid: int) -> Optional[bool]:
+        """Return PID liveness, or ``None`` when it cannot be proven either way."""
+        if not isinstance(pid, int) or pid <= 0:
+            return None
         try:
-            # Get pending operations
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # The kernel found the process but this user cannot signal it.
+            return True
+        except OSError:
+            return None
+        return True
+
+    def _recover_interrupted_operations(self) -> int:
+        """Resolve only startup claims provably abandoned by a local process.
+
+        Legacy ownerless rows may be interrupted.  An owned row is interrupted
+        only when it belongs to this host and its PID is provably dead.  Live
+        same-host owners, other hosts, and incomplete/unknown identities stay
+        blocked conservatively.  This method is only invoked during scheduler
+        construction, never by polling or a timer.
+        """
+        explanation = (
+            "Bot restarted while this operation was processing; the action may "
+            "already have reached the device. Automatic retry is disabled. "
+            "Verify device state before submitting another operation."
+        )
+        try:
             with self.bot.db_manager.connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
+                cursor.execute('BEGIN IMMEDIATE')
+                cursor.execute(
+                    '''SELECT id, claim_owner_host, claim_owner_pid,
+                              claim_owner_boot_id
+                       FROM channel_operations
+                       WHERE status = 'processing' ''',
+                )
+                rows = cursor.fetchall()
+                recovered = 0
+                blocked = 0
+                for row in rows:
+                    owner_host = row['claim_owner_host']
+                    owner_pid = row['claim_owner_pid']
+                    owner_boot_id = row['claim_owner_boot_id']
+                    legacy_ownerless = (
+                        owner_host is None
+                        and owner_pid is None
+                        and owner_boot_id is None
+                    )
+                    same_host_dead = (
+                        owner_host == self._claim_owner_host
+                        and self._is_local_pid_alive(owner_pid) is False
+                    )
+                    if not legacy_ownerless and not same_host_dead:
+                        blocked += 1
+                        continue
 
-                cursor.execute('''
-                    SELECT id, operation_type, channel_idx, channel_name, channel_key_hex
-                    FROM channel_operations
-                    WHERE status = 'pending'
-                      AND operation_type IN ('add', 'remove')
-                    ORDER BY created_at ASC
-                    LIMIT 10
-                ''')
+                    cursor.execute(
+                        '''UPDATE channel_operations
+                           SET status = 'interrupted',
+                               processed_at = CURRENT_TIMESTAMP,
+                               error_message = ?
+                           WHERE id = ? AND status = 'processing' ''',
+                        (explanation, row['id']),
+                    )
+                    recovered += cursor.rowcount
+                conn.commit()
+        except sqlite3.Error as exc:
+            self.logger.exception(
+                "Could not recover interrupted channel/radio operations at startup: %s",
+                exc,
+            )
+            return 0
 
-                operations = cursor.fetchall()
+        if recovered:
+            self.logger.warning(
+                "Marked %s operation(s) interrupted after restart; verify device state before retrying",
+                recovered,
+            )
+        if blocked:
+            self.logger.warning(
+                "Left %s processing operation(s) blocked because their owner is live or cannot be proven dead",
+                blocked,
+            )
+        return recovered
 
-            if not operations:
-                return
+    def _finish_claimed_operation(
+        self,
+        op_id: int,
+        *,
+        success: bool,
+        result_payload: Optional[dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Finalize a claim without overwriting externally resolved state."""
+        with self.bot.db_manager.connection() as conn:
+            cursor = conn.cursor()
+            if success:
+                cursor.execute(
+                    '''UPDATE channel_operations
+                       SET status = 'completed',
+                           processed_at = CURRENT_TIMESTAMP,
+                           result_data = ?,
+                           error_message = NULL
+                       WHERE id = ? AND status = 'processing'
+                         AND claim_owner_host = ?
+                         AND claim_owner_pid = ?
+                         AND claim_owner_boot_id = ? ''',
+                    (
+                        json.dumps(result_payload or {'success': True}),
+                        op_id,
+                        self._claim_owner_host,
+                        self._claim_owner_pid,
+                        self._claim_owner_boot_id,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    '''UPDATE channel_operations
+                       SET status = 'failed',
+                           processed_at = CURRENT_TIMESTAMP,
+                           error_message = ?
+                       WHERE id = ? AND status = 'processing'
+                         AND claim_owner_host = ?
+                         AND claim_owner_pid = ?
+                         AND claim_owner_boot_id = ? ''',
+                    (
+                        error_message or 'Unknown error',
+                        op_id,
+                        self._claim_owner_host,
+                        self._claim_owner_pid,
+                        self._claim_owner_boot_id,
+                    ),
+                )
+            if cursor.rowcount != 1:
+                self.logger.warning(
+                    "Operation %s was no longer processing when finalization was attempted",
+                    op_id,
+                )
+            conn.commit()
 
-            self.logger.info(f"Processing {len(operations)} pending channel operation(s)")
-
-            for op in operations:
-                op_id = op['id']
-                op_type = op['operation_type']
-                channel_idx = op['channel_idx']
-                channel_name = op['channel_name']
-                channel_key_hex = op['channel_key_hex']
-
-                try:
-                    success = False
-                    error_msg = None
-
-                    if op_type == 'add':
-                        # Add channel
-                        if channel_key_hex:
-                            # Custom channel with key
-                            channel_secret = bytes.fromhex(channel_key_hex)
-                            success = await self.bot.channel_manager.add_channel(
-                                channel_idx, channel_name, channel_secret=channel_secret
-                            )
-                        else:
-                            # Hashtag channel (firmware generates key)
-                            success = await self.bot.channel_manager.add_channel(
-                                channel_idx, channel_name
-                            )
-
-                        if success:
-                            self.logger.info(f"Successfully processed channel add operation: {channel_name} at index {channel_idx}")
-                        else:
-                            error_msg = "Failed to add channel"
-
-                    elif op_type == 'remove':
-                        # Remove channel
-                        success = await self.bot.channel_manager.remove_channel(channel_idx)
-
-                        if success:
-                            self.logger.info(f"Successfully processed channel remove operation: index {channel_idx}")
-                        else:
-                            error_msg = "Failed to remove channel"
-
-                    # Update operation status
-                    with self.bot.db_manager.connection() as conn:
-                        cursor = conn.cursor()
-                        if success:
-                            cursor.execute('''
-                                UPDATE channel_operations
-                                SET status = 'completed',
-                                    processed_at = CURRENT_TIMESTAMP,
-                                    result_data = ?
-                                WHERE id = ?
-                            ''', (json.dumps({'success': True}), op_id))
-                        else:
-                            cursor.execute('''
-                                UPDATE channel_operations
-                                SET status = 'failed',
-                                    processed_at = CURRENT_TIMESTAMP,
-                                    error_message = ?
-                                WHERE id = ?
-                            ''', (error_msg or 'Unknown error', op_id))
-                        conn.commit()
-
-                except Exception as e:
-                    self.logger.error(f"Error processing channel operation {op_id}: {e}")
-                    # Mark as failed
-                    try:
-                        with self.bot.db_manager.connection() as conn:
-                            cursor = conn.cursor()
-                            cursor.execute('''
-                                UPDATE channel_operations
-                                SET status = 'failed',
-                                    processed_at = CURRENT_TIMESTAMP,
-                                    error_message = ?
-                                WHERE id = ?
-                            ''', (str(e), op_id))
-                            conn.commit()
-                    except Exception as update_error:
-                        self.logger.error(f"Error updating operation status: {update_error}")
+    async def _process_channel_operations(self):
+        """Process pending channel operations from the web viewer"""
+        try:
+            # Preserve the previous per-tick batch capacity, but claim only one
+            # row immediately before executing it.  The next claim cannot
+            # succeed until the previous row has reached a terminal state.
+            for _ in range(10):
+                op = self._claim_operation(_CHANNEL_OPERATION_TYPES)
+                if not op:
+                    return
+                await self._execute_claimed_channel_operation(op)
 
         except Exception as e:
             db_path = getattr(self.bot.db_manager, 'db_path', 'unknown')
@@ -950,27 +1110,60 @@ class MessageScheduler:
             else:
                 self.logger.error(f"Database path: {db_path_str}")
 
+    async def _execute_claimed_channel_operation(self, op: dict[str, Any]) -> None:
+        """Execute and finalize one already-claimed channel operation."""
+        op_id = op['id']
+        op_type = op['operation_type']
+        channel_idx = op['channel_idx']
+        channel_name = op['channel_name']
+        channel_key_hex = op['channel_key_hex']
+        self.logger.info("Processing claimed channel operation %s: %s", op_id, op_type)
+
+        try:
+            success = False
+            error_msg = None
+
+            if op_type == 'add':
+                if channel_key_hex:
+                    channel_secret = bytes.fromhex(channel_key_hex)
+                    success = await self.bot.channel_manager.add_channel(
+                        channel_idx, channel_name, channel_secret=channel_secret
+                    )
+                else:
+                    success = await self.bot.channel_manager.add_channel(
+                        channel_idx, channel_name
+                    )
+
+                if success:
+                    self.logger.info(f"Successfully processed channel add operation: {channel_name} at index {channel_idx}")
+                else:
+                    error_msg = "Failed to add channel"
+
+            elif op_type == 'remove':
+                success = await self.bot.channel_manager.remove_channel(channel_idx)
+
+                if success:
+                    self.logger.info(f"Successfully processed channel remove operation: index {channel_idx}")
+                else:
+                    error_msg = "Failed to remove channel"
+
+            self._finish_claimed_operation(
+                op_id,
+                success=success,
+                error_message=error_msg,
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error processing channel operation {op_id}: {e}")
+            try:
+                self._finish_claimed_operation(op_id, success=False, error_message=str(e))
+            except Exception as update_error:
+                self.logger.error(f"Error updating operation status: {update_error}")
+
     async def _process_radio_operations(self):
         """Process pending radio connect/disconnect/reboot/firmware operations from the web viewer."""
         try:
-            with self.bot.db_manager.connection() as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT id, operation_type, payload_data
-                    FROM channel_operations
-                    WHERE status = 'pending'
-                      AND operation_type IN (
-                          'radio_reboot', 'radio_connect', 'radio_disconnect',
-                          'firmware_read', 'firmware_write',
-                          'radio_params_read', 'radio_params_write',
-                          'radio_advert'
-                      )
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                ''')
-                op = cursor.fetchone()
-
+            op = self._claim_operation(_RADIO_OPERATION_TYPES)
             if not op:
                 return
 
@@ -1002,41 +1195,19 @@ class MessageScheduler:
                 else:
                     success = False
 
-                with self.bot.db_manager.connection() as conn:
-                    cursor = conn.cursor()
-                    if success:
-                        cursor.execute('''
-                            UPDATE channel_operations
-                            SET status = 'completed',
-                                processed_at = CURRENT_TIMESTAMP,
-                                result_data = ?
-                            WHERE id = ?
-                        ''', (json.dumps(result_payload), op_id))
-                    else:
-                        error_msg = result_payload.get('error', 'Radio operation returned False') \
-                            if isinstance(result_payload, dict) else 'Radio operation returned False'
-                        cursor.execute('''
-                            UPDATE channel_operations
-                            SET status = 'failed',
-                                processed_at = CURRENT_TIMESTAMP,
-                                error_message = ?
-                            WHERE id = ?
-                        ''', (error_msg, op_id))
-                    conn.commit()
+                error_msg = result_payload.get('error', 'Radio operation returned False') \
+                    if isinstance(result_payload, dict) else 'Radio operation returned False'
+                self._finish_claimed_operation(
+                    op_id,
+                    success=success,
+                    result_payload=result_payload,
+                    error_message=error_msg,
+                )
 
             except Exception as e:
                 self.logger.error(f"Error executing radio operation {op_id}: {e}")
                 try:
-                    with self.bot.db_manager.connection() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            UPDATE channel_operations
-                            SET status = 'failed',
-                                processed_at = CURRENT_TIMESTAMP,
-                                error_message = ?
-                            WHERE id = ?
-                        ''', (str(e), op_id))
-                        conn.commit()
+                    self._finish_claimed_operation(op_id, success=False, error_message=str(e))
                 except Exception as update_error:
                     self.logger.error(f"Error updating radio operation status: {update_error}")
 
@@ -1052,17 +1223,7 @@ class MessageScheduler:
         start/stop is not handled by reload_config and still needs a restart.
         """
         try:
-            with self.bot.db_manager.connection() as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT id FROM channel_operations
-                    WHERE status = 'pending' AND operation_type = 'config_reload'
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                ''')
-                op = cursor.fetchone()
-
+            op = self._claim_operation(_CONFIG_OPERATION_TYPES)
             if not op:
                 return
 
@@ -1075,25 +1236,12 @@ class MessageScheduler:
                 success, message = False, str(e)
                 self.logger.exception("Error during config reload")
 
-            with self.bot.db_manager.connection() as conn:
-                cursor = conn.cursor()
-                if success:
-                    cursor.execute('''
-                        UPDATE channel_operations
-                        SET status = 'completed',
-                            processed_at = CURRENT_TIMESTAMP,
-                            result_data = ?
-                        WHERE id = ?
-                    ''', (json.dumps({'success': True, 'message': message}), op_id))
-                else:
-                    cursor.execute('''
-                        UPDATE channel_operations
-                        SET status = 'failed',
-                            processed_at = CURRENT_TIMESTAMP,
-                            error_message = ?
-                        WHERE id = ?
-                    ''', (message, op_id))
-                conn.commit()
+            self._finish_claimed_operation(
+                op_id,
+                success=success,
+                result_payload={'success': True, 'message': message},
+                error_message=message,
+            )
 
             self.logger.info("Config reload %s: %s", 'succeeded' if success else 'failed', message)
 
@@ -1435,7 +1583,7 @@ class MessageScheduler:
         except ValueError:
             smtp_port = 587
 
-        now_utc         = datetime.datetime.now(datetime.UTC)
+        now_utc         = datetime.datetime.now(datetime.timezone.utc)
         connection_type = self.bot.config.get('Connection', 'connection_type', fallback='unknown')
         serial_port     = self.bot.config.get('Connection', 'serial_port', fallback='n/a')
         interval_min    = interval // 60
@@ -1579,7 +1727,7 @@ class MessageScheduler:
         except ValueError:
             smtp_port = 587
 
-        now_utc         = datetime.datetime.now(datetime.UTC)
+        now_utc         = datetime.datetime.now(datetime.timezone.utc)
         connection_type = self.bot.config.get('Connection', 'connection_type', fallback='unknown')
         serial_port     = self.bot.config.get('Connection', 'serial_port', fallback='n/a')
 
@@ -1645,4 +1793,3 @@ class MessageScheduler:
             self.bot.logger.error(f"Failed to send radio-offline alert email: {e}")
 
     # ── Maintenance helpers ──────────────────────────────────────────────────
-

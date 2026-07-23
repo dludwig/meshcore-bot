@@ -227,7 +227,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script>
+<script nonce="{{ g.csp_nonce }}">
 (function() {
     var host = window.location.origin;
 

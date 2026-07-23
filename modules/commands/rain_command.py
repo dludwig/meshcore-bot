@@ -15,10 +15,29 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from ..location import (
+    US_STATE_ABBRS,  # noqa: F401 — re-exported for weather_service/tests
+    city_display_name,
+    join_location,
+    reverse_geocode_region,
+    titlecase_location,  # noqa: F401 — re-exported for weather_service/tests
+)
+from ..location import (
+    zip_to_city_string as location_zip_to_city_string,
+)
 from ..models import MeshMessage
 from ..region_capitals import REGION_DEFAULT_NOTE, region_capital_query
-from ..utils import geocode_city_sync, geocode_zipcode_sync, normalize_us_state
+from ..utils import geocode_city_sync, geocode_zipcode_sync
 from .base_command import BaseCommand
+
+# Re-exports for weather_service / tests that import display helpers from rain_command.
+__all_location_reexports__ = (
+    "US_STATE_ABBRS",
+    "city_display_name",
+    "join_location",
+    "reverse_geocode_region",
+    "titlecase_location",
+)
 
 # WMO weather code -> precipitation "bucket". Buckets map to an emoji and a
 # translatable label (commands.rain.precip_types.<bucket>). Codes not listed
@@ -87,123 +106,6 @@ def precip_bucket_for_code(code: Optional[int]) -> Optional[str]:
         return _PRECIP_BUCKETS.get(int(code))
     except (TypeError, ValueError):
         return None
-
-
-def titlecase_location(text: str) -> str:
-    """Tidy a user-typed location for display.
-
-    'middlesboro, ky' -> 'Middlesboro, KY'; 'paris, france' -> 'Paris, France';
-    'memphis' -> 'Memphis'. A 2-letter token after a comma is treated as a
-    state/country code and upper-cased; everything else is title-cased.
-    """
-    parts = [p.strip() for p in text.split(",") if p.strip()]
-    if not parts:
-        return text.strip()
-    out = []
-    for i, p in enumerate(parts):
-        if i > 0 and len(p) == 2 and p.isalpha():
-            out.append(p.upper())
-        else:
-            out.append(p.title())
-    return ", ".join(out)
-
-
-# US state / territory 2-letter codes — used to drop a trailing state from a
-# typed location like "london ky" (no comma) so it doesn't become "London Ky".
-US_STATE_ABBRS = frozenset({
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL",
-    "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT",
-    "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI",
-    "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-    "DC", "AS", "GU", "MP", "PR", "VI",
-})
-
-
-def city_display_name(typed_location: str, suffix: Optional[str] = None) -> str:
-    """City part of a typed location for display, dropping a trailing region the
-    user appended without a comma.
-
-    'london ky' -> 'London'; 'paris france' -> 'Paris'; 'london, ky' -> 'London';
-    'oklahoma city' -> 'Oklahoma City'. `suffix` is the geocoder's authoritative
-    state/country (e.g. 'KY' or 'France'); when the typed text ends with it, it's
-    stripped so it isn't doubled into the city name. The state/country is added
-    back separately by the caller.
-    """
-    head = typed_location.split(",")[0].strip()
-    # Drop a trailing region matching the geocoder's suffix — handles country
-    # names and multi-word regions ("paris france", "london united kingdom").
-    if suffix and head.lower().endswith(" " + suffix.lower()):
-        head = head[: -len(suffix)].strip()
-    # Drop a trailing US state abbreviation ("london ky" -> "london").
-    tokens = head.split()
-    if len(tokens) >= 2 and tokens[-1].upper() in US_STATE_ABBRS:
-        head = " ".join(tokens[:-1])
-    return titlecase_location(head)
-
-
-def join_location(city: Optional[str], suffix: Optional[str]) -> str:
-    """Join a city and its state/country suffix as 'City, Suffix'.
-
-    Collapses to a single name when one side is missing or the two name the same
-    place (case-insensitive) — so a country typed as the city ('spain' -> 'Spain',
-    not 'Spain, Spain') or a city-state ('Singapore', not 'Singapore, Singapore')
-    renders once.
-    """
-    city = (city or "").strip()
-    suffix = (suffix or "").strip()
-    if not suffix:
-        return city
-    if not city or city.lower() == suffix.lower():
-        return suffix
-    return f"{city}, {suffix}"
-
-
-def reverse_geocode_region(
-    bot: Any, lat: float, lon: float, *, timeout: int = 10, logger: Any = None
-) -> tuple[Optional[str], Optional[str]]:
-    """Reverse-geocode to (city, suffix), respecting the bot's Nominatim rate limiter.
-
-    suffix is the US state abbreviation ('TN') for US points, else the English
-    country name ('Japan'). Requests language='en' so country names aren't
-    localized. No caching (callers cache as needed). Shared by the rain command
-    and the Weather_Service proactive push so both label locations identically.
-    """
-    city: Optional[str] = None
-    suffix: Optional[str] = None
-    try:
-        from ..utils import get_nominatim_geocoder
-        limiter = getattr(bot, "nominatim_rate_limiter", None)
-        if limiter is not None:
-            limiter.wait_for_request_sync()
-        geolocator = get_nominatim_geocoder(timeout=timeout)
-        # language="en" so country names come back in English ("Japan", not "日本").
-        result = geolocator.reverse(f"{lat}, {lon}", timeout=timeout, language="en")
-        if limiter is not None:
-            limiter.record_request()
-        if result is not None and hasattr(result, "raw"):
-            address = result.raw.get("address", {})
-            city = (
-                address.get("city")
-                or address.get("town")
-                or address.get("village")
-                or address.get("municipality")
-                or address.get("county")
-                or None
-            )
-            country_code = (address.get("country_code") or "").lower()
-            if country_code == "us":
-                iso = address.get("ISO3166-2-lvl4") or address.get("ISO3166-2-lvl6") or ""
-                if "-" in iso:
-                    suffix = iso.rsplit("-", 1)[-1]
-                else:
-                    state_abbr, _ = normalize_us_state(address.get("state", ""))
-                    suffix = state_abbr or address.get("state") or None
-            else:
-                suffix = address.get("country") or None
-    except Exception as e:
-        if logger:
-            logger.debug(f"Error reverse geocoding {lat},{lon}: {e}")
-    return city, suffix
 
 
 def precip_descriptor(bucket: Optional[str]) -> tuple[str, str]:
@@ -972,29 +874,10 @@ class RainCommand(BaseCommand):
         return self._reverse_geocode(lat, lon)[1]
 
     def _zip_to_city_string(self, zipcode: str) -> Optional[str]:
-        """US ZIP -> 'City, ST' via Zippopotam.us (free, no key, cached).
-
-        OSM/Nominatim often lacks the USPS city for a ZIP centroid (returns the
-        county instead), so for 5-digit US ZIPs this gives a far better name.
-        Returns None on failure (caller falls back to reverse geocoding).
-        """
-        z = zipcode.strip()
-        if z in self._zip_cache:
-            return self._zip_cache[z]
-        name: Optional[str] = None
-        try:
-            resp = requests.get(f"https://api.zippopotam.us/us/{z}", timeout=self.url_timeout)
-            if resp.ok:
-                places = resp.json().get("places") or []
-                if places:
-                    city = (places[0].get("place name") or "").strip()
-                    st = (places[0].get("state abbreviation") or "").strip()
-                    if city:
-                        name = join_location(city, st)
-        except Exception as e:
-            self.logger.debug(f"Zippopotam ZIP lookup failed for {z}: {e}")
-        if name:
-            _cache_put(self._zip_cache, z, name)
+        """US ZIP -> 'City, ST' via Zippopotam.us (free, no key, cached)."""
+        name = location_zip_to_city_string(
+            zipcode, timeout=self.url_timeout, cache=self._zip_cache, logger=self.logger
+        )
         return name
 
     def _resolve_location(

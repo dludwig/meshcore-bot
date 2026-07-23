@@ -12,7 +12,7 @@ import logging
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -664,6 +664,37 @@ class TestChannelRoutes:
     def test_api_channel_operation_status_not_found(self, client):
         resp = client.get("/api/channel-operations/99999")
         assert resp.status_code in (200, 404)
+
+    def test_api_interrupted_operation_is_terminal_and_exposes_claim_time(
+        self, client, viewer
+    ):
+        with sqlite3.connect(viewer.db_path) as conn:
+            cursor = conn.execute(
+                """INSERT INTO channel_operations
+                   (operation_type, status, error_message, claimed_at, processed_at)
+                   VALUES ('remove', 'interrupted', 'Verify device state',
+                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+            )
+            operation_id = cursor.lastrowid
+            conn.commit()
+
+        resp = client.get(f"/api/channel-operations/{operation_id}")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "interrupted"
+        assert data["error_message"] == "Verify device state"
+        assert data["claimed_at"] is not None
+
+    def test_shared_operation_poller_recognizes_interrupted_as_terminal(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "modules/web_viewer/static/js/channel_operations.js"
+        ).read_text(encoding="utf-8")
+
+        assert source.count("result.status === 'interrupted'") == 1
+        assert source.count("result2.status === 'interrupted'") == 1
+        assert source.count("result3.status === 'interrupted'") == 1
 
 
 # ===========================================================================
@@ -2202,29 +2233,32 @@ class TestRestoreRoute:
                           json={"db_file": str(bad)},
                           content_type="application/json")
         assert resp.status_code == 400
-        assert "valid SQLite" in resp.get_json()["error"]
+        assert "sqlite" in resp.get_json()["error"].lower()
 
-    def test_valid_sqlite_restore_returns_200(self, viewer, tmp_path):
-        """Returns 200 with warning when a valid SQLite backup is restored."""
+    def test_valid_sqlite_restore_is_staged_without_replacing_active_db(self, viewer, tmp_path):
+        """Returns 202 and stages a valid MeshCore backup for service restart."""
         import sqlite3 as _sql
         backup_dir = tmp_path / "backups"
         backup_dir.mkdir()
         viewer.db_manager.set_metadata('maint.db_backup_dir', str(backup_dir))
         backup = backup_dir / "backup.db"
-        conn = _sql.connect(str(backup))
-        conn.execute("CREATE TABLE t (id INTEGER)")
-        conn.commit()
-        conn.close()
-        # Patch db_path to a temp destination so the real test DB is not overwritten
-        dest = str(tmp_path / "restored.db")
-        with patch.object(viewer, "db_path", dest):
+        with _sql.connect(viewer.db_path) as source_conn:
+            with _sql.connect(str(backup)) as destination_conn:
+                source_conn.backup(destination_conn)
+        # Patch db_path to a temp destination and verify the request does not create it.
+        dest = tmp_path / "restored.db"
+        with patch.object(viewer, "db_path", str(dest)):
             with viewer.app.test_client() as c:
                 resp = c.post("/api/maintenance/restore",
                               json={"db_file": str(backup)},
                               content_type="application/json")
-        assert resp.status_code == 200
+        assert resp.status_code == 202
         data = resp.get_json()
         assert data["success"] is True
+        assert data["requires_restart"] is True
+        assert data["pending_path"] == str(tmp_path / ".restored.db.restore-pending")
+        assert not dest.exists()
+        assert Path(data["pending_path"]).exists()
         assert "warning" in data
         assert "Restart" in data["warning"]
 
@@ -3350,6 +3384,73 @@ class TestRestoreEndpointSecurity:
 # ===========================================================================
 
 
+class TestFeedPreviewResponseLimits:
+    def test_chunked_body_over_cap_is_streamed_closed_and_rejected(self, viewer):
+        response = Mock()
+        response.headers = {"Content-Type": "application/rss+xml"}
+        response.raise_for_status = Mock()
+        response.close = Mock()
+
+        def chunks(*_args, **_kwargs):
+            yield b"x" * (1024 * 1024)
+            yield b"y" * (1024 * 1024 + 1)
+
+        response.iter_content = Mock(side_effect=chunks)
+        session_context = MagicMock()
+        session_context.__enter__.return_value = Mock()
+        with (
+            patch("modules.web_viewer.app.SafeUrlPolicy.validate", return_value=True),
+            patch(
+                "modules.web_viewer.app.create_safe_requests_session",
+                return_value=session_context,
+            ),
+            patch(
+                "modules.web_viewer.app.safe_requests_request",
+                return_value=response,
+            ) as request_mock,
+            pytest.raises(ValueError, match="exceeds .* byte limit"),
+        ):
+            viewer._preview_feed_items(
+                "https://example.com/feed.xml", "rss", "{title}"
+            )
+
+        assert request_mock.call_args.kwargs["stream"] is True
+        response.close.assert_called_once()
+
+    def test_content_length_over_cap_is_rejected_without_reading(self, viewer):
+        response = Mock()
+        response.headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(2 * 1024 * 1024 + 1),
+        }
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        response.iter_content = Mock()
+        session_context = MagicMock()
+        session_context.__enter__.return_value = Mock()
+        with (
+            patch("modules.web_viewer.app.SafeUrlPolicy.validate", return_value=True),
+            patch(
+                "modules.web_viewer.app.create_safe_requests_session",
+                return_value=session_context,
+            ),
+            patch(
+                "modules.web_viewer.app.safe_requests_request",
+                return_value=response,
+            ),
+            pytest.raises(ValueError, match="exceeds .* byte limit"),
+        ):
+            viewer._preview_feed_items(
+                "https://example.com/feed.json",
+                "api",
+                "{title}",
+                api_config={},
+            )
+
+        response.iter_content.assert_not_called()
+        response.close.assert_called_once()
+
+
 class TestFeedPreviewSecurity:
     """POST /api/feeds/preview and /api/feeds/test must reject SSRF-able URLs.
 
@@ -3422,13 +3523,13 @@ class TestFeedPreviewSecurity:
         )
         assert resp.status_code == 400
 
-    def test_validate_external_url_called_for_preview(self, client):
-        """validate_external_url is invoked — not bypassed — in the preview handler."""
-        with patch("modules.web_viewer.app.validate_external_url", return_value=False) as mock_veu:
+    def test_safe_url_policy_called_for_preview(self, client):
+        """The strict feed URL policy is invoked before preview fetches."""
+        with patch("modules.web_viewer.app.SafeUrlPolicy.validate", return_value=False) as validate:
             resp = client.post(
                 "/api/feeds/preview",
                 json={"feed_url": "http://192.168.1.1/feed.rss", "feed_type": "rss"},
                 content_type="application/json",
             )
-        mock_veu.assert_called()
+        validate.assert_called_once()
         assert resp.status_code == 400
