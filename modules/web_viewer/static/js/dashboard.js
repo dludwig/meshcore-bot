@@ -366,6 +366,7 @@
 
             // Routing, encoding, distributions
             this.renderRouteMix(mesh.route_mix, coverage.packets_window_label);
+            this.renderMix('payload-mix', mesh.payload_mix);
             this.renderHopsHistogram(mesh.hops_histogram);
             this.renderDoughnut('contactsEncodingChart', 'contacts-encoding-summary',
                 (mesh.encoding || {}).contacts_7d, 'contacts');
@@ -693,9 +694,12 @@
                 container.replaceChildren(makeTextElement('div', 'No data.', 'dashboard-empty'));
                 return;
             }
+            // No slicing here: the server already rolls the tail into "Other",
+            // so dropping rows now would leave bars that no longer sum to the
+            // total shown beside them.
             const max = Math.max(...list.map((entry) => Number(entry[1]) || 0), 1);
             container.replaceChildren();
-            list.slice(0, 8).forEach((entry, index) => {
+            list.forEach((entry, index) => {
                 const [name, count] = entry;
                 const row = document.createElement('div');
                 row.className = 'mix-row';

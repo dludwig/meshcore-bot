@@ -84,6 +84,9 @@ SERIES_METRICS: dict[str, str] = {
 
 SUMMARY_SERIES_POINTS = 30
 
+# Categories to show in a role/payload mix before the tail is rolled into "Other".
+MIX_ROWS = 8
+
 # Metrics that are already a ratio: a period "total" has to be the mean of the
 # daily values, not their sum — adding percentages together means nothing.
 RATIO_METRICS = frozenset({"multibyte_share"})
@@ -126,6 +129,19 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
     ).fetchone()
     return row is not None
+
+
+def _top_n_with_other(entries: list[list[Any]], limit: int = MIX_ROWS) -> list[list[Any]]:
+    """Keep the largest *limit* categories and roll the tail into "Other".
+
+    Truncating the list instead would silently drop counts, leaving a chart whose
+    bars no longer add up to the total printed beside it.
+    """
+    ranked = sorted(entries, key=lambda entry: -(entry[1] or 0))
+    if len(ranked) <= limit:
+        return ranked
+    tail = sum(entry[1] or 0 for entry in ranked[limit:])
+    return [*ranked[:limit], ["Other", tail]]
 
 
 def _change_pct(current: float | None, previous: float | None) -> float | None:
@@ -740,6 +756,20 @@ class DashboardStatsService:
                 "multibyte": row[2] or 0,
                 "total": row[3] or 0,
             }
+            # Same population as route_mix — what the traffic is, beside how it
+            # is routed.
+            mesh["payload_mix"] = _top_n_with_other(
+                [
+                    [name or "Unknown", count]
+                    for name, count in conn.execute(
+                        """
+                        SELECT payload_type_name, COUNT(*) FROM packet_stream
+                        WHERE type = 'packet' AND route_type_name IS NOT NULL
+                        GROUP BY payload_type_name ORDER BY COUNT(*) DESC
+                        """
+                    )
+                ]
+            )
 
         if self.multibyte_contacts_fn is not None:
             try:
@@ -763,7 +793,7 @@ class DashboardStatsService:
         ):
             key = normalize_role(value) if column == "role" else (value or "Unknown")
             buckets[key] = buckets.get(key, 0) + (count or 0)
-        return [[name, count] for name, count in sorted(buckets.items(), key=lambda kv: -kv[1])]
+        return _top_n_with_other([[name, count] for name, count in buckets.items()])
 
     def _hops_histogram(self, conn: sqlite3.Connection) -> list[list[int]]:
         """Nodes by how many hops away their closest observed advert path was.

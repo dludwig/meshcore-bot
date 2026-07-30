@@ -35,6 +35,10 @@ semantic versioning.
   therefore shown only where the path evidence and the stored hop count agree;
   the rest read "no signal reading" rather than borrowing another link's
   measurement.
+- Payload-type mix beside the routing mix, over the same packets — what the
+  traffic is, next to how it is routed. Category lists roll their tail into
+  "Other" rather than truncating, so the bars still sum to the total printed
+  beside them.
 - Hop-distance chart derived as `path_length / bytes_per_hop`. `path_length` is
   a byte count, so with 2- or 3-byte hop encoding — about 95% of adverts on the
   live mesh — reading it directly as a hop count overstates distance two- to

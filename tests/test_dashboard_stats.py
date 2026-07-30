@@ -708,6 +708,46 @@ class TestOneHopNeighbours:
         assert payload["total"] == 0
 
 
+class TestCategoryMixes:
+
+    def test_tail_is_rolled_into_other_not_dropped(self, viewer):
+        """Truncating would leave bars that no longer sum to the printed total."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, "
+                "payload_type_name) VALUES (?, '{}', 'packet', 'FLOOD', ?)",
+                [
+                    (time.time(), f"TYPE{i}")
+                    for i in range(12)
+                    for _ in range(12 - i)  # descending counts, 12 distinct types
+                ],
+            )
+        _refresh(viewer)
+        with viewer.app.test_client() as client:
+            mix = client.get("/api/dashboard/summary").get_json()["mesh"]["payload_mix"]
+
+        assert len(mix) == 9, mix  # 8 named categories plus Other
+        assert mix[-1][0] == "Other"
+        assert sum(count for _, count in mix) == sum(range(1, 13))
+
+    def test_payload_mix_matches_the_route_mix_population(self, viewer):
+        """Both describe the dimensioned packets, so their totals must agree."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, "
+                "payload_type_name) VALUES (?, '{}', 'packet', ?, ?)",
+                [
+                    (time.time(), "FLOOD", "GRP_TXT"),
+                    (time.time(), "TRANSPORT_FLOOD", "ADVERT"),
+                    (time.time(), "DIRECT", "ACK"),
+                ],
+            )
+        _refresh(viewer)
+        with viewer.app.test_client() as client:
+            mesh = client.get("/api/dashboard/summary").get_json()["mesh"]
+        assert sum(mesh["route_mix"].values()) == sum(c for _, c in mesh["payload_mix"]) == 3
+
+
 class TestRoleBucketing:
 
     @pytest.mark.parametrize(
