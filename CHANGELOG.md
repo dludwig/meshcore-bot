@@ -54,6 +54,13 @@ semantic versioning.
   silently rescales an axis; both are pinned by tests. This replaces the
   earlier raw path-length chart, which read bytes as hops, and the chart built
   on the untrustworthy stored hop count.
+
+  The chart plots the full protocol range: a 64-byte path is 64 hops at one
+  byte per hop. The old dashboard's `BETWEEN 0 AND 32` filters, carried forward
+  at first, discarded 5,654 flood packets arriving from as far as 63 hops, and
+  because that limit applies after the per-node minimum it would erase a node
+  whose closest path was longer than 32 hops rather than plotting it at the far
+  end.
 - New `[Web_Viewer]` settings: `dashboard_snapshot_enabled`,
   `dashboard_snapshot_interval_seconds`, `dashboard_snapshot_history_days`, and
   `dashboard_packet_backfill_rows`.

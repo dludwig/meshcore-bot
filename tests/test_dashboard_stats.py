@@ -781,12 +781,56 @@ class TestHopConventions:
         assert dict(hops["nodes"]) == {1: 1, 2: 0, 3: 0, 4: 0}
         assert dict(hops["flood_packets"]) == {1: 0, 2: 0, 3: 0, 4: 1}
 
-    def test_absurd_hop_counts_are_dropped(self, viewer):
+    def test_long_paths_are_kept_up_to_the_protocol_ceiling(self, viewer):
+        """64 hops fit in a 64-byte path at one byte per hop; all of it is real.
+
+        An earlier limit of 32 quietly dropped 5,654 flood packets on the live
+        database, and — because the filter runs after the per-node MIN() — would
+        erase any node whose closest path was longer than 32 hops rather than
+        placing it at the far end of the axis.
+        """
         with sqlite3.connect(viewer.db_path) as conn:
             conn.executemany(
                 "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
                 "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', ?, 1)",
-                [(time.time(), 3), (time.time(), 900), (time.time(), -1)],
+                [(time.time(), hops) for hops in (33, 47, 63, 64)],
+            )
+            conn.execute(
+                """
+                INSERT INTO observed_paths (public_key, from_prefix, to_prefix, path_hex,
+                    path_length, bytes_per_hop, packet_type, last_seen)
+                VALUES (?, 'aa', 'bb', 'ab', 63, 1, 'advert', datetime('now','localtime'))
+                """,
+                (_pk(1),),
+            )
+        hops = self._hops(viewer)
+        assert dict(hops["flood_packets"])[63] == 1
+        assert dict(hops["flood_packets"])[64] == 1
+        assert sum(c for _, c in hops["flood_packets"]) == 4
+        assert dict(hops["nodes"])[63] == 1
+
+    def test_a_node_reachable_only_by_a_long_path_still_appears(self, viewer):
+        """The cap runs after the per-node MIN(), so it can erase a node outright."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO observed_paths (public_key, from_prefix, to_prefix, path_hex,
+                    path_length, bytes_per_hop, packet_type, last_seen)
+                VALUES (?, 'aa', 'bb', ?, ?, 1, 'advert', datetime('now','localtime'))
+                """,
+                # Distinct path_hex: observed_paths dedups on (public_key,
+                # path_hex, packet_type), so two routes to one node need two.
+                [(_pk(1), "ab" * 48, 48), (_pk(1), "cd" * 55, 55)],
+            )
+        assert dict(self._hops(viewer)["nodes"]) == {48: 1}
+
+    def test_impossible_hop_counts_are_dropped(self, viewer):
+        """Beyond 64 the path field cannot hold it, so the value is corrupt."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', ?, 1)",
+                [(time.time(), 3), (time.time(), 65), (time.time(), 900), (time.time(), -1)],
             )
         assert dict(self._hops(viewer)["flood_packets"]) == {3: 1}
 

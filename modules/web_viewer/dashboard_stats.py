@@ -87,8 +87,17 @@ SUMMARY_SERIES_POINTS = 30
 # Categories to show in a role/payload mix before the tail is rolled into "Other".
 MIX_ROWS = 8
 
-# Hop counts beyond this are corrupt path data rather than real distance.
-MAX_PLOTTED_HOPS = 32
+# MeshCore carries up to a 64-byte path, so a route can be 64 hops long at one
+# byte per hop (and proportionally fewer with 2- or 3-byte hashes: 32 and 21).
+# Beyond that the path field could not have held it, so the value is corrupt.
+#
+# Not a display convenience.  The earlier limit of 32 was inherited from the old
+# dashboard's `BETWEEN 0 AND 32` filters and silently discarded 5,654 flood
+# packets on the live database — genuine traffic arriving from as far as 63
+# hops.  It also applies after the per-node MIN(), so any node whose *closest*
+# path exceeded 32 hops vanished from the chart entirely rather than appearing
+# at the far end; one such node exists in the live history.
+MAX_PLOTTED_HOPS = 64
 
 # Metrics that are already a ratio: a period "total" has to be the mean of the
 # daily values, not their sum — adding percentages together means nothing.

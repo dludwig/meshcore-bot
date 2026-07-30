@@ -532,6 +532,10 @@
             const nodeShare = share(nodes);
             const floodShare = share(flood);
 
+            // A path can be 64 hops at one byte per hop, so the axis may carry
+            // 64 grouped categories. Rounded corners and default bar padding
+            // both disappear at that width, so drop them and let the bars touch.
+            const dense = labels.length > 24;
             const datasets = [];
             if (nodes.length) {
                 datasets.push({
@@ -540,7 +544,9 @@
                     counts: nodes.map((b) => b[1]),
                     unit: 'nodes',
                     backgroundColor: COLOR.accent,
-                    borderRadius: 3,
+                    borderRadius: dense ? 0 : 3,
+                    barPercentage: dense ? 1 : 0.9,
+                    categoryPercentage: dense ? 1 : 0.8,
                 });
             }
             if (flood.length) {
@@ -550,7 +556,9 @@
                     counts: flood.map((b) => b[1]),
                     unit: 'packets',
                     backgroundColor: COLOR.flood,
-                    borderRadius: 3,
+                    borderRadius: dense ? 0 : 3,
+                    barPercentage: dense ? 1 : 0.9,
+                    categoryPercentage: dense ? 1 : 0.8,
                 });
             }
 
@@ -580,7 +588,13 @@
                         x: {
                             title: { display: true, text: 'Hops away', color: colors.muted,
                                      font: { size: 10 } },
-                            ticks: { color: colors.muted, font: { size: 10 } },
+                            ticks: {
+                                color: colors.muted,
+                                font: { size: 10 },
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                maxRotation: 0,
+                            },
                             grid: { display: false },
                         },
                         y: {
