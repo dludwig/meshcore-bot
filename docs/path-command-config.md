@@ -217,7 +217,7 @@ These settings control how graph edges are stored in the database.
 - `immediate`: Write each edge update immediately (safer, higher I/O)
 - `batched`: Accumulate updates, flush periodically (better performance)
 - `hybrid`: Immediate for new edges, batched for increments (balanced)
-- Default: `hybrid`
+- Default: `batched` (recommended for SD-card installations)
 
 **`graph_batch_interval_seconds`** (seconds)
 - How often to flush pending edge updates (only for batched/hybrid)

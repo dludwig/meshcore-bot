@@ -486,6 +486,19 @@ class TestSettingsSchemaValidationSync:
             f"in config.ini.example: {unknown}"
         )
 
+    def test_graph_write_strategy_defaults_stay_in_sync(self):
+        from modules.commands.path_command import PathCommand
+
+        cfg = configparser.ConfigParser()
+        cfg.read(EXAMPLE_PATH)
+        field = next(
+            item
+            for item in PathCommand.settings_schema
+            if item["key"] == "graph_write_strategy"
+        )
+        assert field["default"] == "batched"
+        assert cfg.get("Path_Command", "graph_write_strategy") == field["default"]
+
 
 class TestUnknownKeyWarnings:
     """Misspelled keys must be reported, not silently ignored.

@@ -96,6 +96,22 @@ semantic versioning.
 - `cleanup_old_stats` now also deletes rows dated implausibly far in the future.
   Such rows are never older than the retention cutoff, so they were immortal —
   observed in the wild dated 2103.
+- Multi-byte mesh graph path splitting and aggregation now run in SQLite
+  instead of materializing every retained path in Python. Time windows are
+  applied after lifetime edge coalescing to preserve existing graph identity
+  and count semantics. Graph startup also skips an unnecessary sort, and a
+  table-specific `mesh_connections(last_seen)` index supports window and
+  retention queries.
+- Graph persistence defaults to batched writes for new installations. A flush
+  uses one upsert batch and transaction instead of probing every edge before
+  writing it, reducing WAL churn and SD-card writes while preserving immediate
+  and hybrid strategies as explicit options.
+
+### Fixed
+
+- Data retention now runs shortly after startup and then daily. It no longer
+  requires 24 hours of uninterrupted uptime before the first cleanup, and its
+  timer remains independent from the nightly maintenance email.
 
 ### Removed
 

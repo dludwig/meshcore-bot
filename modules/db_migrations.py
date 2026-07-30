@@ -665,6 +665,39 @@ def _m0019_packet_stream_denorm_dims(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _m0020_mesh_connections_last_seen_index(cursor: sqlite3.Cursor) -> None:
+    """Add the table-specific time index used by graph windows and retention.
+
+    Older migrations attempted to create ``idx_last_seen`` for several tables.
+    SQLite index names are database-global, so the first table claimed that
+    name and ``mesh_connections`` was left without its intended index.
+    """
+    if not _table_exists(cursor, "mesh_connections"):
+        return
+
+    # Some older databases already have the generic ``idx_last_seen`` attached
+    # to this table.  Keep that usable index instead of building an identical
+    # second B-tree (which costs both storage and write amplification).
+    cursor.execute('PRAGMA index_list("mesh_connections")')
+    for index_row in cursor.fetchall():
+        index_name = index_row[1]
+        is_partial = bool(index_row[4]) if len(index_row) > 4 else False
+        cursor.execute(
+            "SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+            (index_name,),
+        )
+        indexed_columns = [row[0] for row in cursor.fetchall()]
+        if not is_partial and indexed_columns == ["last_seen"]:
+            return
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_mesh_connections_last_seen
+            ON mesh_connections(last_seen)
+        """
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -691,6 +724,7 @@ MIGRATIONS: list[MigrationEntry] = [
     (17, "feed_message_queue: unique identifiable items", _m0017_feed_queue_item_uniqueness),
     (18, "dashboard rollup and snapshot tables", _m0018_dashboard_rollup_tables),
     (19, "packet_stream: denormalized packet dimensions", _m0019_packet_stream_denorm_dims),
+    (20, "mesh_connections: table-specific last_seen index", _m0020_mesh_connections_last_seen_index),
 ]
 
 

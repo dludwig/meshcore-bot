@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 from configparser import ConfigParser
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -399,6 +400,28 @@ def _seed_observed_path(db_path, path_hex, bytes_per_hop, observation_count=1,
 
 
 class TestApiMeshEdgesEvidence:
+    def test_nodes_days_filter_is_applied_in_database(self, viewer_with_db):
+        recent = time.strftime('%Y-%m-%dT%H:%M:%S')
+        with sqlite3.connect(viewer_with_db.db_path, timeout=60) as conn:
+            conn.executemany(
+                """
+                INSERT INTO complete_contact_tracking
+                    (public_key, name, role, last_heard, latitude, longitude)
+                VALUES (?, ?, 'repeater', ?, 45.0, -122.0)
+                """,
+                [
+                    ('aa' * 32, 'Recent', recent),
+                    ('bb' * 32, 'Old', '2020-01-01T00:00:00'),
+                ],
+            )
+            conn.commit()
+
+        with viewer_with_db.app.test_client() as client:
+            response = client.get('/api/mesh/nodes?days=7')
+            assert response.status_code == 200
+            names = {node['name'] for node in json.loads(response.data)['nodes']}
+            assert names == {'Recent'}
+
     def test_default_mode_tags_evidence_by_key_length(self, viewer_with_db):
         with sqlite3.connect(viewer_with_db.db_path, timeout=60) as conn:
             conn.execute("""
@@ -483,6 +506,108 @@ class TestApiMeshEdgesEvidence:
             data = json.loads(response.data)
             keys = {(e['from_prefix'], e['to_prefix']) for e in data['edges']}
             assert keys == {('cccc55', 'dddd66')}
+
+    def test_multibyte_days_preserves_lifetime_cross_resolution_merge(self, viewer_with_db):
+        # The selected window controls edge visibility, not the lifetime
+        # identity/count aggregation. A recent 2-byte observation must still
+        # resolve to the unique older 3-byte edge.
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'aaaa11bbbb22',
+            3,
+            observation_count=4,
+            last_seen='2020-01-01T00:00:00',
+        )
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'aaaabbbb',
+            2,
+            observation_count=3,
+        )
+
+        with viewer_with_db.app.test_client() as client:
+            response = client.get('/api/mesh/edges?evidence=multibyte&days=7')
+            data = json.loads(response.data)
+            edges = {(e['from_prefix'], e['to_prefix']): e for e in data['edges']}
+            assert set(edges) == {('aaaa11', 'bbbb22')}
+            assert edges[('aaaa11', 'bbbb22')]['observation_count'] == 7
+            assert edges[('aaaa11', 'bbbb22')]['path_count'] == 2
+
+    def test_window_preserves_lifetime_prefix_resolution(self, viewer_with_db):
+        old = '2020-01-01T00:00:00'
+        recent = time.strftime('%Y-%m-%dT%H:%M:%S')
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'aaaa11bbbb22',
+            3,
+            last_seen=old,
+        )
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'ccccdddd',
+            2,
+            last_seen=recent,
+        )
+        with sqlite3.connect(viewer_with_db.db_path, timeout=60) as conn:
+            conn.executemany(
+                """
+                INSERT INTO mesh_connections
+                    (from_prefix, to_prefix, observation_count, last_seen)
+                VALUES (?, ?, 1, ?)
+                """,
+                [
+                    ('aaaa11', 'bbbb22', old),
+                    ('cccc', 'dddd', recent),
+                ],
+            )
+            conn.commit()
+
+        with viewer_with_db.app.test_client() as client:
+            for evidence in ('all', 'multibyte'):
+                response = client.get(
+                    f'/api/mesh/edges?evidence={evidence}&days=7'
+                )
+                data = json.loads(response.data)
+                assert data['prefix_hex_chars'] == 6
+                assert {
+                    (edge['from_prefix'], edge['to_prefix'])
+                    for edge in data['edges']
+                } == {('cccc', 'dddd')}
+
+    def test_multibyte_days_uses_exact_timestamp_cutoff(
+        self, viewer_with_db, monkeypatch
+    ):
+        fixed_now = datetime(2026, 7, 29, 15, 0, 0)
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return fixed_now
+                return fixed_now.replace(tzinfo=timezone.utc).astimezone(tz)
+
+        monkeypatch.setattr('modules.web_viewer.app.datetime', FixedDateTime)
+        cutoff = fixed_now - timedelta(days=7)
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'aaaa11bbbb22',
+            3,
+            last_seen=(cutoff - timedelta(seconds=1)).isoformat(),
+        )
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'cccc55dddd66',
+            3,
+            last_seen=cutoff.isoformat(),
+        )
+
+        with viewer_with_db.app.test_client() as client:
+            response = client.get('/api/mesh/edges?evidence=multibyte&days=7')
+            data = json.loads(response.data)
+            assert {
+                (edge['from_prefix'], edge['to_prefix'])
+                for edge in data['edges']
+            } == {('cccc55', 'dddd66')}
 
     def test_stats_include_multibyte_edge_count(self, viewer_with_db):
         with sqlite3.connect(viewer_with_db.db_path, timeout=60) as conn:

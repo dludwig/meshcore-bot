@@ -66,9 +66,16 @@ class MessageScheduler:
         self.last_channel_ops_check_time = 0
         self.last_message_queue_check_time = 0
         self.last_radio_ops_check_time = 0
-        # Align with nightly email: first retention run after ~24h uptime (not immediately on boot).
-        self.last_data_retention_run = time.time()
         self._data_retention_interval_seconds = 86400  # 24 hours
+        self._data_retention_startup_delay_seconds = 60
+        # Enforce retention shortly after startup, independently of the nightly
+        # email timer. After that first run, the scheduler resets this timestamp
+        # and retains the normal daily cadence.
+        self.last_data_retention_run = (
+            time.time()
+            - self._data_retention_interval_seconds
+            + self._data_retention_startup_delay_seconds
+        )
         self.last_nightly_email_time = time.time()     # don't send immediately on startup
         self.last_db_backup_run = 0
         self.last_log_rotation_check_time = 0

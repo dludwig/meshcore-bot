@@ -11,6 +11,7 @@ from modules.db_migrations import (
     _add_column,
     _column_exists,
     _m0017_feed_queue_item_uniqueness,
+    _m0020_mesh_connections_last_seen_index,
 )
 
 
@@ -59,6 +60,24 @@ class TestColumnHelpers:
         cursor = conn.cursor()
         _add_column(cursor, "t", "a", "TEXT")  # already exists — must not raise
         assert _column_exists(cursor, "t", "a") is True
+
+
+class TestMeshConnectionIndexMigration:
+    def test_reuses_legacy_equivalent_index(self, conn):
+        conn.execute(
+            "CREATE TABLE mesh_connections (from_prefix TEXT, to_prefix TEXT, last_seen TEXT)"
+        )
+        conn.execute("CREATE INDEX idx_last_seen ON mesh_connections(last_seen)")
+
+        _m0020_mesh_connections_last_seen_index(conn.cursor())
+
+        indexes = conn.execute('PRAGMA index_list("mesh_connections")').fetchall()
+        last_seen_indexes = []
+        for index in indexes:
+            columns = conn.execute(f'PRAGMA index_info("{index[1]}")').fetchall()
+            if [column[2] for column in columns] == ["last_seen"]:
+                last_seen_indexes.append(index[1])
+        assert last_seen_indexes == ["idx_last_seen"]
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +342,19 @@ class TestSchema:
                 (idx,),
             )
             assert cur.fetchone() is not None
+
+    def test_mesh_connections_has_table_specific_last_seen_index(self, runner, conn):
+        runner.run()
+        row = conn.execute(
+            """
+            SELECT tbl_name, sql
+            FROM sqlite_master
+            WHERE type = 'index' AND name = 'idx_mesh_connections_last_seen'
+            """
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "mesh_connections"
+        assert "last_seen" in row[1]
 
     def test_purging_log_has_details_column_after_full_migration(self, runner, conn):
         runner.run()

@@ -1384,11 +1384,19 @@
         document.getElementById('btn-mesh-export').addEventListener('click', exportView);
         document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
         document.getElementById('filter-min-obs').addEventListener('input', onMinObsInput);
-        ['filter-edge-days', 'filter-node-days', 'filter-starred'].forEach(id => {
-            document.getElementById(id).addEventListener('change', () => {
-                applyFilters();
-                saveFilters();
-            });
+        document.getElementById('filter-edge-days').addEventListener('change', () => {
+            saveFilters();
+            loadData({ reloadNodes: false })
+                .catch(error => console.error('Error reloading edge window:', error));
+        });
+        document.getElementById('filter-node-days').addEventListener('change', () => {
+            saveFilters();
+            loadData({ reloadEdges: false })
+                .catch(error => console.error('Error reloading node window:', error));
+        });
+        document.getElementById('filter-starred').addEventListener('change', () => {
+            applyFilters();
+            saveFilters();
         });
         document.getElementById('filter-evidence').addEventListener('change', onEvidenceChange);
         document.getElementById('filter-search').addEventListener('input', handleSearchInput);
@@ -1497,27 +1505,47 @@
     }
     
     // Load nodes and edges
-    // Options: { skipRender: true } - refresh allNodes/allEdges but do not call applyFilters().
+    // Options may skip rendering or retain either already-loaded dataset.
     // Used by socket handlers so graph view is not re-rendered on live updates (avoids chaotic re-stabilization).
     async function loadData(options) {
         const skipRender = options && options.skipRender === true;
+        const reloadEdges = !options || options.reloadEdges !== false;
+        const reloadNodes = !options || options.reloadNodes !== false;
         
         try {
             const evidence = document.getElementById('filter-evidence').value;
-            const edgesUrl = evidence === 'multibyte' ? '/api/mesh/edges?evidence=multibyte' : '/api/mesh/edges';
+            const edgeDays = document.getElementById('filter-edge-days').value;
+            const nodeDays = document.getElementById('filter-node-days').value;
+            const edgeParams = new URLSearchParams();
+            if (evidence === 'multibyte') edgeParams.set('evidence', 'multibyte');
+            if (edgeDays) edgeParams.set('days', edgeDays);
+            const nodeParams = new URLSearchParams();
+            if (nodeDays) nodeParams.set('days', nodeDays);
+            const edgeQuery = edgeParams.toString();
+            const nodeQuery = nodeParams.toString();
+            const edgesUrl = edgeQuery
+                ? `/api/mesh/edges?${edgeQuery}`
+                : '/api/mesh/edges';
+            const nodesUrl = nodeQuery
+                ? `/api/mesh/nodes?${nodeQuery}`
+                : '/api/mesh/nodes';
             // Fetch edges and nodes concurrently; node prefixes are recomputed locally
             // below once the edge prefix length is known, so the nodes request does
             // not have to wait for the edges response
             const [edgesData, nodesData] = await Promise.all([
-                fetch(edgesUrl).then(r => r.json()),
-                fetch('/api/mesh/nodes').then(r => r.json())
+                reloadEdges ? fetch(edgesUrl).then(r => r.json()) : Promise.resolve(null),
+                reloadNodes ? fetch(nodesUrl).then(r => r.json()) : Promise.resolve(null)
             ]);
-            allEdges = edgesData.edges || [];
-            graphPrefixHexChars = (edgesData.prefix_hex_chars && [2, 4, 6].includes(edgesData.prefix_hex_chars))
-                ? edgesData.prefix_hex_chars
-                : PREFIX_HEX_CHARS;
+            if (edgesData) {
+                allEdges = edgesData.edges || [];
+                graphPrefixHexChars = (edgesData.prefix_hex_chars && [2, 4, 6].includes(edgesData.prefix_hex_chars))
+                    ? edgesData.prefix_hex_chars
+                    : PREFIX_HEX_CHARS;
+            }
 
-            allNodes = nodesData.nodes || [];
+            if (nodesData) {
+                allNodes = nodesData.nodes || [];
+            }
             // Keep node.prefix in sync with edge prefixes (e.g. 2-byte graphs)
             allNodes.forEach(node => {
                 if (node.public_key) {
@@ -1543,7 +1571,9 @@
             });
 
             // Rescale the min-observations slider to the new edge distribution
-            syncMinObsSlider();
+            if (reloadEdges) {
+                syncMinObsSlider();
+            }
 
             if (!skipRender) {
                 // Note: applyFilters() will preserve and re-apply path highlights via renderMap()
@@ -1705,7 +1735,8 @@
     // (loadData applies the current filters and re-renders when done)
     function onEvidenceChange() {
         saveFilters();
-        loadData().catch(error => console.error('Error reloading for evidence mode:', error));
+        loadData({ reloadNodes: false })
+            .catch(error => console.error('Error reloading for evidence mode:', error));
     }
 
     // Switch between views

@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from contextlib import closing, contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -607,6 +607,71 @@ class BotDataViewer:
     def _derive_multibyte_evidence_edges(
         self, days: int | None = None, min_observations: int | None = None
     ) -> list[dict[str, Any]]:
+        """Return lifetime-derived multi-byte edges filtered for the API view."""
+        all_edges = self._aggregate_multibyte_evidence_edges()
+        return self._filter_multibyte_evidence_edges(
+            all_edges,
+            days=days,
+            min_observations=min_observations,
+        )
+
+    def _derive_multibyte_evidence_graph(
+        self, days: int | None = None, min_observations: int | None = None
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return filtered edges plus the lifetime graph's prefix resolution."""
+        all_edges = self._aggregate_multibyte_evidence_edges()
+        prefix_hex_chars = max(
+            (len(edge['from_prefix']) for edge in all_edges),
+            default=2,
+        )
+        return (
+            self._filter_multibyte_evidence_edges(
+                all_edges,
+                days=days,
+                min_observations=min_observations,
+            ),
+            max(2, prefix_hex_chars),
+        )
+
+    @staticmethod
+    def _filter_multibyte_evidence_edges(
+        edges: list[dict[str, Any]],
+        days: int | None,
+        min_observations: int | None,
+    ) -> list[dict[str, Any]]:
+        """Apply view filters without changing lifetime edge identity or counts."""
+        cutoff_naive = datetime.now() - timedelta(days=days) if days is not None else None
+        cutoff_utc = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+            if days is not None
+            else None
+        )
+        result = []
+        for edge in edges:
+            if cutoff_naive is not None and edge['last_seen']:
+                try:
+                    last_seen = datetime.fromisoformat(
+                        str(edge['last_seen']).replace('Z', '+00:00')
+                    )
+                except (TypeError, ValueError):
+                    # Preserve the historical behavior for malformed timestamps:
+                    # they remain visible rather than silently losing graph data.
+                    last_seen = None
+                if last_seen is not None:
+                    if last_seen.tzinfo is None:
+                        if last_seen < cutoff_naive:
+                            continue
+                    elif cutoff_utc is not None and last_seen.astimezone(timezone.utc) < cutoff_utc:
+                        continue
+            if (
+                min_observations is not None
+                and edge['observation_count'] < min_observations
+            ):
+                continue
+            result.append(edge)
+        return result
+
+    def _aggregate_multibyte_evidence_edges(self) -> list[dict[str, Any]]:
         """Derive mesh edges purely from multi-byte path evidence.
 
         Splits each observed_paths row with bytes_per_hop >= 2 into consecutive
@@ -622,47 +687,76 @@ class BotDataViewer:
           path_count — number of distinct observed paths crossing the edge
           evidence   — always 'multibyte'
         """
+        # Split paths and aggregate directed hop pairs in SQLite. This preserves
+        # lifetime counts and cross-resolution coalescing while avoiding one
+        # Python row/dict/list per observed path (hundreds of thousands on busy
+        # meshes). The selected timeframe is applied only after coalescing,
+        # matching the historical client-side filter semantics.
         query = '''
-            SELECT path_hex, bytes_per_hop, observation_count, first_seen, last_seen
-            FROM observed_paths
-            WHERE bytes_per_hop >= 2
+            WITH RECURSIVE edge_parts(
+                path_hex, step, observation_count, first_seen, last_seen,
+                hop_position, from_prefix, to_prefix, next_offset
+            ) AS (
+                SELECT
+                    LOWER(path_hex),
+                    bytes_per_hop * 2,
+                    CASE
+                        WHEN observation_count IS NULL OR observation_count = 0 THEN 1
+                        ELSE observation_count
+                    END,
+                    first_seen,
+                    last_seen,
+                    1,
+                    SUBSTR(LOWER(path_hex), 1, bytes_per_hop * 2),
+                    SUBSTR(LOWER(path_hex), bytes_per_hop * 2 + 1, bytes_per_hop * 2),
+                    bytes_per_hop * 4 + 1
+                FROM observed_paths
+                WHERE bytes_per_hop >= 2
+                  AND path_hex IS NOT NULL
+                  AND LENGTH(path_hex) > 0
+                  AND LENGTH(path_hex) % (bytes_per_hop * 2) = 0
+                  AND LENGTH(path_hex) >= bytes_per_hop * 4
+
+                UNION ALL
+
+                SELECT
+                    path_hex,
+                    step,
+                    observation_count,
+                    first_seen,
+                    last_seen,
+                    hop_position + 1,
+                    to_prefix,
+                    SUBSTR(path_hex, next_offset, step),
+                    next_offset + step
+                FROM edge_parts
+                WHERE LENGTH(path_hex) >= next_offset + step - 1
+            )
+            SELECT
+                from_prefix,
+                to_prefix,
+                SUM(observation_count) AS observation_count,
+                COUNT(*) AS path_count,
+                MIN(first_seen) AS first_seen,
+                MAX(last_seen) AS last_seen,
+                SUM(hop_position * observation_count) AS hop_position_sum
+            FROM edge_parts
+            GROUP BY from_prefix, to_prefix
         '''
-        params: list[Any] = []
-        if days is not None:
-            query += ' AND last_seen >= datetime("now", "-" || ? || " days")'
-            params.append(days)
 
         with self._with_db_connection() as conn:
-            rows = conn.execute(query, params).fetchall()
+            rows = conn.execute(query).fetchall()
 
-        edges: dict[tuple[str, str], dict[str, Any]] = {}
-        for row in rows:
-            step = (row['bytes_per_hop'] or 0) * 2
-            path_hex = (row['path_hex'] or '').lower()
-            if step < 4 or not path_hex or len(path_hex) % step != 0:
-                continue
-            hops = [path_hex[i:i + step] for i in range(0, len(path_hex), step)]
-            obs = row['observation_count'] or 1
-            for i in range(len(hops) - 1):
-                key = (hops[i], hops[i + 1])
-                agg = edges.get(key)
-                if agg is None:
-                    edges[key] = agg = {
-                        'observation_count': 0,
-                        'path_count': 0,
-                        'first_seen': row['first_seen'],
-                        'last_seen': row['last_seen'],
-                        'hop_position_sum': 0.0,
-                    }
-                agg['observation_count'] += obs
-                agg['path_count'] += 1
-                if row['first_seen'] and (agg['first_seen'] is None or row['first_seen'] < agg['first_seen']):
-                    agg['first_seen'] = row['first_seen']
-                if row['last_seen'] and (agg['last_seen'] is None or row['last_seen'] > agg['last_seen']):
-                    agg['last_seen'] = row['last_seen']
-                # hop_position is the 1-based index of the receiving hop (matches
-                # graph_trace_helper semantics); weighted by observation count.
-                agg['hop_position_sum'] += (i + 1) * obs
+        edges: dict[tuple[str, str], dict[str, Any]] = {
+            (row['from_prefix'], row['to_prefix']): {
+                'observation_count': row['observation_count'],
+                'path_count': row['path_count'],
+                'first_seen': row['first_seen'],
+                'last_seen': row['last_seen'],
+                'hop_position_sum': row['hop_position_sum'],
+            }
+            for row in rows
+        }
 
         # Coalesce 2-byte edges into a 3-byte edge when exactly one matches.
         # (Hops within a path share one resolution, so keys are homogeneous.)
@@ -685,8 +779,6 @@ class BotDataViewer:
 
         result = []
         for (from_prefix, to_prefix), agg in edges.items():
-            if min_observations is not None and agg['observation_count'] < min_observations:
-                continue
             result.append({
                 'from_prefix': from_prefix,
                 'to_prefix': to_prefix,
@@ -2407,6 +2499,7 @@ class BotDataViewer:
             conn = None
             try:
                 prefix_hex_chars = request.args.get('prefix_hex_chars', type=int)
+                days = request.args.get('days', type=int)
                 if prefix_hex_chars not in (2, 4, 6):
                     prefix_hex_chars = self.config.getint('Bot', 'prefix_bytes', fallback=1) * 2
                 if prefix_hex_chars <= 0:
@@ -2431,10 +2524,17 @@ class BotDataViewer:
                     AND longitude IS NOT NULL
                     AND latitude != 0
                     AND longitude != 0
-                    ORDER BY name
                 '''
+                params = []
+                if days is not None:
+                    query += '''
+                    AND COALESCE(NULLIF(last_heard, ''), last_advert_timestamp)
+                        >= datetime("now", "-" || ? || " days")
+                    '''
+                    params.append(days)
+                query += ' ORDER BY name'
 
-                cursor.execute(query)
+                cursor.execute(query, params)
                 rows = cursor.fetchall()
 
                 nodes = []
@@ -2477,20 +2577,38 @@ class BotDataViewer:
                 evidence = request.args.get('evidence', 'all')
 
                 if evidence == 'multibyte':
-                    edges = self._derive_multibyte_evidence_edges(
+                    edges, prefix_hex_chars = self._derive_multibyte_evidence_graph(
                         days=days, min_observations=min_observations
-                    )
-                    prefix_hex_chars = max(
-                        (len(e['from_prefix']) for e in edges), default=2
                     )
                     return jsonify({
                         'edges': edges,
-                        'prefix_hex_chars': max(2, prefix_hex_chars),
+                        'prefix_hex_chars': prefix_hex_chars,
                         'evidence': 'multibyte',
                     })
 
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
+
+                # Edge windows control visibility, but node identity must retain
+                # the lifetime graph's prefix resolution. Otherwise an older
+                # multi-byte edge disappearing from the window can collapse
+                # distinct nodes onto one shorter prefix in the browser.
+                cursor.execute(
+                    '''
+                    SELECT COALESCE(
+                        MAX(
+                            CASE
+                                WHEN LENGTH(from_prefix) > LENGTH(to_prefix)
+                                THEN LENGTH(from_prefix)
+                                ELSE LENGTH(to_prefix)
+                            END
+                        ),
+                        2
+                    ) AS prefix_hex_chars
+                    FROM mesh_connections
+                    '''
+                )
+                prefix_hex_chars = cursor.fetchone()['prefix_hex_chars']
 
                 query = '''
                     SELECT
@@ -2530,7 +2648,6 @@ class BotDataViewer:
                 rows = cursor.fetchall()
 
                 edges = []
-                prefix_hex_chars = 2  # default 1 byte
                 for row in rows:
                     fp, tp = row['from_prefix'], row['to_prefix']
                     prefix_hex_chars = max(prefix_hex_chars, len(fp) if fp else 0, len(tp) if tp else 0)
@@ -2591,7 +2708,8 @@ class BotDataViewer:
                         COUNT(CASE WHEN from_public_key IS NOT NULL THEN 1 END) as edges_with_from_key,
                         COUNT(CASE WHEN to_public_key IS NOT NULL THEN 1 END) as edges_with_to_key,
                         COUNT(CASE WHEN from_public_key IS NOT NULL AND to_public_key IS NOT NULL THEN 1 END) as edges_with_both_keys,
-                        COUNT(CASE WHEN LENGTH(from_prefix) >= 4 AND LENGTH(to_prefix) >= 4 THEN 1 END) as multibyte_edges
+                        COUNT(CASE WHEN LENGTH(from_prefix) >= 4 AND LENGTH(to_prefix) >= 4 THEN 1 END) as multibyte_edges,
+                        COUNT(CASE WHEN last_seen >= datetime("now", "-1 days") THEN 1 END) as recent_edges_24h
                     FROM mesh_connections
                 ''')
                 edge_stats = cursor.fetchone()
@@ -2599,32 +2717,25 @@ class BotDataViewer:
                 # Get most connected nodes
                 cursor.execute('''
                     SELECT
-                        from_prefix as prefix,
-                        COUNT(*) as connection_count
-                    FROM mesh_connections
-                    GROUP BY from_prefix
-                    UNION ALL
-                    SELECT
-                        to_prefix as prefix,
-                        COUNT(*) as connection_count
-                    FROM mesh_connections
-                    GROUP BY to_prefix
+                        LOWER(prefix) AS prefix,
+                        SUM(connection_count) AS connection_count
+                    FROM (
+                        SELECT from_prefix AS prefix, COUNT(*) AS connection_count
+                        FROM mesh_connections
+                        GROUP BY from_prefix
+                        UNION ALL
+                        SELECT to_prefix AS prefix, COUNT(*) AS connection_count
+                        FROM mesh_connections
+                        GROUP BY to_prefix
+                    )
+                    GROUP BY LOWER(prefix)
+                    ORDER BY connection_count DESC, prefix
+                    LIMIT 10
                 ''')
-                connection_counts = {}
-                for row in cursor.fetchall():
-                    prefix = row['prefix'].lower()
-                    connection_counts[prefix] = connection_counts.get(prefix, 0) + row['connection_count']
-
-                # Get top 10 most connected
-                top_connected = sorted(connection_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-
-                # Get recent edges count (last 24 hours)
-                cursor.execute('''
-                    SELECT COUNT(*) as count
-                    FROM mesh_connections
-                    WHERE last_seen >= datetime("now", "-1 days")
-                ''')
-                recent_edges = cursor.fetchone()['count']
+                top_connected = [
+                    (row['prefix'], row['connection_count'])
+                    for row in cursor.fetchall()
+                ]
 
                 stats = {
                     'node_count': node_count,
@@ -2639,7 +2750,7 @@ class BotDataViewer:
                     'edges_with_both_keys': edge_stats['edges_with_both_keys'] or 0,
                     'multibyte_edges': edge_stats['multibyte_edges'] or 0,
                     'top_connected': [{'prefix': prefix, 'count': count} for prefix, count in top_connected],
-                    'recent_edges_24h': recent_edges
+                    'recent_edges_24h': edge_stats['recent_edges_24h'] or 0
                 }
 
                 # Bot's own position (config [Bot] bot_latitude/bot_longitude), used by

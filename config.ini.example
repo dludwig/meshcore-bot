@@ -1038,7 +1038,8 @@ graph_edge_expiration_days = 7
 # - batched: Accumulate updates, flush periodically (better performance, risk of data loss on crash)
 # - hybrid: Immediate for new edges, batched for observation count increments (balanced)
 # Recommended: 'hybrid' for development (frequent restarts), 'batched' for production
-graph_write_strategy = hybrid
+# and SD-card installations to reduce transaction/WAL writes.
+graph_write_strategy = batched
 
 # Batch write interval in seconds (only used if strategy is 'batched' or 'hybrid')
 # How often to flush pending edge updates to database
