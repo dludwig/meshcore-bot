@@ -87,6 +87,9 @@ SUMMARY_SERIES_POINTS = 30
 # Categories to show in a role/payload mix before the tail is rolled into "Other".
 MIX_ROWS = 8
 
+# Hop counts beyond this are corrupt path data rather than real distance.
+MAX_PLOTTED_HOPS = 32
+
 # Metrics that are already a ratio: a period "total" has to be the mean of the
 # daily values, not their sum — adding percentages together means nothing.
 RATIO_METRICS = frozenset({"multibyte_share"})
@@ -733,8 +736,9 @@ class DashboardStatsService:
 
             mesh["role_mix"] = self._mix(conn, "role")
 
+        mesh["hops"] = self._hops_distribution(conn, sources)
+
         if sources & SOURCE_OBSERVED_PATHS:
-            mesh["hops_histogram"] = self._hops_histogram(conn)
             mesh["neighbors"] = {
                 window: self._count_one_hop_nodes(conn, window)
                 for window in NEIGHBOR_WINDOWS
@@ -795,33 +799,73 @@ class DashboardStatsService:
             buckets[key] = buckets.get(key, 0) + (count or 0)
         return _top_n_with_other([[name, count] for name, count in buckets.items()])
 
-    def _hops_histogram(self, conn: sqlite3.Connection) -> list[list[int]]:
-        """Nodes by how many hops away their closest observed advert path was.
+    def _hops_distribution(self, conn: sqlite3.Connection, sources: int) -> dict[str, Any]:
+        """Two views of distance: where nodes are, and where flood traffic comes from.
 
-        Derived from ``path_length / bytes_per_hop`` rather than read from
-        ``complete_contact_tracking.hop_count``.  Two reasons: path_length is a
-        byte count, so with multibyte encoding the raw value overstates hops by
-        2-3x; and the stored hop_count disagrees with the path evidence badly
-        enough at the low end to be unusable (see _one_hop_rows).
+        Beware that the two tables count paths in different units, and the
+        conversion is not symmetric:
+
+        * ``observed_paths.path_length`` is a BYTE count, so hops are
+          ``path_length / bytes_per_hop`` — a 3-hop multibyte path is 6 or 9.
+        * ``packet_stream.path_len`` is already a HOP count, with the byte
+          length carried separately as ``path_byte_length``.
+
+        Dividing the second by bytes_per_hop, or failing to divide the first,
+        silently rescales a whole axis.  Verified against live rows in
+        tests/test_dashboard_stats.py::TestHopConventions.
+
+        The two series also cover different spans — adverts over 7 days,
+        packets over whatever packet_stream retains (typically 3) — so each is
+        labelled with its own window rather than being presented as one period.
         """
-        rows = conn.execute(
-            """
-            SELECT MIN(path_length / bytes_per_hop) AS hops
-            FROM observed_paths
-            WHERE packet_type = 'advert' AND bytes_per_hop > 0
-              AND last_seen >= datetime('now','localtime','-7 days')
-            GROUP BY public_key
-            """
-        ).fetchall()
+        distribution: dict[str, Any] = {"nodes": [], "flood_packets": []}
+
+        if sources & SOURCE_OBSERVED_PATHS:
+            distribution["nodes"] = self._bucket_hops(
+                conn.execute(
+                    """
+                    SELECT MIN(path_length / bytes_per_hop) AS hops, COUNT(*) AS n
+                    FROM observed_paths
+                    WHERE packet_type = 'advert' AND bytes_per_hop > 0
+                      AND last_seen >= datetime('now','localtime','-7 days')
+                    GROUP BY public_key
+                    """
+                ),
+                per_row=True,
+            )
+
+        if sources & SOURCE_PACKET_STREAM:
+            # path_len is already hops here — do NOT divide by bytes_per_hop.
+            distribution["flood_packets"] = self._bucket_hops(
+                conn.execute(
+                    """
+                    SELECT path_len AS hops, COUNT(*) AS n FROM packet_stream
+                    WHERE type = 'packet' AND route_type_name LIKE '%FLOOD'
+                      AND path_len IS NOT NULL
+                    GROUP BY path_len
+                    """
+                )
+            )
+
+        # Pad both onto one contiguous axis so the bars line up.
+        edges = [hop for series in distribution.values() for hop, _ in series]
+        if edges:
+            low, high = min(edges), max(edges)
+            for key, series in distribution.items():
+                counts = dict(series)
+                distribution[key] = [[hop, counts.get(hop, 0)] for hop in range(low, high + 1)]
+        return distribution
+
+    @staticmethod
+    def _bucket_hops(rows, per_row: bool = False) -> list[list[int]]:
+        """Fold (hops, n) rows into a hop -> count mapping, dropping absurd hops."""
         counts: dict[int, int] = {}
         for row in rows:
             hops = row["hops"]
-            if hops is None or not 0 <= hops <= 32:
+            if hops is None or not 0 <= hops <= MAX_PLOTTED_HOPS:
                 continue
-            counts[int(hops)] = counts.get(int(hops), 0) + 1
-        if not counts:
-            return []
-        return [[hop, counts.get(hop, 0)] for hop in range(min(counts), max(counts) + 1)]
+            counts[int(hops)] = counts.get(int(hops), 0) + (1 if per_row else (row["n"] or 0))
+        return [[hop, count] for hop, count in sorted(counts.items())]
 
     def _count_one_hop_nodes(self, conn: sqlite3.Connection, window: str) -> int:
         return conn.execute(

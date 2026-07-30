@@ -148,10 +148,21 @@ proxy_set_header X-Forwarded-Proto $scheme;
 
 Two measurement notes for the mesh charts:
 
-**Hops are derived, not read.** `observed_paths.path_length` is a *byte* count,
-and with 2- or 3-byte hop encoding a three-hop path is six or nine bytes long.
-The dashboard divides by `bytes_per_hop`; charting the raw value would overstate
-distance two- to threefold on a mesh that is ~95% multibyte.
+**Hops are derived, and the two path tables disagree on units.**
+`observed_paths.path_length` is a *byte* count, so hops are
+`path_length / bytes_per_hop` — with 2- or 3-byte encoding a three-hop path is
+six or nine bytes long, and charting the raw value would overstate distance two-
+to threefold on a mesh that is ~95% multibyte. `packet_stream.path_len`, by
+contrast, is *already a hop count*, with its byte length carried separately as
+`path_byte_length`. Applying either table's rule to the other silently rescales
+the axis, so both conventions are pinned by tests.
+
+The hops chart shows both distributions: nodes by their closest advert path (7
+days) and arriving flood packets by distance travelled (whatever
+`packet_stream` retains, typically 3 days). One counts nodes and the other
+packets, so each is drawn as a share of its own total. Flood packets carry no
+sender identity, which is why they cannot be reduced to a shortest path per
+node the way adverts can.
 
 **Neighbour signal is reported only where two sources agree.**
 `complete_contact_tracking.hop_count` is not a reliable direct-neighbour marker:

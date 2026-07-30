@@ -699,13 +699,96 @@ class TestOneHopNeighbours:
         assert "device_mix" not in mesh          # same field as role
         assert "hop_histogram" not in mesh       # replaced by path-derived hops
         assert "path_len_histogram" not in mesh  # was byte length labelled as hops
-        assert dict(mesh["hops_histogram"]) == {2: 1, 3: 0, 4: 1}
+        assert dict(mesh["hops"]["nodes"]) == {2: 1, 3: 0, 4: 1}
         assert mesh["neighbors"] == {"24h": 0, "7d": 0}
 
     def test_no_neighbours_degrades_cleanly(self, viewer):
         payload = self._top(viewer)
         assert payload["items"] == []
         assert payload["total"] == 0
+
+
+class TestHopConventions:
+    """The two path tables measure paths in different units. Pin both.
+
+    observed_paths.path_length is a BYTE count; packet_stream.path_len is
+    already a HOP count (its byte length lives in path_byte_length). Applying
+    either table's rule to the other silently rescales a whole axis, and the
+    only visible symptom is a chart that looks slightly wrong.
+    """
+
+    def _hops(self, viewer) -> dict:
+        with closing(viewer._dashboard_connection()) as conn:
+            return viewer.dashboard_stats._hops_distribution(
+                conn, viewer.dashboard_stats.detect_sources(conn)
+            )
+
+    def test_advert_path_length_is_divided_by_bytes_per_hop(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            for i, (length, bph) in enumerate([(9, 3), (4, 2), (3, 1)]):  # 3, 2 and 3 hops
+                conn.execute(
+                    """
+                    INSERT INTO observed_paths (public_key, from_prefix, to_prefix, path_hex,
+                        path_length, bytes_per_hop, packet_type, last_seen)
+                    VALUES (?, 'aa', 'bb', 'ab', ?, ?, 'advert', datetime('now','localtime'))
+                    """,
+                    (_pk(i), length, bph),
+                )
+        assert dict(self._hops(viewer)["nodes"]) == {2: 1, 3: 2}
+
+    def test_packet_path_len_is_used_as_hops_directly(self, viewer):
+        """17 hops at 3 bytes each is 17 on the axis, not 5."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.execute(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', 17, 3)",
+                (time.time(),),
+            )
+        assert dict(self._hops(viewer)["flood_packets"]) == {17: 1}
+
+    def test_direct_packets_are_excluded_from_the_flood_series(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', ?, ?, 1)",
+                [
+                    (time.time(), "FLOOD", 2),
+                    (time.time(), "TRANSPORT_FLOOD", 2),
+                    (time.time(), "DIRECT", 2),
+                ],
+            )
+        assert dict(self._hops(viewer)["flood_packets"]) == {2: 2}
+
+    def test_series_share_one_contiguous_axis(self, viewer):
+        """Bars must line up, so both series are padded onto a common range."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO observed_paths (public_key, from_prefix, to_prefix, path_hex,
+                    path_length, bytes_per_hop, packet_type, last_seen)
+                VALUES (?, 'aa', 'bb', 'ab', 1, 1, 'advert', datetime('now','localtime'))
+                """,
+                (_pk(1),),
+            )
+            conn.execute(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', 4, 1)",
+                (time.time(),),
+            )
+        hops = self._hops(viewer)
+        assert [h for h, _ in hops["nodes"]] == [1, 2, 3, 4]
+        assert [h for h, _ in hops["flood_packets"]] == [1, 2, 3, 4]
+        assert dict(hops["nodes"]) == {1: 1, 2: 0, 3: 0, 4: 0}
+        assert dict(hops["flood_packets"]) == {1: 0, 2: 0, 3: 0, 4: 1}
+
+    def test_absurd_hop_counts_are_dropped(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', ?, 1)",
+                [(time.time(), 3), (time.time(), 900), (time.time(), -1)],
+            )
+        assert dict(self._hops(viewer)["flood_packets"]) == {3: 1}
 
 
 class TestCategoryMixes:

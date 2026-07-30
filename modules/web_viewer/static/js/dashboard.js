@@ -367,7 +367,7 @@
             // Routing, encoding, distributions
             this.renderRouteMix(mesh.route_mix, coverage.packets_window_label);
             this.renderMix('payload-mix', mesh.payload_mix);
-            this.renderHopsHistogram(mesh.hops_histogram);
+            this.renderHopsHistogram(mesh.hops, coverage.packets_window_label);
             this.renderDoughnut('contactsEncodingChart', 'contacts-encoding-summary',
                 (mesh.encoding || {}).contacts_7d, 'contacts');
             this.renderDoughnut('packetsEncodingChart', 'packets-encoding-summary',
@@ -501,39 +501,78 @@
             );
         }
 
-        renderHopsHistogram(points) {
+        /**
+         * Hop distance, two ways: where nodes sit, and where flood traffic
+         * comes from.
+         *
+         * The series count different things — 2.8k nodes against 74k packets —
+         * so plotting raw counts together would flatten the node series into
+         * the axis. Both are shown as a share of their own total, which is what
+         * makes the two shapes comparable; absolute counts stay in the tooltip.
+         */
+        renderHopsHistogram(hops, packetWindowLabel) {
             const canvasId = 'hopsHistogramChart';
             const canvas = el(canvasId);
             if (!canvas || typeof Chart === 'undefined') return;
-            const bins = Array.isArray(points) ? points : [];
+            const nodes = Array.isArray((hops || {}).nodes) ? hops.nodes : [];
+            const flood = Array.isArray((hops || {}).flood_packets) ? hops.flood_packets : [];
             const colors = themeColors();
 
             if (this.charts[canvasId]) {
                 this.charts[canvasId].destroy();
                 delete this.charts[canvasId];
             }
-            if (bins.length === 0) return;
+            if (nodes.length === 0 && flood.length === 0) return;
+
+            const labels = (nodes.length ? nodes : flood).map((b) => b[0]);
+            const share = (series) => {
+                const total = series.reduce((sum, b) => sum + b[1], 0);
+                return { total, values: series.map((b) => (total ? (b[1] / total) * 100 : 0)) };
+            };
+            const nodeShare = share(nodes);
+            const floodShare = share(flood);
+
+            const datasets = [];
+            if (nodes.length) {
+                datasets.push({
+                    label: 'Nodes (adverts, 7d)',
+                    data: nodeShare.values,
+                    counts: nodes.map((b) => b[1]),
+                    unit: 'nodes',
+                    backgroundColor: COLOR.accent,
+                    borderRadius: 3,
+                });
+            }
+            if (flood.length) {
+                datasets.push({
+                    label: 'Flood packets (' + (packetWindowLabel || 'retained') + ')',
+                    data: floodShare.values,
+                    counts: flood.map((b) => b[1]),
+                    unit: 'packets',
+                    backgroundColor: COLOR.flood,
+                    borderRadius: 3,
+                });
+            }
 
             this.charts[canvasId] = new Chart(canvas.getContext('2d'), {
                 type: 'bar',
-                data: {
-                    labels: bins.map((b) => b[0]),
-                    datasets: [{
-                        label: 'Nodes',
-                        data: bins.map((b) => b[1]),
-                        backgroundColor: COLOR.accent,
-                        borderRadius: 3,
-                    }],
-                },
+                data: { labels, datasets },
                 options: noAnimation({
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: { display: false },
+                        legend: {
+                            position: 'bottom',
+                            labels: { color: colors.muted, boxWidth: 12, font: { size: 10 } },
+                        },
                         tooltip: {
                             callbacks: {
                                 title: (items) => items[0].label + ' hops away',
-                                label: (ctx) => formatNumber(ctx.parsed.y) + ' nodes',
+                                label: (ctx) => {
+                                    const count = ctx.dataset.counts[ctx.dataIndex];
+                                    return ctx.dataset.label + ': ' + formatNumber(count) + ' ' +
+                                        ctx.dataset.unit + ' (' + ctx.parsed.y.toFixed(1) + '%)';
+                                },
                             },
                         },
                     },
@@ -546,7 +585,13 @@
                         },
                         y: {
                             beginAtZero: true,
-                            ticks: { color: colors.muted, font: { size: 10 }, precision: 0 },
+                            title: { display: true, text: '% of series', color: colors.muted,
+                                     font: { size: 10 } },
+                            ticks: {
+                                color: colors.muted,
+                                font: { size: 10 },
+                                callback: (v) => v + '%',
+                            },
                             grid: { color: colors.grid },
                         },
                     },
@@ -1091,10 +1136,13 @@
             'the last hop into this radio rather than the link to whoever sent it, so the ' +
             'rest are left blank instead of borrowing another link\'s number.',
         'hops-info':
-            'Nodes by the fewest hops any of their adverts took to reach this radio, over the ' +
-            'last 7 days. Hops are derived as path length divided by bytes per hop: path ' +
-            'length is a byte count, so with 2- or 3-byte hop encoding the raw value would ' +
-            'overstate the distance by two to three times.',
+            'Two distributions on one axis. Nodes: the fewest hops any of a node\'s adverts ' +
+            'took to reach this radio, over 7 days. Flood packets: how far each flood packet ' +
+            'had already travelled when it arrived, over whatever the packet stream retains ' +
+            '(typically 3 days). Because one counts nodes and the other counts packets, both ' +
+            'are drawn as a share of their own total; the tooltip gives the raw counts. ' +
+            'Flood packets carry no sender identity, so they cannot be reduced to a shortest ' +
+            'path per node the way adverts can.',
     };
 
     function initTooltips() {

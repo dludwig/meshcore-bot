@@ -39,10 +39,20 @@ semantic versioning.
   traffic is, next to how it is routed. Category lists roll their tail into
   "Other" rather than truncating, so the bars still sum to the total printed
   beside them.
-- Hop-distance chart derived as `path_length / bytes_per_hop`. `path_length` is
-  a byte count, so with 2- or 3-byte hop encoding — about 95% of adverts on the
-  live mesh — reading it directly as a hop count overstates distance two- to
-  threefold. This replaces both the raw path-length chart and the chart built
+- Hop-distance chart carrying two distributions: nodes by their closest advert
+  path, and arriving flood packets by how far they had already travelled. One
+  counts nodes and the other packets, so both are drawn as a share of their own
+  total with raw counts in the tooltip. On the live mesh nodes peak at 2-3 hops
+  and fall away quickly while flood traffic peaks at 5 with a much longer tail —
+  a nearby neighbourhood absorbing flood from well beyond it.
+
+  Note that the two source tables measure paths in **different units**:
+  `observed_paths.path_length` is a byte count, so hops are
+  `path_length / bytes_per_hop` (a 3-hop multibyte path is 6 or 9), while
+  `packet_stream.path_len` is already a hop count with its byte length kept
+  separately as `path_byte_length`. Applying either rule to the other table
+  silently rescales an axis; both are pinned by tests. This replaces the
+  earlier raw path-length chart, which read bytes as hops, and the chart built
   on the untrustworthy stored hop count.
 - New `[Web_Viewer]` settings: `dashboard_snapshot_enabled`,
   `dashboard_snapshot_interval_seconds`, `dashboard_snapshot_history_days`, and
