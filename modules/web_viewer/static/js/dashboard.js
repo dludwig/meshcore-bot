@@ -316,6 +316,7 @@
                 );
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 const data = await response.json();
+                if (config.onLoad) config.onLoad(data);
                 if (!data.items || data.items.length === 0) {
                     container.replaceChildren(
                         makeTextElement('div', config.empty, 'dashboard-empty')
@@ -365,9 +366,7 @@
 
             // Routing, encoding, distributions
             this.renderRouteMix(mesh.route_mix, coverage.packets_window_label);
-            this.renderHistogram('hopHistogramChart', mesh.hop_histogram, 'Contacts', COLOR.accent);
-            this.renderHistogram('pathLenHistogramChart', mesh.path_len_histogram, 'Advert paths', COLOR.flood);
-            this.renderNeighbors(mesh.neighbors);
+            this.renderHopsHistogram(mesh.hops_histogram);
             this.renderDoughnut('contactsEncodingChart', 'contacts-encoding-summary',
                 (mesh.encoding || {}).contacts_7d, 'contacts');
             this.renderDoughnut('packetsEncodingChart', 'packets-encoding-summary',
@@ -501,85 +500,11 @@
             );
         }
 
-        renderHistogram(canvasId, points, label, color) {
+        renderHopsHistogram(points) {
+            const canvasId = 'hopsHistogramChart';
             const canvas = el(canvasId);
             if (!canvas || typeof Chart === 'undefined') return;
-            const list = Array.isArray(points) ? points : [];
-            const colors = themeColors();
-
-            if (this.charts[canvasId]) {
-                this.charts[canvasId].destroy();
-                delete this.charts[canvasId];
-            }
-            if (list.length === 0) return;
-
-            this.charts[canvasId] = new Chart(canvas.getContext('2d'), {
-                type: 'bar',
-                data: {
-                    labels: list.map((p) => p[0]),
-                    datasets: [{
-                        label: label,
-                        data: list.map((p) => p[1]),
-                        backgroundColor: color,
-                        borderRadius: 3,
-                    }],
-                },
-                options: noAnimation({
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: {
-                            ticks: { color: colors.muted, font: { size: 10 } },
-                            grid: { display: false },
-                        },
-                        y: {
-                            beginAtZero: true,
-                            ticks: { color: colors.muted, font: { size: 10 }, precision: 0 },
-                            grid: { color: colors.grid },
-                        },
-                    },
-                }),
-            });
-        }
-
-        /**
-         * Direct (zero-hop) neighbours: the distribution plus the weakest links.
-         * Only these have a meaningful SNR — a relayed packet's SNR describes
-         * the last hop, not the node that sent it.
-         */
-        renderNeighbors(neighbors) {
-            const data = neighbors || {};
-            const snr = data.snr || {};
-            const count = data.count || 0;
-
-            setText('neighbors-count', formatNumber(count));
-            setText('neighbors-window', 'heard in the last ' + (data.window_days || 7) + 'd');
-            setText('neighbors-snr-min', formatSigned(snr.min));
-            setText('neighbors-snr-p50', formatSigned(snr.p50));
-            setText('neighbors-snr-max', formatSigned(snr.max));
-            setText('neighbors-rssi', formatSigned((data.rssi || {}).p50));
-
-            this.renderNeighborHistogram(data.histogram);
-
-            const list = el('neighbors-weakest');
-            if (!list) return;
-            const weakest = Array.isArray(data.weakest) ? data.weakest : [];
-            if (weakest.length === 0) {
-                list.replaceChildren(
-                    makeTextElement('div', 'No direct neighbours heard recently.', 'dashboard-empty')
-                );
-                return;
-            }
-            list.replaceChildren();
-            weakest.forEach((item) => list.appendChild(neighborRow(item)));
-        }
-
-        renderNeighborHistogram(histogram) {
-            const canvasId = 'neighborSnrChart';
-            const canvas = el(canvasId);
-            if (!canvas || typeof Chart === 'undefined') return;
-            const bins = Array.isArray(histogram) ? histogram : [];
+            const bins = Array.isArray(points) ? points : [];
             const colors = themeColors();
 
             if (this.charts[canvasId]) {
@@ -593,9 +518,9 @@
                 data: {
                     labels: bins.map((b) => b[0]),
                     datasets: [{
-                        label: 'Neighbours',
+                        label: 'Nodes',
                         data: bins.map((b) => b[1]),
-                        backgroundColor: bins.map((b) => snrColor(b[0])),
+                        backgroundColor: COLOR.accent,
                         borderRadius: 3,
                     }],
                 },
@@ -606,17 +531,14 @@
                         legend: { display: false },
                         tooltip: {
                             callbacks: {
-                                title: (items) => {
-                                    const low = Number(items[0].label);
-                                    return low + ' to ' + (low + 2) + ' dB SNR';
-                                },
-                                label: (ctx) => formatNumber(ctx.parsed.y) + ' neighbours',
+                                title: (items) => items[0].label + ' hops away',
+                                label: (ctx) => formatNumber(ctx.parsed.y) + ' nodes',
                             },
                         },
                     },
                     scales: {
                         x: {
-                            title: { display: true, text: 'SNR (dB)', color: colors.muted,
+                            title: { display: true, text: 'Hops away', color: colors.muted,
                                      font: { size: 10 } },
                             ticks: { color: colors.muted, font: { size: 10 } },
                             grid: { display: false },
@@ -883,7 +805,13 @@
         return '#198754';
     }
 
-    /** One weakest-link row: name, SNR bar positioned on a fixed scale, values. */
+    /**
+     * One one-hop neighbour: name, SNR bar on a fixed scale, values.
+     *
+     * Signal is shown only where the stored hop count corroborates the path
+     * evidence. For the rest the row says "no signal reading" rather than
+     * borrowing a number measured on somebody else's link.
+     */
     function neighborRow(item) {
         const row = document.createElement('div');
         row.className = 'neighbor-row';
@@ -891,27 +819,35 @@
         const name = makeTextElement('div', item.name, 'neighbor-row__name');
         name.title = String(item.name ?? '') + ' (' + String(item.role ?? '') + ')';
 
-        // Fixed -12..+14 dB scale so bars are comparable between refreshes
-        // rather than rescaling to whatever the current worst link happens to be.
         const track = document.createElement('div');
         track.className = 'neighbor-row__track';
-        const fill = document.createElement('div');
-        fill.className = 'neighbor-row__fill';
-        const ratio = Math.max(0, Math.min(1, ((Number(item.snr) + 12) / 26)));
-        fill.style.width = (ratio * 100).toFixed(1) + '%';
-        fill.style.backgroundColor = snrColor(item.snr);
-        track.appendChild(fill);
-
         const values = document.createElement('div');
         values.className = 'neighbor-row__values';
-        values.append(
-            makeTextElement('span', formatSigned(item.snr) + ' dB', 'neighbor-row__snr'),
-            makeTextElement('span',
-                item.rssi === null || item.rssi === undefined
-                    ? ''
-                    : ' / ' + Math.round(item.rssi) + ' dBm',
-                'neighbor-row__rssi')
-        );
+
+        if (item.signal_corroborated) {
+            // Fixed -12..+14 dB scale so bars are comparable between refreshes
+            // rather than rescaling to whatever the current worst link happens to be.
+            const fill = document.createElement('div');
+            fill.className = 'neighbor-row__fill';
+            fill.style.width = (Math.max(0, Math.min(1, (Number(item.snr) + 12) / 26)) * 100)
+                .toFixed(1) + '%';
+            fill.style.backgroundColor = snrColor(item.snr);
+            track.appendChild(fill);
+            values.append(
+                makeTextElement('span', formatSigned(item.snr) + ' dB', 'neighbor-row__snr'),
+                makeTextElement('span',
+                    item.rssi === null || item.rssi === undefined
+                        ? ''
+                        : ' / ' + Math.round(item.rssi) + ' dBm',
+                    'neighbor-row__rssi')
+            );
+        } else {
+            track.classList.add('neighbor-row__track--unknown');
+            const unknown = makeTextElement('span', 'no signal reading', 'neighbor-row__rssi');
+            unknown.title = 'Heard one hop away, but no corroborated direct-reception '
+                + 'measurement is stored for this node.';
+            values.appendChild(unknown);
+        }
 
         row.append(name, track, values);
         return row;
@@ -986,6 +922,19 @@
             limit: 10,
             empty: 'No repeater adverts recorded.',
             render: (item, i) => rankedRow(i + 1, item.name, formatNumber(item.count) + ' adverts', 'bg-success'),
+        },
+        neighbors: {
+            select: 'neighbors-window',
+            container: 'neighbors-list',
+            limit: 10,
+            empty: 'No one-hop adverts heard in this window.',
+            render: (item) => neighborRow(item),
+            onLoad: (data) => {
+                setText('neighbors-count', formatNumber(data.total));
+                const shown = Math.min(data.total || 0, (data.items || []).length);
+                setText('neighbors-shown',
+                    data.total > shown ? 'showing ' + shown + ' of ' + formatNumber(data.total) : '');
+            },
         },
     };
 
@@ -1130,12 +1079,18 @@
             'Change compares the last complete calendar day against the day before it — ' +
             'not a rolling 24 hours. The headline number above it is a rolling 24-hour count.',
         'neighbors-info':
-            'Nodes heard directly, with no repeater in between, in the last 7 days. ' +
-            'Only these have a meaningful SNR: a relayed packet\'s SNR measures the last ' +
-            'hop into this radio, not the link to whoever sent it, so averaging across all ' +
-            'hop counts describes nothing in particular. Bars use a fixed -12 to +14 dB ' +
-            'scale; below 0 dB the signal is under the noise floor and only the spreading ' +
-            'factor is recovering it.',
+            'Nodes whose advert reached this radio in a single hop, newest evidence first, ' +
+            'with the weakest measured links promoted to the top. Membership comes from the ' +
+            'observed path length divided by its bytes-per-hop encoding, not from the stored ' +
+            'hop count — that field claims far more direct neighbours than the path evidence ' +
+            'supports. SNR is shown only where both agree; a relayed packet\'s SNR measures ' +
+            'the last hop into this radio rather than the link to whoever sent it, so the ' +
+            'rest are left blank instead of borrowing another link\'s number.',
+        'hops-info':
+            'Nodes by the fewest hops any of their adverts took to reach this radio, over the ' +
+            'last 7 days. Hops are derived as path length divided by bytes per hop: path ' +
+            'length is a byte count, so with 2- or 3-byte hop encoding the raw value would ' +
+            'overstate the distance by two to three times.',
     };
 
     function initTooltips() {

@@ -587,84 +587,125 @@ class TestDerivedWindows:
         assert windows["windows"]["users"][-1]["label"] == f"All retained ({retention}d)"
 
 
-class TestDirectNeighbourSignal:
-    """SNR is only meaningful for nodes heard with no repeater in between."""
+class TestOneHopNeighbours:
+    """Neighbour membership comes from path evidence, not the stored hop_count.
 
-    def _seed_neighbours(self, viewer, rows):
-        with sqlite3.connect(viewer.db_path) as conn:
-            conn.executemany(
-                """
-                INSERT INTO complete_contact_tracking
-                    (public_key, name, role, hop_count, snr, signal_strength, last_heard)
-                VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime', ?))
-                """,
-                rows,
-            )
+    On the live database hop_count claims 800 zero-hop contacts while only 68
+    have any one-hop path to corroborate it, and their stored SNR piles up in a
+    1.5 dB band — one strong local link recorded against every node whose
+    traffic came through it.
+    """
 
-    def _signal(self, viewer):
+    def _seed_contact(self, conn, pk, name, role, hop_count, snr, rssi):
+        conn.execute(
+            """
+            INSERT INTO complete_contact_tracking
+                (public_key, name, role, hop_count, snr, signal_strength, last_heard)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime','-1 hours'))
+            """,
+            (pk, name, role, hop_count, snr, rssi),
+        )
+
+    def _seed_path(self, conn, pk, path_length, bytes_per_hop, age="-1 hours"):
+        conn.execute(
+            """
+            INSERT INTO observed_paths
+                (public_key, from_prefix, to_prefix, path_hex, path_length,
+                 bytes_per_hop, packet_type, last_seen)
+            VALUES (?, 'aa', 'bb', ?, ?, ?, 'advert', datetime('now','localtime', ?))
+            """,
+            (pk, "ab" * path_length, path_length, bytes_per_hop, age),
+        )
+
+    def _top(self, viewer, window="24h", limit=10):
         with closing(viewer._dashboard_connection()) as conn:
-            return viewer.dashboard_stats._direct_neighbor_signal(conn)
+            return viewer.dashboard_stats.read_top(conn, "neighbors", window, limit)
 
-    def test_relayed_contacts_are_excluded(self, viewer):
-        """A relayed packet's SNR describes the last hop, not the sender."""
-        self._seed_neighbours(viewer, [
-            (_pk(1), "direct", "repeater", 0, 5.0, -70.0, "-1 hours"),
-            (_pk(2), "one-hop", "repeater", 1, -9.0, -110.0, "-1 hours"),
-            (_pk(3), "far", "companion", 5, 12.0, -50.0, "-1 hours"),
-        ])
-        signal = self._signal(viewer)
-        assert signal["count"] == 1
-        assert [n["name"] for n in signal["weakest"]] == ["direct"]
-        assert signal["snr"]["p50"] == 5.0
+    def test_multibyte_paths_are_not_read_as_extra_hops(self, viewer):
+        """path_length is bytes: 3 bytes at 3 bytes/hop is ONE hop, not three."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._seed_contact(conn, _pk(1), "onebyte-1hop", "repeater", 0, 5.0, -70.0)
+            self._seed_path(conn, _pk(1), path_length=1, bytes_per_hop=1)
+            self._seed_contact(conn, _pk(2), "multibyte-1hop", "repeater", 0, 6.0, -60.0)
+            self._seed_path(conn, _pk(2), path_length=3, bytes_per_hop=3)
+            self._seed_contact(conn, _pk(3), "multibyte-2hop", "repeater", 0, 7.0, -50.0)
+            self._seed_path(conn, _pk(3), path_length=6, bytes_per_hop=3)
 
-    def test_weakest_links_come_first(self, viewer):
-        self._seed_neighbours(viewer, [
-            (_pk(i), f"n{i}", "repeater", 0, snr, -60.0 - i, "-2 hours")
-            for i, snr in enumerate([8.0, -9.5, 2.0, -3.0, 13.0])
-        ])
-        signal = self._signal(viewer)
-        assert [n["snr"] for n in signal["weakest"]] == [-9.5, -3.0, 2.0, 8.0, 13.0]
-        assert signal["snr"]["min"] == -9.5
-        assert signal["snr"]["max"] == 13.0
+        names = {item["name"] for item in self._top(viewer)["items"]}
+        assert names == {"onebyte-1hop", "multibyte-1hop"}
 
-    def test_stale_neighbours_are_excluded(self, viewer):
-        """A link not exercised in a week says nothing about the link today."""
-        self._seed_neighbours(viewer, [
-            (_pk(1), "recent", "repeater", 0, 4.0, -80.0, "-2 days"),
-            (_pk(2), "stale", "repeater", 0, -11.0, -115.0, "-40 days"),
-        ])
-        signal = self._signal(viewer)
-        assert signal["count"] == 1
-        assert [n["name"] for n in signal["weakest"]] == ["recent"]
+    def test_uncorroborated_signal_is_withheld(self, viewer):
+        """Path evidence without a matching hop_count gets no SNR figure."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._seed_contact(conn, _pk(1), "agrees", "repeater", 0, 4.0, -80.0)
+            self._seed_path(conn, _pk(1), 1, 1)
+            # hop_count says 4 hops but a one-hop path exists: the stored signal
+            # belongs to some other link, so it must not be shown.
+            self._seed_contact(conn, _pk(2), "disagrees", "repeater", 4, 12.0, -45.0)
+            self._seed_path(conn, _pk(2), 1, 1)
 
-    def test_histogram_bins_are_fixed_width_and_contiguous(self, viewer):
-        self._seed_neighbours(viewer, [
-            (_pk(i), f"n{i}", "repeater", 0, snr, -70.0, "-1 hours")
-            for i, snr in enumerate([-5.0, -4.5, 0.5, 5.0])
-        ])
-        histogram = self._signal(viewer)["histogram"]
-        edges = [b[0] for b in histogram]
-        assert edges == list(range(-6, 6, 2)), histogram
-        assert sum(b[1] for b in histogram) == 4
-        # An empty bucket in the middle is present with a zero, not skipped.
-        assert dict(histogram)[-2] == 0
+        items = {item["name"]: item for item in self._top(viewer)["items"]}
+        assert items["agrees"]["signal_corroborated"] is True
+        assert items["agrees"]["snr"] == 4.0
+        assert items["disagrees"]["signal_corroborated"] is False
+        assert items["disagrees"]["snr"] is None
+        assert items["disagrees"]["rssi"] is None
 
-    def test_no_neighbours_degrades_cleanly(self, viewer):
-        signal = self._signal(viewer)
-        assert signal["count"] == 0
-        assert signal["weakest"] == []
-        assert signal["histogram"] == []
-        assert signal["snr"]["p50"] is None
+    def test_contacts_with_no_one_hop_path_are_excluded(self, viewer):
+        """hop_count = 0 alone does not make something a neighbour."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._seed_contact(conn, _pk(1), "claims-direct", "repeater", 0, 12.0, -45.0)
+            self._seed_path(conn, _pk(1), path_length=5, bytes_per_hop=1)
+        assert self._top(viewer)["items"] == []
+        assert self._top(viewer)["total"] == 0
 
-    def test_snapshot_exposes_neighbours_not_device_mix(self, viewer):
-        """role and device_type are the same field twice — only role is charted."""
-        self._seed_neighbours(viewer, [(_pk(1), "n", "repeater", 0, 3.0, -75.0, "-1 hours")])
+    def test_weakest_measured_links_are_promoted(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            for i, snr in enumerate([9.0, -8.0, 2.0]):
+                self._seed_contact(conn, _pk(i), f"m{i}", "repeater", 0, snr, -70.0)
+                self._seed_path(conn, _pk(i), 1, 1)
+            self._seed_contact(conn, _pk(9), "unmeasured", "repeater", 3, None, None)
+            self._seed_path(conn, _pk(9), 1, 1)
+
+        items = self._top(viewer)["items"]
+        assert [i["name"] for i in items[:3]] == ["m1", "m2", "m0"]
+        assert items[-1]["name"] == "unmeasured"
+
+    def test_window_bounds_membership(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._seed_contact(conn, _pk(1), "today", "repeater", 0, 5.0, -70.0)
+            self._seed_path(conn, _pk(1), 1, 1, age="-2 hours")
+            self._seed_contact(conn, _pk(2), "last-week", "repeater", 0, 5.0, -70.0)
+            self._seed_path(conn, _pk(2), 1, 1, age="-4 days")
+
+        assert {i["name"] for i in self._top(viewer, "24h")["items"]} == {"today"}
+        assert {i["name"] for i in self._top(viewer, "7d")["items"]} == {"today", "last-week"}
+
+    def test_windows_are_capped_below_retention(self, viewer):
+        """observed_paths keeps 90 days; a month-old link says nothing about today."""
+        options = viewer.dashboard_stats.derive_windows()["windows"]["neighbors"]
+        assert [o["value"] for o in options] == ["24h", "7d"]
+
+    def test_snapshot_reports_hops_not_path_bytes(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._seed_contact(conn, _pk(1), "near", "repeater", 0, 5.0, -70.0)
+            self._seed_path(conn, _pk(1), path_length=6, bytes_per_hop=3)  # 2 hops
+            self._seed_contact(conn, _pk(2), "far", "repeater", 4, None, None)
+            self._seed_path(conn, _pk(2), path_length=4, bytes_per_hop=1)  # 4 hops
         _refresh(viewer)
+
         with viewer.app.test_client() as client:
             mesh = client.get("/api/dashboard/summary").get_json()["mesh"]
-        assert "device_mix" not in mesh
-        assert "role_mix" in mesh
-        assert mesh["neighbors"]["count"] == 1
+        assert "device_mix" not in mesh          # same field as role
+        assert "hop_histogram" not in mesh       # replaced by path-derived hops
+        assert "path_len_histogram" not in mesh  # was byte length labelled as hops
+        assert dict(mesh["hops_histogram"]) == {2: 1, 3: 0, 4: 1}
+        assert mesh["neighbors"] == {"24h": 0, "7d": 0}
+
+    def test_no_neighbours_degrades_cleanly(self, viewer):
+        payload = self._top(viewer)
+        assert payload["items"] == []
+        assert payload["total"] == 0
 
 
 class TestRoleBucketing:

@@ -23,13 +23,23 @@ semantic versioning.
 - New dashboard tiles and charts: routing mix (flood vs direct), hop-count and
   path-length histograms, a 30-day multibyte adoption trend, busiest repeaters,
   and a role mix.
-- Direct-neighbour signal panel: the nodes heard with no repeater in between,
-  their SNR distribution, and the weakest links named. Scoped to `hop_count = 0`
-  because that is the only population where SNR means anything — a relayed
-  packet's SNR measures the last hop into this radio, not the link to whoever
-  sent it, so a network-wide average describes nothing in particular.
-  `complete_contact_tracking` records signal for exactly the zero-hop contacts,
-  so this is a complete census of the neighbours rather than a sample.
+- One-hop neighbours panel, with a 24-hour / 7-day selector: the nodes whose
+  advert reached this radio in a single hop, weakest measured link first.
+  Membership is derived from observed path evidence rather than from
+  `complete_contact_tracking.hop_count`, which is not trustworthy — it claims
+  800 zero-hop contacts on the live database while only 68 have any one-hop
+  path to corroborate it, their stored SNR piles up in a 1.5 dB band (655 of
+  800 between 11.25 and 12.75 dB), and their RSSI clusters near -45 dBm. That
+  is the signature of one strong local link being recorded against every node
+  whose traffic arrived through it, not of hundreds of separate radios. SNR is
+  therefore shown only where the path evidence and the stored hop count agree;
+  the rest read "no signal reading" rather than borrowing another link's
+  measurement.
+- Hop-distance chart derived as `path_length / bytes_per_hop`. `path_length` is
+  a byte count, so with 2- or 3-byte hop encoding — about 95% of adverts on the
+  live mesh — reading it directly as a hop count overstates distance two- to
+  threefold. This replaces both the raw path-length chart and the chart built
+  on the untrustworthy stored hop count.
 - New `[Web_Viewer]` settings: `dashboard_snapshot_enabled`,
   `dashboard_snapshot_interval_seconds`, `dashboard_snapshot_history_days`, and
   `dashboard_packet_backfill_rows`.

@@ -141,17 +141,27 @@ proxy_set_header X-Forwarded-Proto $scheme;
   and snapshot age with a manual refresh control
 - **Mesh**: nodes heard, adverts, new nodes, nodes gone quiet, and geographic
   coverage — the count tiles carry a 30-day sparkline and a change chip
-- Routing mix (flood vs direct), hop-count and path-length histograms, and the
-  role mix
+- Routing mix (flood vs direct), a hop-distance chart, and the role mix
 - Path encoding: multibyte share among contacts and among incoming packets,
   plus a 30-day multibyte adoption trend
-- Busiest repeaters, and **direct neighbours** — the nodes heard with no
-  repeater in between, their SNR distribution, and the weakest links named.
-  Restricted to `hop_count = 0` deliberately: a relayed packet's SNR measures
-  the last hop into this radio, not the link to whoever originated it, so
-  mixing hop counts together yields a number that describes nothing. The bot's
-  contact records store signal for exactly the zero-hop contacts, which makes
-  this a complete census of the neighbours rather than a sample.
+- Busiest repeaters, and **one-hop neighbours** (24-hour or 7-day window)
+
+Two measurement notes for the mesh charts:
+
+**Hops are derived, not read.** `observed_paths.path_length` is a *byte* count,
+and with 2- or 3-byte hop encoding a three-hop path is six or nine bytes long.
+The dashboard divides by `bytes_per_hop`; charting the raw value would overstate
+distance two- to threefold on a mesh that is ~95% multibyte.
+
+**Neighbour signal is reported only where two sources agree.**
+`complete_contact_tracking.hop_count` is not a reliable direct-neighbour marker:
+on a representative database it claims 800 zero-hop contacts while only 68 have
+any one-hop path to corroborate it, and the SNR stored against them clusters in
+a ~1.5 dB band with RSSI near -45 dBm — one strong local link recorded against
+every node whose traffic arrived through it. Neighbour membership therefore
+comes from path evidence, and SNR/RSSI appear only when the stored hop count
+agrees; otherwise the row reads "no signal reading". A relayed packet's SNR
+measures the last hop into this radio, never the link to whoever sent it.
 - **Bot**: messages, commands, reply rate, and unique users, plus the top
   commands/users/channels and longest paths
 - Live activity feed

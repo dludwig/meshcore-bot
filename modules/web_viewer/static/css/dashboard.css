@@ -287,6 +287,18 @@
     border-radius: 5px;
 }
 
+/* Hatched, not empty: "we have no reading" reads differently from "zero". */
+.neighbor-row__track--unknown {
+    background-image: repeating-linear-gradient(
+        45deg,
+        var(--bg-tertiary),
+        var(--bg-tertiary) 3px,
+        transparent 3px,
+        transparent 6px
+    );
+    opacity: 0.6;
+}
+
 .neighbor-row__values {
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
@@ -296,29 +308,6 @@
 .neighbor-row__snr {
     color: var(--text-color);
     font-weight: 600;
-}
-
-/* ── Signal percentile readout ─────────────────────────────────────────── */
-
-.signal-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.5rem;
-    text-align: center;
-}
-
-.signal-grid__value {
-    font-size: 1.1rem;
-    font-weight: 700;
-    color: var(--text-color);
-    font-variant-numeric: tabular-nums;
-}
-
-.signal-grid__label {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
 }
 
 /* ── Leaderboard rows ──────────────────────────────────────────────────── */

@@ -33,7 +33,6 @@ Two conventions matter throughout:
 from __future__ import annotations
 
 import json
-import math
 import os
 import socket
 import sqlite3
@@ -85,16 +84,21 @@ SERIES_METRICS: dict[str, str] = {
 
 SUMMARY_SERIES_POINTS = 30
 
-# Direct-neighbour signal panel: how many of the weakest links to list, and the
-# width of the SNR histogram buckets in dB.
-WEAKEST_NEIGHBOURS = 8
-SNR_BIN_DB = 2
-
 # Metrics that are already a ratio: a period "total" has to be the mean of the
 # daily values, not their sum — adding percentages together means nothing.
 RATIO_METRICS = frozenset({"multibyte_share"})
 
-TOP_KINDS = ("users", "commands", "channels", "paths", "repeaters")
+TOP_KINDS = ("users", "commands", "channels", "paths", "repeaters", "neighbors")
+
+# Neighbour windows are capped well below observed_paths' 90-day retention: a
+# link last exercised a month ago says nothing about whether it works today.
+NEIGHBOR_WINDOWS = ("24h", "7d")
+
+# A path is one hop when its byte length equals the per-hop encoding width.
+# path_length is measured in BYTES, and with 2- or 3-byte hop encoding a 3-hop
+# path is 6 or 9 bytes long — reading the raw value as a hop count inflates
+# every multibyte path by 2-3x.
+ONE_HOP_PATH = "op.bytes_per_hop > 0 AND op.path_length = op.bytes_per_hop"
 
 # Roles the firmware reports as an unmapped enum ordinal.  They are real
 # contacts, so they belong in the mix — just not as sixteen singleton slices.
@@ -122,22 +126,6 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
     ).fetchone()
     return row is not None
-
-
-def _percentile(sorted_values: list[float], fraction: float) -> float | None:
-    """Linear-interpolated percentile over a pre-sorted list."""
-    if not sorted_values:
-        return None
-    if len(sorted_values) == 1:
-        return round(float(sorted_values[0]), 1)
-    position = fraction * (len(sorted_values) - 1)
-    low = math.floor(position)
-    high = math.ceil(position)
-    if low == high:
-        return round(float(sorted_values[low]), 1)
-    weight = position - low
-    value = sorted_values[low] * (1 - weight) + sorted_values[high] * weight
-    return round(float(value), 1)
 
 
 def _change_pct(current: float | None, previous: float | None) -> float | None:
@@ -727,32 +715,14 @@ class DashboardStatsService:
             mesh["states"] = row[1] or 0
             mesh["cities"] = row[2] or 0
 
-            mesh["hop_histogram"] = [
-                [int(hop), int(count)]
-                for hop, count in conn.execute(
-                    """
-                    SELECT hop_count, COUNT(*) FROM complete_contact_tracking
-                    WHERE hop_count IS NOT NULL AND hop_count BETWEEN 0 AND 32
-                    GROUP BY hop_count ORDER BY hop_count
-                    """
-                )
-            ]
             mesh["role_mix"] = self._mix(conn, "role")
-            mesh["neighbors"] = self._direct_neighbor_signal(conn)
 
         if sources & SOURCE_OBSERVED_PATHS:
-            mesh["path_len_histogram"] = [
-                [int(length), int(count)]
-                for length, count in conn.execute(
-                    """
-                    SELECT path_length, COUNT(*) FROM observed_paths
-                    WHERE packet_type = 'advert' AND path_length IS NOT NULL
-                      AND path_length BETWEEN 0 AND 32
-                      AND last_seen >= datetime('now','localtime','-7 days')
-                    GROUP BY path_length ORDER BY path_length
-                    """
-                )
-            ]
+            mesh["hops_histogram"] = self._hops_histogram(conn)
+            mesh["neighbors"] = {
+                window: self._count_one_hop_nodes(conn, window)
+                for window in NEIGHBOR_WINDOWS
+            }
 
         if sources & SOURCE_PACKET_STREAM:
             row = conn.execute(
@@ -795,74 +765,100 @@ class DashboardStatsService:
             buckets[key] = buckets.get(key, 0) + (count or 0)
         return [[name, count] for name, count in sorted(buckets.items(), key=lambda kv: -kv[1])]
 
-    def _direct_neighbor_signal(self, conn: sqlite3.Connection) -> dict[str, Any]:
-        """Per-neighbour signal for nodes heard directly, weakest link first.
+    def _hops_histogram(self, conn: sqlite3.Connection) -> list[list[int]]:
+        """Nodes by how many hops away their closest observed advert path was.
 
-        Scoped to ``hop_count = 0`` because that is the only population where
-        SNR means anything: a relayed packet's SNR describes the last hop into
-        this radio, not the link to the node that originated it.  Averaging
-        those together produces a number that describes nothing in particular.
-
-        This is also why the data is complete rather than sampled —
-        complete_contact_tracking records snr and signal_strength for exactly
-        the zero-hop contacts and leaves them NULL for everything further away.
-
-        Recency-scoped as well: a neighbour last heard two months ago says
-        nothing about the link today.
+        Derived from ``path_length / bytes_per_hop`` rather than read from
+        ``complete_contact_tracking.hop_count``.  Two reasons: path_length is a
+        byte count, so with multibyte encoding the raw value overstates hops by
+        2-3x; and the stored hop_count disagrees with the path evidence badly
+        enough at the low end to be unusable (see _one_hop_rows).
         """
-        window_days = 7
         rows = conn.execute(
             """
-            SELECT public_key, name, role, snr, signal_strength, hop_count, last_heard
-            FROM complete_contact_tracking
-            WHERE hop_count = 0 AND snr IS NOT NULL
-              AND last_heard > datetime('now', 'localtime', ?)
-            ORDER BY snr ASC
-            """,
-            (f"-{window_days} days",),
+            SELECT MIN(path_length / bytes_per_hop) AS hops
+            FROM observed_paths
+            WHERE packet_type = 'advert' AND bytes_per_hop > 0
+              AND last_seen >= datetime('now','localtime','-7 days')
+            GROUP BY public_key
+            """
         ).fetchall()
+        counts: dict[int, int] = {}
+        for row in rows:
+            hops = row["hops"]
+            if hops is None or not 0 <= hops <= 32:
+                continue
+            counts[int(hops)] = counts.get(int(hops), 0) + 1
+        if not counts:
+            return []
+        return [[hop, counts.get(hop, 0)] for hop in range(min(counts), max(counts) + 1)]
 
-        values = sorted(float(row["snr"]) for row in rows)
-        rssi_values = sorted(
-            float(row["signal_strength"]) for row in rows if row["signal_strength"] is not None
-        )
-        return {
-            "count": len(rows),
-            "window_days": window_days,
-            "snr": {
-                "min": round(values[0], 1) if values else None,
-                "p50": _percentile(values, 0.50),
-                "max": round(values[-1], 1) if values else None,
-            },
-            "rssi": {"p50": _percentile(rssi_values, 0.50)},
-            "histogram": self._snr_histogram(values),
-            "weakest": [
-                {
-                    "name": row["name"] or (row["public_key"] or "")[:12],
-                    "role": normalize_role(row["role"]),
-                    "snr": round(float(row["snr"]), 1),
-                    "rssi": (
-                        round(float(row["signal_strength"]), 0)
-                        if row["signal_strength"] is not None
-                        else None
-                    ),
-                    "last_heard": row["last_heard"],
-                }
-                for row in rows[:WEAKEST_NEIGHBOURS]
-            ],
-        }
+    def _count_one_hop_nodes(self, conn: sqlite3.Connection, window: str) -> int:
+        return conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT op.public_key) FROM observed_paths op
+            WHERE op.packet_type = 'advert' AND {ONE_HOP_PATH}
+              AND op.last_seen > datetime('now','localtime', ?)
+            """,  # noqa: S608 - ONE_HOP_PATH is a module constant, not input
+            (self._window_offset(window),),
+        ).fetchone()[0] or 0
 
     @staticmethod
-    def _snr_histogram(sorted_values: list[float]) -> list[list[Any]]:
-        """Bin neighbour SNR into fixed dB buckets so the shape is comparable over time."""
-        if not sorted_values:
-            return []
-        bins: dict[int, int] = {}
-        for value in sorted_values:
-            edge = int(math.floor(value / SNR_BIN_DB) * SNR_BIN_DB)
-            bins[edge] = bins.get(edge, 0) + 1
-        low, high = min(bins), max(bins)
-        return [[edge, bins.get(edge, 0)] for edge in range(low, high + SNR_BIN_DB, SNR_BIN_DB)]
+    def _window_offset(window: str) -> str:
+        return {"24h": "-1 days", "7d": "-7 days", "30d": "-30 days"}.get(window, "-7 days")
+
+    def _one_hop_rows(self, conn: sqlite3.Connection, window: str, limit: int) -> list[dict]:
+        """Nodes whose advert reached this radio in a single hop, weakest first.
+
+        Membership comes from path evidence, not from
+        ``complete_contact_tracking.hop_count``.  That column claims 800 zero-hop
+        contacts, but only 68 of them have any one-hop path to corroborate it,
+        their stored SNR piles up in a 1.5 dB band (655 of 800 between 11.25 and
+        12.75), and their RSSI clusters around -45 dBm — the signature of one
+        strong local link being recorded against every node whose traffic came
+        through it, not of hundreds of separate radios.
+
+        Signal is therefore reported only where the path evidence and the stored
+        hop_count agree; everything else lists as unknown rather than being given
+        a number that belongs to somebody else's link.
+        """
+        rows = conn.execute(
+            f"""
+            SELECT op.public_key,
+                   MAX(op.last_seen) AS last_seen,
+                   c.name, c.role, c.snr, c.signal_strength, c.hop_count
+            FROM observed_paths op
+            LEFT JOIN complete_contact_tracking c ON c.public_key = op.public_key
+            WHERE op.packet_type = 'advert' AND {ONE_HOP_PATH}
+              AND op.last_seen > datetime('now','localtime', ?)
+            GROUP BY op.public_key
+            """,  # noqa: S608 - ONE_HOP_PATH is a module constant, not input
+            (self._window_offset(window),),
+        ).fetchall()
+
+        measured: list[dict[str, Any]] = []
+        unmeasured: list[dict[str, Any]] = []
+        for row in rows:
+            corroborated = row["hop_count"] == 0 and row["snr"] is not None
+            item = {
+                "name": row["name"] or (row["public_key"] or "")[:12],
+                "public_key": row["public_key"],
+                "role": normalize_role(row["role"]),
+                "snr": round(float(row["snr"]), 1) if corroborated else None,
+                "rssi": (
+                    round(float(row["signal_strength"]))
+                    if corroborated and row["signal_strength"] is not None
+                    else None
+                ),
+                "signal_corroborated": corroborated,
+                "last_seen": row["last_seen"],
+            }
+            (measured if corroborated else unmeasured).append(item)
+
+        # Weakest measured links first — those are the ones worth acting on.
+        measured.sort(key=lambda item: item["snr"])
+        unmeasured.sort(key=lambda item: item["last_seen"] or "", reverse=True)
+        return (measured + unmeasured)[:limit]
 
     def _bot_snapshot(self, conn: sqlite3.Connection, sources: int) -> dict[str, Any]:
         """Rolling 24-hour bot activity (distinct from the calendar-day rollup)."""
@@ -1200,7 +1196,16 @@ class DashboardStatsService:
         retention = self.stats_retention_days
         items: list[dict[str, Any]] = []
 
-        if kind == "repeaters":
+        total: int | None = None
+
+        if kind == "neighbors":
+            if window not in NEIGHBOR_WINDOWS:
+                window = NEIGHBOR_WINDOWS[0]
+            retention = self.adverts_retention_days
+            if _table_exists(conn, "observed_paths"):
+                items = self._one_hop_rows(conn, window, limit)
+                total = self._count_one_hop_nodes(conn, window)
+        elif kind == "repeaters":
             retention = self.adverts_retention_days
             days = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}.get(window, retention)
             since = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
@@ -1288,6 +1293,7 @@ class DashboardStatsService:
             "truncated_by_retention": bool(
                 requested_days is None or requested_days > retention
             ),
+            "total": total if total is not None else len(items),
             "items": items,
         }
 
@@ -1332,5 +1338,12 @@ class DashboardStatsService:
                 "channels": stats_options,
                 "paths": stats_options,
                 "repeaters": options(self.adverts_retention_days),
+                # Deliberately not retention-derived: observed_paths keeps 90
+                # days, but a link last used a month ago tells you nothing about
+                # whether it works now.
+                "neighbors": [
+                    {"value": value, "label": self._window_label(value, self.adverts_retention_days)}
+                    for value in NEIGHBOR_WINDOWS
+                ],
             },
         }

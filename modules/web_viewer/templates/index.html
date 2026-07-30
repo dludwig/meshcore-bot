@@ -121,21 +121,25 @@
                 </p>
                 <div class="stacked-bar" id="route-mix-bar"></div>
                 <div class="stacked-bar__legend" id="route-mix-legend"></div>
-                <hr class="my-3">
-                <p class="dashboard-note mb-2">Hop count across known contacts</p>
-                <div class="chart-box" style="height:150px">
-                    <canvas id="hopHistogramChart" aria-label="Contacts by hop count"></canvas>
-                </div>
             </div>
         </div>
     </div>
     <div class="col-12 col-lg-4">
         <div class="card h-100">
-            <div class="card-header"><i class="fas fa-ruler-horizontal"></i> Path length</div>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-ruler-horizontal"></i> Hops away</span>
+                <button type="button" class="dashboard-info-btn" id="hops-info"
+                        aria-label="How hop distance is derived"
+                        data-bs-toggle="tooltip" data-bs-placement="top">
+                    <i class="fas fa-info-circle" aria-hidden="true"></i>
+                </button>
+            </div>
             <div class="card-body">
-                <p class="dashboard-note mb-2">Advert paths observed in the last 7 days</p>
+                <p class="dashboard-note mb-2">
+                    Nodes by their closest advert path, last 7 days
+                </p>
                 <div class="chart-box chart-box--tall">
-                    <canvas id="pathLenHistogramChart" aria-label="Advert paths by path length"></canvas>
+                    <canvas id="hopsHistogramChart" aria-label="Nodes by hop distance"></canvas>
                 </div>
             </div>
         </div>
@@ -228,41 +232,26 @@
     <div class="col-12 col-lg-6">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="fas fa-signal"></i> Direct neighbours &amp; signal</span>
-                <button type="button" class="dashboard-info-btn" id="neighbors-info"
-                        aria-label="What counts as a direct neighbour"
-                        data-bs-toggle="tooltip" data-bs-placement="top">
-                    <i class="fas fa-info-circle" aria-hidden="true"></i>
-                </button>
+                <span>
+                    <i class="fas fa-signal"></i> One-hop neighbours
+                    <button type="button" class="dashboard-info-btn" id="neighbors-info"
+                            aria-label="What counts as a one-hop neighbour"
+                            data-bs-toggle="tooltip" data-bs-placement="top">
+                        <i class="fas fa-info-circle" aria-hidden="true"></i>
+                    </button>
+                </span>
+                <select id="neighbors-window" class="form-select form-select-sm"
+                        style="width:auto;font-size:0.75rem" aria-label="Neighbour time window">
+                    <option value="24h">Last 24 hours</option>
+                </select>
             </div>
             <div class="card-body">
-                <div class="d-flex align-items-baseline gap-2 flex-wrap mb-2">
+                <div class="d-flex align-items-baseline gap-2 flex-wrap mb-1">
                     <span class="stat-tile__value" id="neighbors-count">—</span>
-                    <span class="dashboard-note">nodes heard with no repeater in between,
-                        <span id="neighbors-window">—</span></span>
+                    <span class="dashboard-note">nodes reached this radio in a single hop</span>
                 </div>
-                <div class="signal-grid mb-3">
-                    <div>
-                        <div class="signal-grid__value" id="neighbors-snr-min">—</div>
-                        <div class="signal-grid__label">worst SNR</div>
-                    </div>
-                    <div>
-                        <div class="signal-grid__value" id="neighbors-snr-p50">—</div>
-                        <div class="signal-grid__label">median SNR</div>
-                    </div>
-                    <div>
-                        <div class="signal-grid__value" id="neighbors-snr-max">—</div>
-                        <div class="signal-grid__label">best SNR</div>
-                    </div>
-                </div>
-                <div class="chart-box" style="height:130px">
-                    <canvas id="neighborSnrChart"
-                        aria-label="Direct neighbours by signal-to-noise ratio"></canvas>
-                </div>
-                <p class="dashboard-note mt-3 mb-2">
-                    Weakest links (median RSSI <span id="neighbors-rssi">—</span> dBm)
-                </p>
-                <div id="neighbors-weakest"><div class="dashboard-empty">Loading…</div></div>
+                <p class="dashboard-note mb-3" id="neighbors-shown"></p>
+                <div id="neighbors-list"><div class="dashboard-empty">Loading…</div></div>
             </div>
         </div>
     </div>
