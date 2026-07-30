@@ -10,11 +10,17 @@ import pytest
 
 from modules.web_viewer.app import BotDataViewer
 
-TEMPLATES = Path(__file__).resolve().parents[1] / "modules" / "web_viewer" / "templates"
+_WEB_VIEWER = Path(__file__).resolve().parents[1] / "modules" / "web_viewer"
+TEMPLATES = _WEB_VIEWER / "templates"
+STATIC = _WEB_VIEWER / "static"
 
 
 def _source(name: str) -> str:
     return (TEMPLATES / name).read_text(encoding="utf-8")
+
+
+def _static_source(name: str) -> str:
+    return (STATIC / name).read_text(encoding="utf-8")
 
 
 def _fake_setup_logging(viewer: BotDataViewer) -> None:
@@ -47,6 +53,7 @@ def client(tmp_path_factory):
         patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
         patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
         patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
     ):
         viewer = BotDataViewer(db_path=str(db_path), config_path=str(config_path))
     viewer.app.config["TESTING"] = True
@@ -55,19 +62,24 @@ def client(tmp_path_factory):
 
 
 def test_dashboard_has_no_html_parser_sink_for_api_or_mesh_values() -> None:
-    source = _source("index.html")
-    assert ".innerHTML" not in source
+    # The dashboard's script now lives in a static file (no CSP nonce needed),
+    # so the trust boundary to police moved with it.
+    template = _source("index.html")
+    script = _static_source("js/dashboard.js")
+    assert ".innerHTML" not in template
+    assert ".innerHTML" not in script
     # Representative attacker-controlled sender, channel/title, path, client,
-    # and error values all terminate in textContent-backed DOM construction.
+    # and role values all terminate in textContent-backed DOM construction.
     for safe_sink in (
-        "entryLabel.textContent = String(label ?? '')",
-        "entryText.textContent = ` ${String(text ?? '')}`",
-        "channelName.title = String(channel.channel ?? '')",
-        "pathCode = this.makeTextElement('code', path.path_string",
-        "clientCell.appendChild(this.makeTextElement('code', c.client_id))",
-        "errorText.textContent = String(message ?? '')",
+        "node.textContent = String(value ?? '');",
+        "makeTextElement('strong', label)",
+        "makeTextElement('span', ' ' + String(text ?? ''), 'text-muted')",
+        "label.title = String(name ?? '');",
+        "makeTextElement('code', item.path_string, 'small text-break')",
+        "idCell.appendChild(makeTextElement('code', client.client_id))",
+        "makeTextElement('div', name, 'mix-row__name')",
     ):
-        assert safe_sink in source
+        assert safe_sink in script, safe_sink
 
 
 def test_feed_metadata_preview_details_and_alerts_use_text_nodes() -> None:
@@ -162,9 +174,6 @@ def test_legacy_admin_pages_encode_or_text_render_untrusted_values() -> None:
     assert "header.innerHTML = `" not in plugins
     assert "description.textContent = String(plugin.description ?? '')" in plugins
 
-    stats = _source("stats.html")
-    assert ".innerHTML" not in stats
-
 
 def test_nonce_hardened_templates_have_no_inline_event_attributes() -> None:
     event_attribute = re.compile(r"<[^>]*\son[a-z]+\s*=", re.IGNORECASE)
@@ -176,7 +185,6 @@ def test_nonce_hardened_templates_have_no_inline_event_attributes() -> None:
         "radio.html",
         "realtime.html",
         "contacts.html",
-        "stats.html",
         "plugins.html",
         "greeter.html",
         "logs.html",
@@ -196,7 +204,6 @@ def test_nonce_hardened_templates_have_no_inline_event_attributes() -> None:
         "/radio",
         "/realtime",
         "/contacts",
-        "/stats",
         "/plugins",
         "/greeter",
         "/logs",
@@ -220,10 +227,14 @@ def test_csp_nonce_matches_every_rendered_inline_script(client, path: str) -> No
     expected_nonce = nonce_match.group(1)
 
     html = response.get_data(as_text=True)
+    # A block with a non-JavaScript type is a data island, not code: the browser
+    # never executes it, so CSP does not gate it and it needs no nonce.
+    data_block = re.compile(r'\btype\s*=\s*"(?!(?:text/javascript|module)\b)[^"]+"', re.IGNORECASE)
     inline_scripts = [
         attributes
         for attributes in re.findall(r"<script\b([^>]*)>", html, re.IGNORECASE)
         if not re.search(r"\bsrc\s*=", attributes, re.IGNORECASE)
+        and not data_block.search(attributes)
     ]
     assert inline_scripts
     for attributes in inline_scripts:

@@ -305,6 +305,7 @@ def viewer(tmp_path):
     with patch.object(BotDataViewer, "_start_database_polling"), \
          patch.object(BotDataViewer, "_start_log_tailing"), \
          patch.object(BotDataViewer, "_start_cleanup_scheduler"), \
+         patch.object(BotDataViewer, "_start_dashboard_refresher"), \
          patch.object(BotDataViewer, "_setup_socketio_handlers"), \
          patch("modules.web_viewer.app.RepeaterManager"):
         v = BotDataViewer(db_path=str(tmp_path / "meshcore_bot.db"), config_path=config_path)

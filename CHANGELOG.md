@@ -4,6 +4,73 @@ All notable changes to this project are documented here. The format loosely foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- Rebuilt web-viewer dashboard, served from a background snapshot instead of
+  recomputing statistics on every request. A refresher thread in the viewer
+  process writes `daily_rollup` (one row per local date) and
+  `dashboard_snapshot` (a single JSON row), so a page load reads one row rather
+  than running ~50 aggregate queries five times over.
+- Daily trends that outlive retention: `message_stats` and friends are pruned at
+  7 days and `packet_stream` at 3, so a 30-day chart had nothing to draw from
+  until now. Signal metrics are stored as sums and counts, never means, so any
+  window re-aggregates correctly.
+- New `/api/dashboard/{summary,series,top,windows,refresh}` endpoints. `summary`
+  sends a strong `ETag`, so the page's 30-second poll is normally a bodyless
+  `304`, and polling stops entirely while the tab is hidden.
+- New dashboard tiles and charts: routing mix (flood vs direct), hop-count and
+  path-length histograms, an SNR/RSSI distribution, a 30-day multibyte adoption
+  trend, busiest repeaters, and a role/device mix.
+- New `[Web_Viewer]` settings: `dashboard_snapshot_enabled`,
+  `dashboard_snapshot_interval_seconds`, `dashboard_snapshot_history_days`, and
+  `dashboard_packet_backfill_rows`.
+- Partial index `idx_packet_stream_undimensioned` as the backfill worklist.
+  Probing for remaining un-dimensioned rows was otherwise a full table scan,
+  and it cost the same 4.6 seconds *after* the backfill finished as during it,
+  because finding nothing still meant reading everything.
+
+### Changed
+
+- Time-window selectors are now built from each source's configured retention.
+  The dashboard previously offered "30d" and "All" against tables pruned at 7
+  days, so three of the four choices returned the same number under a label
+  that claimed otherwise.
+- The incoming-packet chart no longer claims to show 7 days. `packet_stream` is
+  pruned at 3 days, so the covered window is now measured and labelled from the
+  data — and shown beside a genuinely 7-day contacts chart it can be compared
+  to.
+- `packet_stream` gained denormalized `route_type_name`, `payload_type_name`,
+  `path_len`, and `bytes_per_hop` columns, written at capture time. Aggregating
+  these via `json_extract` cost 3–6 seconds per query on a large database.
+  Existing rows are converted a bounded batch per refresh rather than in one
+  table-rewriting migration.
+- Dashboard JavaScript and CSS moved to static files, removing the CSP nonce
+  requirement for the bulk of the page's code.
+- `cleanup_old_stats` now also deletes rows dated implausibly far in the future.
+  Such rows are never older than the retention cutoff, so they were immortal —
+  observed in the wild dated 2103.
+
+### Removed
+
+- The orphaned `/stats` page, which was unreachable from the navigation and
+  rendered stub charts that never populated.
+
+### Deprecated
+
+- `GET /api/stats`. Every key name is preserved and the response now carries
+  `Deprecation` and `Sunset` headers; use `/api/dashboard/*` instead. It will be
+  removed at the next major version.
+
+### Notes for downgrades
+
+All schema changes are additive — two new tables, four new nullable columns, and
+new indexes — so the data itself is safe to read with older code. However,
+`MigrationRunner` fails startup on encountering an applied migration version it
+does not know about, so downgrading below this release requires deleting the
+corresponding `schema_version` rows.
+
 ## [1.0.0] — 2026-07-28
 
 v1.0.0 marks the first stable release. It adds transport recovery, location and rain

@@ -137,9 +137,45 @@ proxy_set_header X-Forwarded-Proto $scheme;
 ## Pages Overview
 
 ### Dashboard
-- Database status and statistics
-- Contact counts and cache information
-- Quick navigation to other sections
+- Health strip: bot status, database size, uptime, connected clients, radio state,
+  and snapshot age with a manual refresh control
+- **Mesh**: nodes heard, adverts, new nodes, nodes gone quiet, tracked/known
+  contacts, and geographic coverage — each with a 30-day sparkline and a
+  change chip
+- Routing mix (flood vs direct), hop-count and path-length histograms, and an
+  SNR/RSSI distribution
+- Path encoding: multibyte share among contacts and among incoming packets,
+  plus a 30-day multibyte adoption trend
+- Busiest repeaters and the role/device mix
+- **Bot**: messages, commands, reply rate, and unique users, plus the top
+  commands/users/channels and longest paths
+- Live activity feed
+
+The dashboard is served from a **snapshot**, not from live aggregation. A
+background thread in the viewer process recomputes it every
+`dashboard_snapshot_interval_seconds` (default 60) and writes two tables:
+
+| Table | Contents |
+|-------|----------|
+| `daily_rollup` | One row per local date. Retains counts whose raw sources are pruned long before the dashboard's 30-day window. Signal metrics are stored as sums and counts, never means, so any window re-aggregates correctly. |
+| `dashboard_snapshot` | A single JSON row describing current state. |
+
+Two consequences worth knowing:
+
+- **Gaps are not zeros.** A day with no source data stores NULL and renders as a
+  break in the line. Days seeded when the feature was first enabled have real
+  advert counts but no message, command, path, or packet figures — those raw
+  rows were already pruned and cannot be recovered.
+- **Window labels come from retention.** The time-window selectors are built
+  from each source's configured retention, so the list cannot offer "30 days"
+  against a table pruned at 7.
+
+The **multibyte share** trend is accumulated forward, not derived. `observed_paths`
+is deduplicated with a lifetime `observation_count` and a `last_seen` that is
+bumped on every re-observation, so historical per-day shares cannot be
+reconstructed from it — nearly half the observation volume would be attributed
+to the wrong day. Each refresh recomputes today plus a three-day trailing
+window; older days stay frozen at the value recorded then.
 
 ### Repeater Contacts
 - Active repeater contacts
@@ -192,7 +228,24 @@ proxy_set_header X-Forwarded-Proto $scheme;
 
 The viewer also provides JSON API endpoints:
 
-- `GET /api/stats` - Database statistics
+- `GET /api/dashboard/summary` - Snapshot-backed dashboard payload, including
+  30-day sparkline series and change figures. Sends a strong `ETag`; poll with
+  `If-None-Match` to get a bodyless `304` while the snapshot is unchanged.
+- `GET /api/dashboard/series?metric=<m>&days=<n>` - Full-history points for one
+  metric. `metric` is one of `messages`, `commands`, `adverts`, `nodes`,
+  `new_nodes`, `packets`, `multibyte_share`.
+- `GET /api/dashboard/top?kind=<k>&window=<w>&limit=<n>` - One leaderboard.
+  `kind` is one of `users`, `commands`, `channels`, `paths`, `repeaters`. The
+  response carries `window_label`, `retention_days`, and
+  `truncated_by_retention`.
+- `GET /api/dashboard/windows` - Selector options derived from each source's
+  retention.
+- `POST /api/dashboard/refresh` - Force a snapshot recomputation.
+- `GET /api/stats` - **Deprecated.** The whole-database statistics payload the
+  dashboard used to call five times per page load. Every key name is preserved
+  for external consumers, and the response carries `Deprecation` and `Sunset`
+  headers. Use the `/api/dashboard/*` endpoints instead; this one is removed at
+  the next major version.
 - `GET /api/contacts` - Repeater contacts data. The contacts page uses optional
   `page`, `page_size` (maximum 200), `search`, `sort`, and `direction` parameters;
   callers that omit pagination retain the legacy full-list response.
@@ -200,7 +253,7 @@ The viewer also provides JSON API endpoints:
 
 Example usage:
 ```bash
-curl http://localhost:5000/api/stats
+curl http://localhost:5000/api/dashboard/summary
 ```
 
 ## Database Requirements

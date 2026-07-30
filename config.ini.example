@@ -1620,6 +1620,31 @@ auto_start = false
 # true: expose page/nav/API endpoint
 multibyte_monitor_enabled = false
 
+# Dashboard snapshot refresher
+# A background thread in the viewer process recomputes the landing page's
+# statistics on an interval and stores them in two tables (daily_rollup and
+# dashboard_snapshot), so page loads read one row instead of running ~50
+# aggregate queries. It also accumulates daily trends that outlive the raw
+# tables' retention — message/command/path stats are pruned at 7 days and
+# packet_stream at 3, so without this there is no history to chart.
+# Disabling it leaves /api/dashboard/summary returning 503 and the dashboard
+# unable to render.
+# dashboard_snapshot_enabled = true
+#
+# How often to recompute. Each refresh recomputes today plus a 3-day trailing
+# window; older days are frozen.
+# dashboard_snapshot_interval_seconds = 60
+#
+# How many days of daily_rollup history to retain (~1 row/day, so 400 days is
+# well under a megabyte).
+# dashboard_snapshot_history_days = 400
+#
+# packet_stream rows written before this feature existed keep their route type
+# and hop encoding only inside a JSON blob. Each refresh converts this many of
+# them to real columns rather than rewriting the whole table at once, which on
+# an SD-card Pi would stall the bot for minutes. Set to 0 to disable.
+# dashboard_packet_backfill_rows = 2000
+
 # Optional timeout overrides for web viewer integration (seconds)
 # edge_post_timeout_sec = 1.0
 # node_post_timeout_sec = 0.5

@@ -201,6 +201,13 @@ SECTIONS: dict[str, SectionMeta] = {
         "sqlite_busy_timeout_ms": KeyMeta(type="int", default="60000"),
         "sqlite_foreign_keys": KeyMeta(type="bool", default="true"),
         "sqlite_journal_mode": KeyMeta(default="WAL"),
+        # Dashboard snapshot refresher — moves the landing page's aggregate
+        # queries off the request path and accumulates trends that outlive the
+        # raw tables' retention.
+        "dashboard_snapshot_enabled": KeyMeta(type="bool", default="true"),
+        "dashboard_snapshot_interval_seconds": KeyMeta(type="int", default="60"),
+        "dashboard_snapshot_history_days": KeyMeta(type="int", default="400"),
+        "dashboard_packet_backfill_rows": KeyMeta(type="int", default="2000"),
     }),
     "Localization": SectionMeta(keys={
         "language": KeyMeta(default="en"),

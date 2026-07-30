@@ -65,6 +65,7 @@ def viewer(tmp_path_factory):
         patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
         patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
         patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
     ):
         v = BotDataViewer(db_path=db_path, config_path=config_path)
 
@@ -103,6 +104,7 @@ def auth_viewer(tmp_path_factory):
         patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
         patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
         patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
     ):
         v = BotDataViewer(db_path=db_path, config_path=config_path)
 
@@ -171,14 +173,24 @@ class TestPageRoutes:
         # Scroll buttons
         assert 'id="live-scroll-top"' in html
         assert 'id="live-scroll-bottom"' in html
-        assert 'scrollLiveFeed' in html
         # Filter checkboxes with data-type attributes
         assert 'data-type="packet"' in html
         assert 'data-type="command"' in html
         assert 'data-type="message"' in html
         assert 'live-filter-cb' in html
-        # [#channel] prefix logic present in JS
-        assert 'applyFilters' in html
+        # Behaviour lives in the external, nonce-free dashboard script
+        assert 'js/dashboard.js' in html
+
+    def test_dashboard_script_wires_live_feed_controls(self):
+        """The extracted dashboard script still implements the feed behaviour."""
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "modules" / "web_viewer" / "static" / "js" / "dashboard.js"
+        ).read_text(encoding="utf-8")
+        assert "applyFilters" in script
+        assert "live-scroll-top" in script
+        assert "live-scroll-bottom" in script
+        assert "initLiveFeed" in script
 
     def test_realtime(self, client):
         resp = client.get("/realtime")
@@ -223,9 +235,10 @@ class TestPageRoutes:
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/config#database")
 
-    def test_stats(self, client):
+    def test_stats_page_removed(self, client):
+        """The orphaned /stats stub page was folded into the dashboard."""
         resp = client.get("/stats")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
 
     def test_greeter(self, client):
         resp = client.get("/greeter")
@@ -2111,6 +2124,7 @@ def socketio_viewer(tmp_path_factory):
         _patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
         _patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
         _patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        _patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
     ):
         v = BotDataViewer(db_path=db_path, config_path=config_path)
 
@@ -2325,7 +2339,7 @@ class TestConnectedClientsApi:
         html = resp.data.decode()
         assert "connectedClientsModal" in html
         assert "connected-clients-table" in html
-        assert "loadConnectedClients" in html
+        assert 'id="health-clients-link"' in html
 
 
 # ---------------------------------------------------------------------------
@@ -3491,6 +3505,7 @@ class TestDbPathResolutionFromConfigDir:
             patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
             patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
             patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+            patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
         ):
             return BotDataViewer(config_path=config_path)
 
@@ -3573,6 +3588,7 @@ class TestWebViewerLoggingRespectsLogFile:
             patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
             patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
             patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+            patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
         ):
             return BotDataViewer(config_path=config_path)
 

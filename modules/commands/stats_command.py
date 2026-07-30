@@ -789,35 +789,47 @@ class StatsCommand(BaseCommand):
             self.logger.error(f"Error getting adverts leaderboard: {e}")
             return self.translate('commands.stats.error_adverts', error=str(e))
 
+    # Rows timestamped beyond this margin ahead of now came from a bad clock on
+    # the sending node, not from the future.  Without an upper bound they are
+    # never older than the cutoff, so retention never removes them: observed in
+    # the wild dated 2103-08-15, which also stretches any chart's axis to match.
+    FUTURE_TIMESTAMP_GRACE_SECONDS = 24 * 60 * 60
+
     def cleanup_old_stats(self, days_to_keep: int = 7) -> None:
         """Clean up old stats data to prevent database bloat.
+
+        Deletes rows older than the retention cutoff *and* rows dated
+        implausibly far in the future.
 
         Args:
             days_to_keep: Number of days of data to retain.
         """
         try:
-            cutoff_time = int(time.time()) - (days_to_keep * 24 * 60 * 60)
+            now = int(time.time())
+            cutoff_time = now - (days_to_keep * 24 * 60 * 60)
+            future_cutoff = now + self.FUTURE_TIMESTAMP_GRACE_SECONDS
 
             with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
 
-                # Clean up old message stats
-                cursor.execute('DELETE FROM message_stats WHERE timestamp < ?', (cutoff_time,))
-                messages_deleted = cursor.rowcount
-
-                # Clean up old command stats
-                cursor.execute('DELETE FROM command_stats WHERE timestamp < ?', (cutoff_time,))
-                commands_deleted = cursor.rowcount
-
-                # Clean up old path stats
-                cursor.execute('DELETE FROM path_stats WHERE timestamp < ?', (cutoff_time,))
-                paths_deleted = cursor.rowcount
+                deleted = {}
+                for table in ('message_stats', 'command_stats', 'path_stats'):
+                    cursor.execute(
+                        f'DELETE FROM {table} WHERE timestamp < ? OR timestamp > ?',  # noqa: S608 - fixed table names
+                        (cutoff_time, future_cutoff),
+                    )
+                    deleted[table] = cursor.rowcount
 
                 conn.commit()
 
-                total_deleted = messages_deleted + commands_deleted + paths_deleted
+                total_deleted = sum(deleted.values())
                 if total_deleted > 0:
-                    self.logger.info(f"Cleaned up {total_deleted} old stats entries ({messages_deleted} messages, {commands_deleted} commands, {paths_deleted} paths)")
+                    self.logger.info(
+                        f"Cleaned up {total_deleted} old stats entries "
+                        f"({deleted['message_stats']} messages, "
+                        f"{deleted['command_stats']} commands, "
+                        f"{deleted['path_stats']} paths)"
+                    )
 
         except Exception as e:
             self.logger.error(f"Error cleaning up old stats: {e}")

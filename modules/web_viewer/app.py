@@ -65,6 +65,15 @@ from modules.settings_schema import (
 )
 from modules.settings_store import get_settings_store
 from modules.version_info import resolve_runtime_version
+from modules.web_viewer.dashboard_stats import (
+    SERIES_METRICS,
+    TOP_KINDS,
+    DashboardStatsService,
+    humanize_span,
+)
+
+# RFC 8594 Sunset date advertised on the deprecated /api/stats endpoint.
+STATS_ENDPOINT_SUNSET = "Fri, 01 Jan 2027 00:00:00 GMT"
 
 
 def _validate_dynamic_key(key: str) -> "str | None":
@@ -213,6 +222,8 @@ class BotDataViewer:
         'path_stats',
         'schema_version',
         'greeter_rollout',
+        'daily_rollup',
+        'dashboard_snapshot',
     }
 
     def __init__(self, db_path="meshcore_bot.db", repeater_db_path=None, config_path="config.ini"):
@@ -287,9 +298,10 @@ class BotDataViewer:
         # The contacts list needs all-time multibyte hop-prefix evidence for its
         # capability badge.  Cache that derived set between requests and invalidate
         # it when the underlying multibyte-path population changes.
+        # Keyed by the recent_days window (None = all time) so the contacts list
+        # and the dashboard's 7-day view do not evict each other.
         self._contacts_badge_cache_lock = threading.Lock()
-        self._contacts_badge_cache_signature = None
-        self._contacts_badge_cache_chunks: set[str] = set()
+        self._contacts_badge_cache: dict[int | None, tuple[tuple, set[str]]] = {}
 
         # Use [Bot] db_path when [Web_Viewer] db_path is unset
         bot_db = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
@@ -318,6 +330,8 @@ class BotDataViewer:
             )
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError, TypeError):
             self.multibyte_monitor_enabled = False
+
+        self._init_dashboard_service()
 
         # Configure CORS for SocketIO — default to same-origin (no cross-origin)
         cors_raw = self.config.get('Web_Viewer', 'cors_allowed_origins', fallback='').strip()
@@ -348,6 +362,10 @@ class BotDataViewer:
 
         # Start periodic cleanup
         self._start_cleanup_scheduler()
+
+        # Start the dashboard snapshot refresher (moves the landing page's
+        # aggregate queries off the request path)
+        self._start_dashboard_refresher()
 
         self.logger.info("BotDataViewer initialized with Flask-SocketIO 5.x best practices")
 
@@ -792,7 +810,6 @@ class BotDataViewer:
                 'radio',
                 'realtime',
                 'contacts',
-                'stats',
                 'plugins_page',
                 'greeter',
                 'logs',
@@ -859,8 +876,23 @@ class BotDataViewer:
 
         @self.app.route('/')
         def index():
-            """Main dashboard"""
-            return render_template('index.html')
+            """Main dashboard.
+
+            Server-side config reaches the page as a JSON data block rather than
+            an inline script, so the dashboard's JavaScript can live in a static
+            file that ``script-src 'self'`` already covers.
+            """
+            database_size = None
+            with suppress(OSError):
+                database_size = os.path.getsize(self.db_path)
+            return render_template(
+                'index.html',
+                dashboard_boot={
+                    'database_size': database_size,
+                    'snapshot_interval_seconds': self.dashboard_snapshot_interval,
+                    'snapshot_enabled': self.dashboard_snapshot_enabled,
+                },
+            )
 
         @self.app.route('/realtime')
         def realtime():
@@ -882,11 +914,6 @@ class BotDataViewer:
             """Legacy cache URL redirects to the database config panel."""
             return redirect('/config#database')
 
-
-        @self.app.route('/stats')
-        def stats():
-            """Statistics page"""
-            return render_template('stats.html')
 
         @self.app.route('/multibyte-rollout')
         def multibyte_rollout():
@@ -2094,7 +2121,13 @@ class BotDataViewer:
 
         @self.app.route('/api/stats')
         def api_stats():
-            """Get comprehensive database statistics for dashboard"""
+            """Deprecated: whole-database statistics in one payload.
+
+            Superseded by /api/dashboard/summary (snapshot-backed) and
+            /api/dashboard/top (one narrow query per leaderboard).  Retained
+            with every key name intact for external consumers, and scheduled for
+            removal at the next major version.
+            """
             try:
                 # Get optional time window parameters for analytics
                 top_users_window = request.args.get('top_users_window', 'all')
@@ -2107,12 +2140,123 @@ class BotDataViewer:
                     top_paths_window=top_paths_window,
                     top_channels_window=top_channels_window
                 )
-                return jsonify(stats)
+                stats['deprecated'] = True
+                response = jsonify(stats)
+                response.headers['Deprecation'] = 'true'
+                response.headers['Sunset'] = STATS_ENDPOINT_SUNSET
+                response.headers['Link'] = '</api/dashboard/summary>; rel="successor-version"'
+                return response
             except Exception as e:
                 self.logger.error(f"Error getting stats: {e}")
                 return jsonify({'error': str(e)}), 500
 
 
+
+        @self.app.route('/api/dashboard/summary')
+        def api_dashboard_summary():
+            """Snapshot-backed dashboard payload — one row read, no aggregation.
+
+            Sparkline series are folded in so first paint costs two requests
+            (/api/health plus this) instead of the six the old page made.
+            """
+            try:
+                with self._with_db_connection() as conn:
+                    payload = self.dashboard_stats.read_summary(conn)
+                if payload is None:
+                    # No snapshot yet: the refresher runs a couple of seconds
+                    # after startup, so tell the client to retry rather than
+                    # recomputing everything on the request path.
+                    response = jsonify({
+                        'error': 'Dashboard snapshot not generated yet',
+                        'pending': True,
+                    })
+                    response.status_code = 503
+                    response.headers['Retry-After'] = '5'
+                    return response
+
+                # ETags.contains() wants the bare tag; the quotes belong only in
+                # the header itself.
+                tag = str(payload['generated_at'])
+                if request.if_none_match.contains(tag):
+                    response = self.app.response_class(status=304)
+                else:
+                    response = jsonify(payload)
+                response.headers['ETag'] = f'"{tag}"'
+                response.headers['Cache-Control'] = 'private, max-age=15'
+                return response
+            except Exception as e:
+                self.logger.error(f"Error reading dashboard summary: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/dashboard/series')
+        def api_dashboard_series():
+            """Full-history points for one metric, for the expand-chart interaction."""
+            metric = request.args.get('metric', 'messages')
+            if metric not in SERIES_METRICS:
+                return jsonify({'error': f'Unknown metric: {metric}'}), 400
+            try:
+                days = int(request.args.get('days', 30))
+            except (TypeError, ValueError):
+                days = 30
+            try:
+                with self._with_db_connection() as conn:
+                    payload = self.dashboard_stats.read_series(conn, metric, days)
+                tag = f'{metric}:{days}:{payload.pop("etag_source", None)}'
+                if request.if_none_match.contains(tag):
+                    response = self.app.response_class(status=304)
+                else:
+                    response = jsonify(payload)
+                response.headers['ETag'] = f'"{tag}"'
+                response.headers['Cache-Control'] = 'private, max-age=300'
+                return response
+            except Exception as e:
+                self.logger.error(f"Error reading dashboard series: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/dashboard/top')
+        def api_dashboard_top():
+            """One leaderboard, one narrow query — replaces four whole-payload reads."""
+            kind = request.args.get('kind', 'users')
+            if kind not in TOP_KINDS:
+                return jsonify({'error': f'Unknown kind: {kind}'}), 400
+            window = request.args.get('window', 'all')
+            if window not in ('24h', '7d', '30d', '90d', 'all'):
+                window = 'all'
+            try:
+                limit = int(request.args.get('limit', 15))
+            except (TypeError, ValueError):
+                limit = 15
+            try:
+                with self._with_db_connection() as conn:
+                    payload = self.dashboard_stats.read_top(conn, kind, window, limit)
+                response = jsonify(payload)
+                response.headers['Cache-Control'] = 'private, max-age=30'
+                return response
+            except Exception as e:
+                self.logger.error(f"Error reading dashboard top {kind}: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/dashboard/windows')
+        def api_dashboard_windows():
+            """Selector options derived from retention, so no label overclaims."""
+            try:
+                response = jsonify(self.dashboard_stats.derive_windows())
+                response.headers['Cache-Control'] = 'private, max-age=300'
+                return response
+            except Exception as e:
+                self.logger.error(f"Error deriving dashboard windows: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/dashboard/refresh', methods=['POST'])
+        def api_dashboard_refresh():
+            """Force a snapshot refresh. Used by the health strip's manual control."""
+            try:
+                with closing(self._dashboard_connection()) as conn:
+                    result = self.dashboard_stats.refresh(conn)
+                return jsonify({'success': True, **result})
+            except Exception as e:
+                self.logger.error(f"Error refreshing dashboard snapshot: {e}")
+                return jsonify({'success': False, 'error': str(e)}), 500
 
         @self.app.route('/api/stats/rate_limiters')
         def api_rate_limiter_stats():
@@ -4457,6 +4601,159 @@ class BotDataViewer:
         polling_thread.start()
         self.logger.info("Database polling started")
 
+    def _config_int(self, section: str, option: str, fallback: int) -> int:
+        """Read an int config value, falling back on a missing or malformed entry."""
+        try:
+            return self.config.getint(section, option, fallback=fallback)
+        except (configparser.Error, ValueError, TypeError):
+            return fallback
+
+    def _init_dashboard_service(self):
+        """Build the dashboard rollup/snapshot service from config."""
+        try:
+            self.dashboard_snapshot_enabled = self.config.getboolean(
+                'Web_Viewer', 'dashboard_snapshot_enabled', fallback=True
+            )
+        except (configparser.Error, ValueError, TypeError):
+            self.dashboard_snapshot_enabled = True
+
+        self.dashboard_snapshot_interval = max(
+            15, self._config_int('Web_Viewer', 'dashboard_snapshot_interval_seconds', 60)
+        )
+        self.dashboard_stats = DashboardStatsService(
+            self.logger,
+            history_days=self._config_int('Web_Viewer', 'dashboard_snapshot_history_days', 400),
+            packet_backfill_rows=self._config_int('Web_Viewer', 'dashboard_packet_backfill_rows', 2000),
+            interval_seconds=self.dashboard_snapshot_interval,
+            # Retention drives which window labels the UI is allowed to offer,
+            # so read the same keys the cleanup jobs enforce.
+            stats_retention_days=self._config_int('Stats_Command', 'data_retention_days', 7),
+            packet_retention_days=self._config_int('Data_Retention', 'packet_stream_retention_days', 3),
+            adverts_retention_days=self._config_int('Data_Retention', 'daily_stats_retention_days', 90),
+            multibyte_contacts_fn=self._count_contacts_7d_multibyte,
+        )
+
+    def _count_contacts_7d_multibyte(self, cursor) -> tuple[int, int] | None:
+        """(multibyte, total) contacts heard in the last 7 days, or None if unavailable.
+
+        Injected into DashboardStatsService so the snapshot reuses the viewer's
+        memoized hop-prefix evidence instead of rebuilding it.
+        """
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM complete_contact_tracking
+                WHERE last_heard > datetime('now', 'localtime', '-7 days')
+                """
+            )
+            total = cursor.fetchone()[0] or 0
+        except sqlite3.Error as e:
+            self.logger.debug(f"Could not count 7d contacts: {e}")
+            return None
+
+        chunk_buckets = self._bucket_hop_chunks(
+            self._get_cached_contact_multibyte_hop_chunks(cursor, recent_days=7)
+        )
+        mb_advert_pks: set[str] = set()
+        try:
+            cursor.execute(
+                """
+                SELECT DISTINCT public_key FROM observed_paths
+                WHERE packet_type = 'advert' AND public_key IS NOT NULL
+                AND bytes_per_hop IN (2, 3)
+                AND date(last_seen) >= date('now', 'localtime', '-7 days')
+                """
+            )
+            mb_advert_pks = {row[0] for row in cursor.fetchall() if row[0]}
+        except sqlite3.Error as e:
+            self.logger.debug(f"Could not load 7d multibyte advert keys: {e}")
+
+        try:
+            cursor.execute(
+                """
+                SELECT public_key, role, out_bytes_per_hop
+                FROM complete_contact_tracking
+                WHERE last_heard > datetime('now', 'localtime', '-7 days')
+                """
+            )
+            multibyte = sum(
+                1
+                for row in cursor.fetchall()
+                if self._contact_has_multibyte_path_evidence(
+                    row[0], row[1], row[2], mb_advert_pks, chunk_buckets
+                )
+            )
+        except sqlite3.Error as e:
+            self.logger.debug(f"Could not compute contacts_7d_multibyte_path: {e}")
+            return None
+        return multibyte, total
+
+    def _dashboard_connection(self):
+        """Connection for the refresher: autocommit, so BEGIN IMMEDIATE is ours.
+
+        The reader connections leave transaction control to pysqlite, but the
+        refresher deliberately brackets its own write phase and must not have an
+        implicit transaction opened underneath it.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=60, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        with suppress(sqlite3.OperationalError):
+            conn.execute(f"PRAGMA busy_timeout={self._config_int('Web_Viewer', 'sqlite_busy_timeout_ms', 60000)}")
+            conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def _start_dashboard_refresher(self):
+        """Recompute the dashboard snapshot on an interval, in this process.
+
+        The refresher lives in the viewer rather than the bot for two reasons:
+        the viewer may point at a different database ([Web_Viewer] db_path), and
+        it already runs migrations itself, so the rollup tables exist in
+        whichever file this process opens.  A bot-side scheduler job would write
+        to the wrong file in a split-DB install and would not run at all for a
+        standalone viewer.
+        """
+        if not self.dashboard_snapshot_enabled:
+            self.logger.info("Dashboard snapshot refresher disabled by config")
+            return
+
+        def refresher():
+            consecutive_errors = 0
+            # Refresh once at startup so the first page load has a snapshot.
+            delay = 2.0
+            while True:
+                time.sleep(delay)
+                delay = self.dashboard_snapshot_interval
+                try:
+                    with closing(self._dashboard_connection()) as conn:
+                        if not self.dashboard_stats.try_claim_lease(conn):
+                            self.logger.debug(
+                                "Another viewer holds the dashboard snapshot lease; skipping tick"
+                            )
+                            continue
+                        result = self.dashboard_stats.refresh(conn)
+                    consecutive_errors = 0
+                    self.logger.debug(
+                        "Dashboard snapshot refreshed in %sms (%s days, %s packet rows backfilled)",
+                        result['duration_ms'],
+                        result['days'],
+                        result['backfilled_packet_rows'],
+                    )
+                except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors == 1:
+                        self.logger.error(f"Dashboard snapshot refresh failed: {e}", exc_info=True)
+                    else:
+                        self.logger.warning(
+                            f"Dashboard snapshot refresh failed ({consecutive_errors}): {e}"
+                        )
+                    delay = min(600, self.dashboard_snapshot_interval * (2 ** min(consecutive_errors, 5)))
+
+        thread = threading.Thread(target=refresher, name="dashboard-snapshot", daemon=True)
+        thread.start()
+        self.logger.info(
+            f"Dashboard snapshot refresher started (every {self.dashboard_snapshot_interval}s)"
+        )
+
     def _start_cleanup_scheduler(self):
         """Start background thread for periodic database cleanup"""
         import threading
@@ -4600,12 +4897,14 @@ class BotDataViewer:
                 # the pie chart matches "last 7 days" (lifetime paths + stale out_bytes_per_hop
                 # otherwise inflated the percentage).
                 stats['contacts_7d_multibyte_path'] = 0
-                multibyte_chunks: set[str] = set()
+                chunk_buckets = self._bucket_hop_chunks(set())
                 mb_advert_pks: set[str] = set()
                 if 'observed_paths' in tables:
                     try:
-                        multibyte_chunks = self._collect_multibyte_hop_chunks(
-                            cursor, recent_days=7
+                        chunk_buckets = self._bucket_hop_chunks(
+                            self._get_cached_contact_multibyte_hop_chunks(
+                                cursor, recent_days=7
+                            )
                         )
                         # Use date() — julianday(iso8601) often returns NULL for Python isoformat() strings
                         cursor.execute(
@@ -4636,7 +4935,7 @@ class BotDataViewer:
                             row["role"],
                             row["out_bytes_per_hop"],
                             mb_advert_pks,
-                            multibyte_chunks,
+                            chunk_buckets,
                         ):
                             mb_7d += 1
                     stats['contacts_7d_multibyte_path'] = mb_7d
@@ -4674,7 +4973,10 @@ class BotDataViewer:
                 """)
                 stats['unique_device_types'] = cursor.fetchone()[0]
 
-            # Incoming packets (packet_stream): multibyte path share, last 7 days (decoded bytes_per_hop)
+            # Incoming packets: multibyte path share over whatever packet_stream
+            # actually retains.  The key names still say 7d for compatibility,
+            # but the window is reported honestly alongside them —
+            # packet_stream is pruned at 3 days, so the old label was never true.
             stats['incoming_packets_7d'] = 0
             stats['incoming_packets_7d_multibyte_path'] = 0
             if 'packet_stream' in tables:
@@ -4682,28 +4984,23 @@ class BotDataViewer:
                     cutoff_ts = time.time() - 7 * 86400
                     cursor.execute(
                         """
-                        SELECT COUNT(*) FROM packet_stream
-                        WHERE type = ? AND timestamp > ?
+                        SELECT COUNT(*),
+                               SUM(CASE WHEN bytes_per_hop IN (2, 3) THEN 1 ELSE 0 END),
+                               MIN(timestamp)
+                        FROM packet_stream
+                        WHERE type = ? AND timestamp > ? AND route_type_name IS NOT NULL
                         """,
                         ("packet", cutoff_ts),
                     )
-                    stats['incoming_packets_7d'] = cursor.fetchone()[0] or 0
-                    mb_pk = 0
-                    try:
-                        cursor.execute(
-                            """
-                            SELECT COUNT(*) FROM packet_stream
-                            WHERE type = ? AND timestamp > ?
-                            AND CAST(json_extract(data, '$.bytes_per_hop') AS INTEGER) IN (2, 3)
-                            """,
-                            ("packet", cutoff_ts),
-                        )
-                        mb_pk = cursor.fetchone()[0] or 0
-                    except sqlite3.OperationalError:
-                        mb_pk = self._count_multibyte_packets_from_stream_json(cursor, cutoff_ts)
-                    stats['incoming_packets_7d_multibyte_path'] = mb_pk
+                    row = cursor.fetchone()
+                    stats['incoming_packets_7d'] = row[0] or 0
+                    stats['incoming_packets_7d_multibyte_path'] = row[1] or 0
+                    stats['incoming_packets_from'] = row[2]
+                    stats['incoming_packets_window_label'] = humanize_span(
+                        time.time() - row[2] if row[2] else None
+                    )
                 except Exception as e:
-                    self.logger.debug(f"Could not compute incoming_packets_7d multibyte stats: {e}")
+                    self.logger.debug(f"Could not compute incoming packet multibyte stats: {e}")
 
             # Advertisement statistics using daily tracking table
             if 'daily_stats' in tables:
@@ -5251,38 +5548,6 @@ class BotDataViewer:
                 out.append(seg.lower())
         return out
 
-    def _count_multibyte_packets_from_stream_json(self, cursor, cutoff_ts: float) -> int:
-        """Count packet_stream rows (type=packet) since cutoff with bytes_per_hop in (2, 3). JSON parse fallback."""
-        import json
-
-        n = 0
-        try:
-            cursor.execute(
-                """
-                SELECT data FROM packet_stream
-                WHERE type = ? AND timestamp > ?
-                """,
-                ("packet", cutoff_ts),
-            )
-            for row in cursor.fetchall():
-                raw = row["data"]
-                if not raw:
-                    continue
-                try:
-                    d = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                bph = d.get("bytes_per_hop")
-                try:
-                    bph_i = int(bph) if bph is not None else None
-                except (TypeError, ValueError):
-                    bph_i = None
-                if bph_i in (2, 3):
-                    n += 1
-        except Exception as e:
-            self.logger.debug(f"packet_stream JSON scan for multibyte: {e}")
-        return n
-
     def _collect_multibyte_hop_chunks(
         self, cursor, recent_days: int | None = None
     ) -> set[str]:
@@ -5322,8 +5587,15 @@ class BotDataViewer:
             self.logger.debug(f"Could not load multibyte hop chunks: {e}")
         return chunks
 
-    def _get_cached_contact_multibyte_hop_chunks(self, cursor) -> set[str]:
-        """Return all-time contact badge evidence without rebuilding it per page request."""
+    def _get_cached_contact_multibyte_hop_chunks(
+        self, cursor, recent_days: int | None = None
+    ) -> set[str]:
+        """Return contact badge evidence without rebuilding it per page request.
+
+        Memoized per ``recent_days`` window: the contacts list wants all-time
+        evidence (None) while the dashboard wants the 7-day set, and both are
+        rebuilt often enough that sharing one slot would thrash the cache.
+        """
         try:
             # last_seen changes when an existing path is observed again; count changes on
             # inserts and retention deletes.  Together they cheaply invalidate the cache while
@@ -5336,19 +5608,27 @@ class BotDataViewer:
             )
             signature_row = cursor.fetchone()
             signature = tuple(signature_row) if signature_row else (None, 0)
+            if recent_days is not None:
+                # A windowed set also changes when the window itself slides, which
+                # leaves the row fingerprint untouched — pin it to the local date.
+                cursor.execute("SELECT date('now', 'localtime')")
+                signature = (*signature, cursor.fetchone()[0])
         except Exception as e:
             self.logger.debug(f"Could not fingerprint multibyte hop chunks: {e}")
-            return self._collect_multibyte_hop_chunks(cursor)
+            return self._collect_multibyte_hop_chunks(cursor, recent_days=recent_days)
 
         lock = getattr(self, '_contacts_badge_cache_lock', None)
         if lock is None:
             lock = self._contacts_badge_cache_lock = threading.Lock()
         with lock:
-            if getattr(self, '_contacts_badge_cache_signature', None) == signature:
-                return self._contacts_badge_cache_chunks
-            chunks = self._collect_multibyte_hop_chunks(cursor)
-            self._contacts_badge_cache_signature = signature
-            self._contacts_badge_cache_chunks = chunks
+            cache = getattr(self, '_contacts_badge_cache', None)
+            if cache is None:
+                cache = self._contacts_badge_cache = {}
+            cached = cache.get(recent_days)
+            if cached is not None and cached[0] == signature:
+                return cached[1]
+            chunks = self._collect_multibyte_hop_chunks(cursor, recent_days=recent_days)
+            cache[recent_days] = (signature, chunks)
             return chunks
 
     @staticmethod
@@ -5437,9 +5717,13 @@ class BotDataViewer:
         role: str | None,
         out_bytes_per_hop: Any,
         multibyte_advert_public_keys: set[str],
-        multibyte_hop_chunks: set[str],
+        chunk_buckets: dict[int, set[str]],
     ) -> bool:
-        """Multibyte detection for dashboard 7d stats (observed_paths scoped by date in SQL)."""
+        """Multibyte detection for dashboard 7d stats (observed_paths scoped by date in SQL).
+
+        ``chunk_buckets`` is the length-bucketed form of the multibyte hop chunks
+        (see _bucket_hop_chunks) — build it once per request, not per contact.
+        """
         pk = public_key or ""
         role_l = (role or "").lower()
         obph: int | None
@@ -5455,10 +5739,11 @@ class BotDataViewer:
         if pk and pk in multibyte_advert_public_keys:
             return True
         if role_l in ("repeater", "roomserver") and pk:
+            # Chunks are fixed-length (4 or 6), so startswith reduces to prefix-equality
+            # lookups — O(1) per contact instead of a scan of the whole chunk set.
             pk_low = pk.lower()
-            for chunk in multibyte_hop_chunks:
-                if pk_low.startswith(chunk):
-                    return True
+            if pk_low[:4] in chunk_buckets[4] or pk_low[:6] in chunk_buckets[6]:
+                return True
         return False
 
     def _compute_single_byte_relay_metrics(

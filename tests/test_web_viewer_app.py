@@ -69,6 +69,7 @@ def viewer_with_db(tmp_path):
     with patch.object(BotDataViewer, "_start_database_polling"), \
          patch.object(BotDataViewer, "_start_log_tailing"), \
          patch.object(BotDataViewer, "_start_cleanup_scheduler"), \
+         patch.object(BotDataViewer, "_start_dashboard_refresher"), \
          patch.object(BotDataViewer, "_setup_socketio_handlers"), \
          patch("modules.web_viewer.app.RepeaterManager"):
         viewer = BotDataViewer(db_path=db_path, config_path=config_path)
@@ -123,6 +124,7 @@ def mock_viewer(tmp_path):
     with patch.object(BotDataViewer, "_start_database_polling"), \
          patch.object(BotDataViewer, "_start_log_tailing"), \
          patch.object(BotDataViewer, "_start_cleanup_scheduler"), \
+         patch.object(BotDataViewer, "_start_dashboard_refresher"), \
          patch.object(BotDataViewer, "_setup_socketio_handlers"), \
          patch("modules.web_viewer.app.RepeaterManager"):
         viewer = BotDataViewer(db_path=db_path, config_path=config_path)
@@ -150,6 +152,7 @@ class TestAllowedTables:
             'greeted_users', 'feed_subscriptions', 'feed_activity', 'feed_errors',
             'path_stats', 'unique_advert_packets', 'schema_version',
             'channel_operations', 'channels', 'feed_message_queue',
+            'daily_rollup', 'dashboard_snapshot',
         }
         assert expected_tables == BotDataViewer.ALLOWED_TABLES
 

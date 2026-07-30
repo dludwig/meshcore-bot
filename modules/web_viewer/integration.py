@@ -211,11 +211,21 @@ class BotIntegration:
                 return resolve_path(raw, base_dir)
         return str(Path(self.bot.db_manager.db_path).resolve())
 
+    # Denormalized packet dimensions written alongside the JSON blob.  Order
+    # matters: it is the INSERT column order and the queue tuple order.
+    PACKET_DIM_COLUMNS = ("route_type_name", "payload_type_name", "path_len", "bytes_per_hop")
+
     def _init_packet_stream_table(self):
         """Backward-compatible initializer (now handled by migrations).
 
         Kept for older call sites and tests that patch this method. Safe to call
         multiple times and safe to ignore failures.
+
+        The table-exists path still runs the ALTERs: this process writes to
+        ``[Web_Viewer] db_path``, which in a split-DB install is a file the bot's
+        own MigrationRunner never touches.  If the viewer has not started yet
+        that DB has an old three-column packet_stream, and skipping the ALTERs
+        would leave every insert failing on unknown columns.
         """
         try:
             import sqlite3
@@ -226,6 +236,8 @@ class BotIntegration:
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='packet_stream'"
                 )
                 if cur.fetchone() is not None:
+                    self._add_missing_packet_dim_columns(conn)
+                    conn.commit()
                     return
                 try:
                     foreign_keys = self.bot.config.getboolean("Web_Viewer", "sqlite_foreign_keys", fallback=True)
@@ -247,7 +259,11 @@ class BotIntegration:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp REAL NOT NULL,
                         data TEXT NOT NULL,
-                        type TEXT NOT NULL
+                        type TEXT NOT NULL,
+                        route_type_name TEXT,
+                        payload_type_name TEXT,
+                        path_len INTEGER,
+                        bytes_per_hop INTEGER
                     )
                     """
                 )
@@ -257,9 +273,61 @@ class BotIntegration:
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_packet_stream_type ON packet_stream(type)"
                 )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_packet_stream_dims "
+                    "ON packet_stream(timestamp, bytes_per_hop, route_type_name, payload_type_name) "
+                    "WHERE type = 'packet'"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_packet_stream_undimensioned "
+                    "ON packet_stream(type, id) WHERE route_type_name IS NULL"
+                )
                 conn.commit()
         except Exception:
             pass
+
+    def _add_missing_packet_dim_columns(self, conn) -> None:
+        """ALTER in any denormalized dimension column packet_stream is missing."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(packet_stream)")}
+        types = {"path_len": "INTEGER", "bytes_per_hop": "INTEGER"}
+        for column in self.PACKET_DIM_COLUMNS:
+            if column not in existing:
+                conn.execute(
+                    f"ALTER TABLE packet_stream ADD COLUMN {column} {types.get(column, 'TEXT')}"
+                )
+        if self.PACKET_DIM_COLUMNS[0] not in existing:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_packet_stream_dims "
+                "ON packet_stream(timestamp, bytes_per_hop, route_type_name, payload_type_name) "
+                "WHERE type = 'packet'"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_packet_stream_undimensioned "
+                "ON packet_stream(type, id) WHERE route_type_name IS NULL"
+            )
+
+    def _packet_stream_has_dim_columns(self, conn) -> bool:
+        """Probe once per process whether the target DB carries the dimension columns.
+
+        The viewer DB may be a separate file this process never migrates, so the
+        writer cannot assume the wide schema — it falls back to the three-column
+        INSERT rather than failing every flush.
+        """
+        cached = getattr(self, '_packet_dims_supported', None)
+        if cached is not None:
+            return cached
+        try:
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(packet_stream)")}
+            supported = all(c in existing for c in self.PACKET_DIM_COLUMNS)
+        except Exception:
+            supported = False
+        self._packet_dims_supported = supported
+        if not supported:
+            self.bot.logger.info(
+                "packet_stream lacks denormalized dimension columns; "
+                "writing legacy rows (dashboard packet tiles will backfill from JSON)"
+            )
+        return supported
 
     def _start_drain_thread(self) -> None:
         """Start the background thread that flushes the write queue every DRAIN_INTERVAL seconds."""
@@ -276,7 +344,7 @@ class BotIntegration:
             self._drain_stop.wait(timeout=self.DRAIN_INTERVAL)
             self._flush_write_queue()
 
-    def _requeue_rows(self, rows: list[tuple[float, str, str]]) -> None:
+    def _requeue_rows(self, rows: list[tuple]) -> None:
         """Restore rows to the queue after a failed flush (FIFO). Logs if the queue stays full."""
         for i, row in enumerate(rows):
             try:
@@ -296,7 +364,7 @@ class BotIntegration:
         with self._flush_lock:
             if self._write_queue.empty():
                 return
-            rows: list[tuple[float, str, str]] = []
+            rows: list[tuple] = []
             while not self._write_queue.empty():
                 try:
                     rows.append(self._write_queue.get_nowait())
@@ -309,10 +377,18 @@ class BotIntegration:
             for attempt in range(max_retries):
                 try:
                     with closing(sqlite3.connect(str(db_path), timeout=self.sqlite_connect_timeout_sec)) as conn:
-                        conn.executemany(
-                            'INSERT INTO packet_stream (timestamp, data, type) VALUES (?, ?, ?)',
-                            rows,
-                        )
+                        if self._packet_stream_has_dim_columns(conn):
+                            conn.executemany(
+                                'INSERT INTO packet_stream '
+                                '(timestamp, data, type, route_type_name, payload_type_name, '
+                                'path_len, bytes_per_hop) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                rows,
+                            )
+                        else:
+                            conn.executemany(
+                                'INSERT INTO packet_stream (timestamp, data, type) VALUES (?, ?, ?)',
+                                [row[:3] for row in rows],
+                            )
                         conn.commit()
                     return
                 except sqlite3.OperationalError as e:
@@ -331,9 +407,20 @@ class BotIntegration:
                     self._requeue_rows(rows)
                     return
 
-    def _insert_packet_stream_row(self, data_json: str, row_type: str, log_prefix: str = "packet data"):
-        """Queue one row for batched insertion into packet_stream by the drain thread."""
-        item = (time.time(), data_json, row_type)
+    def _insert_packet_stream_row(
+        self,
+        data_json: str,
+        row_type: str,
+        log_prefix: str = "packet data",
+        dims: tuple | None = None,
+    ):
+        """Queue one row for batched insertion into packet_stream by the drain thread.
+
+        ``dims`` carries the denormalized (route_type_name, payload_type_name,
+        path_len, bytes_per_hop) values for packet rows; command/message/other
+        row types pass None and store NULLs.
+        """
+        item = (time.time(), data_json, row_type, *(dims or (None, None, None, None)))
         try:
             self._write_queue.put(item, timeout=self._WRITE_QUEUE_PUT_TIMEOUT_SEC)
         except queue.Full:
@@ -382,10 +469,49 @@ class BotIntegration:
             serializable_data = self._make_json_serializable(packet_data)
 
             # Store in database for web viewer to read (retries on database is locked)
-            self._insert_packet_stream_row(json.dumps(serializable_data), 'packet', "packet data")
+            self._insert_packet_stream_row(
+                json.dumps(serializable_data),
+                'packet',
+                "packet data",
+                dims=self._packet_dims_from_data(serializable_data),
+            )
 
         except Exception as e:
             self.bot.logger.warning(f"Error storing packet data for web viewer: {e}")
+
+    @staticmethod
+    def _packet_dims_from_data(packet_data: dict) -> tuple:
+        """Pull the denormalized dimension values out of an already-parsed packet.
+
+        Returns (route_type_name, payload_type_name, path_len, bytes_per_hop),
+        with None for anything absent or non-coercible — the dashboard reads
+        these as "unknown" rather than mis-bucketing the packet.
+        """
+        def _text(key: str) -> str | None:
+            value = packet_data.get(key)
+            if value is None or isinstance(value, (dict, list)):
+                return None
+            text = str(value).strip()
+            return text[:32] or None
+
+        def _number(key: str) -> int | None:
+            value = packet_data.get(key)
+            if value is None or isinstance(value, bool):
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        return (
+            # Never NULL: route_type_name is the dashboard's "this row has been
+            # dimensioned" marker, and a NULL would put the row back in the
+            # refresher's backfill queue on every tick.
+            _text('route_type_name') or 'UNKNOWN_ROUTE',
+            _text('payload_type_name'),
+            _number('path_len'),
+            _number('bytes_per_hop'),
+        )
 
     def capture_command(self, message, command_name, response, success, command_id=None):
         """Capture command data and store in database for web viewer"""

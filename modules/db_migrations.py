@@ -573,6 +573,98 @@ def _m0017_feed_queue_item_uniqueness(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _m0018_dashboard_rollup_tables(cursor: sqlite3.Cursor) -> None:
+    """Durable dashboard storage: per-day rollups plus a current-state snapshot.
+
+    ``daily_rollup`` holds one row per local date for the metrics whose raw
+    sources are pruned long before the dashboard's 30-day window (message_stats
+    and friends at 7 days, packet_stream at 3).  Signal metrics are stored as
+    sums and counts rather than means so an arbitrary window re-aggregates
+    correctly — averaging daily averages weights a quiet day the same as a busy
+    one.  Every numeric column is nullable on purpose: NULL means "no source
+    data for this day", which the UI must render as a gap, while 0 means "the
+    source was present and the count really was zero".
+
+    ``dashboard_snapshot`` is a single row of JSON.  The current-state half of
+    the dashboard is ~40 heterogeneous scalars and small arrays that are read
+    together and never queried by field, so columnizing it would cost a
+    migration per new tile for no query benefit.
+    """
+    cursor.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS daily_rollup (
+            date                     TEXT PRIMARY KEY,
+            messages_total INTEGER, messages_dm INTEGER, messages_channel INTEGER,
+            unique_senders INTEGER, unique_channels INTEGER,
+            commands_total INTEGER, commands_replied INTEGER, unique_command_users INTEGER,
+            path_obs_total INTEGER, path_len_max INTEGER, path_len_sum INTEGER,
+            snr_sum REAL, snr_count INTEGER, rssi_sum REAL, rssi_count INTEGER,
+            hops_sum INTEGER, hops_count INTEGER,
+            packets_total INTEGER, packets_flood INTEGER, packets_direct INTEGER,
+            packets_multibyte INTEGER,
+            adverts_total INTEGER, nodes_active INTEGER, nodes_new INTEGER,
+            adverts_from_multibyte INTEGER, adverts_from_singlebyte INTEGER,
+            contacts_known INTEGER, contacts_tracked INTEGER,
+            sources_present INTEGER NOT NULL DEFAULT 0,
+            is_backfilled   INTEGER NOT NULL DEFAULT 0,
+            is_final        INTEGER NOT NULL DEFAULT 0,
+            computed_at     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_daily_rollup_computed ON daily_rollup(computed_at);
+
+        CREATE TABLE IF NOT EXISTS dashboard_snapshot (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            generated_at REAL NOT NULL,
+            duration_ms  INTEGER,
+            schema_rev   INTEGER NOT NULL DEFAULT 1,
+            payload      TEXT NOT NULL
+        );
+        """
+    )
+
+
+def _m0019_packet_stream_denorm_dims(cursor: sqlite3.Cursor) -> None:
+    """Denormalize the four packet dimensions the dashboard aggregates on.
+
+    Counting packets by bytes_per_hop or route type via
+    ``json_extract(data, '$.…')`` is a full scan that parses every row's JSON:
+    ~3s for bytes_per_hop and ~6s for route_type_name on a 178k-row table.
+    The writer already holds these values as parsed fields, so storing them as
+    columns removes the parse entirely.
+
+    Deliberately no bulk UPDATE here.  packet_stream rows average ~1KB, so
+    widening 178k of them rewrites ~180MB into the WAL inside MigrationRunner's
+    transaction — a multi-minute stall blocking bot startup on an SD-card Pi.
+    The dashboard refresher backfills a bounded batch per tick instead, and the
+    table's 3-day retention makes the gap self-healing regardless.
+    """
+    if not _table_exists(cursor, "packet_stream"):
+        return
+    _add_column(cursor, "packet_stream", "route_type_name", "TEXT")
+    _add_column(cursor, "packet_stream", "payload_type_name", "TEXT")
+    _add_column(cursor, "packet_stream", "path_len", "INTEGER")
+    _add_column(cursor, "packet_stream", "bytes_per_hop", "INTEGER")
+    cursor.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_packet_stream_dims
+            ON packet_stream(timestamp, bytes_per_hop, route_type_name, payload_type_name)
+            WHERE type = 'packet';
+
+        -- Worklist for the refresher's incremental backfill.  Without it, the
+        -- "any rows left to dimension?" probe is a full table scan that costs
+        -- ~4.6s on a 180MB packet_stream — and it costs that on every tick
+        -- *after* the backlog is empty, because finding nothing still means
+        -- reading everything.  The index shrinks toward empty as rows are
+        -- dimensioned, so the probe converges to a no-op.  It must carry
+        -- ``type`` as well: non-packet rows keep a NULL route type forever and
+        -- would otherwise leave the index permanently non-empty.
+        CREATE INDEX IF NOT EXISTS idx_packet_stream_undimensioned
+            ON packet_stream(type, id)
+            WHERE route_type_name IS NULL;
+        """
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -597,6 +689,8 @@ MIGRATIONS: list[MigrationEntry] = [
     (15, "channel_operations: claimed_at", _m0015_channel_operations_claimed_at),
     (16, "channel_operations: claim owner identity", _m0016_channel_operations_claim_owner),
     (17, "feed_message_queue: unique identifiable items", _m0017_feed_queue_item_uniqueness),
+    (18, "dashboard rollup and snapshot tables", _m0018_dashboard_rollup_tables),
+    (19, "packet_stream: denormalized packet dimensions", _m0019_packet_stream_denorm_dims),
 ]
 
 
