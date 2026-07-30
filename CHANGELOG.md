@@ -112,6 +112,11 @@ semantic versioning.
 - Data retention now runs shortly after startup and then daily. It no longer
   requires 24 hours of uninterrupted uptime before the first cleanup, and its
   timer remains independent from the nightly maintenance email.
+- Retention deletes now commit in configurable chunks and yield between
+  batches, preventing a large first cleanup from monopolizing SQLite's writer
+  lock on SD-card installations.
+- Linux service installers now use 1GB memory and 200% CPU ceilings, providing
+  Raspberry Pi graph and web-viewer workloads with practical headroom.
 
 ### Removed
 

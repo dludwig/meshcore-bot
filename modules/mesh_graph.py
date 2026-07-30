@@ -951,9 +951,12 @@ class MeshGraph:
         if days <= 0:
             return 0
         try:
-            deleted = self.db_manager.execute_update(
-                "DELETE FROM mesh_connections WHERE last_seen < datetime('now', ?)",
-                (f'-{days} days',)
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            deleted = self.db_manager.delete_timestamp_rows_in_chunks(
+                'mesh_connections',
+                'last_seen',
+                cutoff,
+                progress_label='mesh connections',
             )
             if deleted > 0:
                 self.logger.info(f"Cleaned up {deleted} old mesh_connections entries (older than {days} days)")

@@ -138,7 +138,8 @@ ReadWritePaths=/etc/meshcore-bot
 ReadWritePaths=/var/log/meshcore-bot
 ReadWritePaths=/var/lib/meshcore-bot
 LimitNOFILE=65536
-MemoryMax=512M
+MemoryMax=1G
+CPUQuota=200%
 StartLimitInterval=60
 StartLimitBurst=3
 

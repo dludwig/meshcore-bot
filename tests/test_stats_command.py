@@ -872,18 +872,15 @@ class TestCleanupOldStats:
 
     def test_cleanup_exception_handled(self):
         bot = _make_bot()
-
-        @contextmanager
-        def _bad_conn():
-            raise Exception("DB down")
-            yield
-
-        bot.db_manager.connection = _bad_conn
+        bot.db_manager.delete_timestamp_rows_in_chunks = Mock(
+            side_effect=Exception("DB down")
+        )
         cmd = StatsCommand.__new__(StatsCommand)
         cmd.bot = bot
         cmd.logger = bot.logger
         # Should not raise
         cmd.cleanup_old_stats(7)
+        cmd.logger.error.assert_called()
 
 
 # ---------------------------------------------------------------------------

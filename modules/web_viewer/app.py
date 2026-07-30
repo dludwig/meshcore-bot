@@ -49,6 +49,10 @@ from modules.database_restore import (
     DatabaseRestoreError,
     stage_database_restore,
 )
+from modules.db_retention import (
+    delete_timestamp_rows_in_chunks,
+    retention_delete_settings,
+)
 from modules.ini_writer import IniValueError, update_ini_values
 from modules.security_utils import (
     VALID_JOURNAL_MODES,
@@ -1926,28 +1930,16 @@ class BotDataViewer:
             Returns: {"deleted": {<table>: <count>, ...}} — only tables that were purged
             """
             _VALID_KEEP_DAYS = {"all", 1, 7, 14, 30, 60, 90}
-            # (table, sql, params) — tables created lazily by other modules may not exist
+            # (table, timestamp column) — some tables are created lazily.
             _purge_ops = [
-                ('packet_stream',
-                 'DELETE FROM packet_stream WHERE timestamp < ?',
-                 None),
-                ('message_stats',
-                 'DELETE FROM message_stats WHERE timestamp < ?',
-                 None),
-                ('complete_contact_tracking',
-                 'DELETE FROM complete_contact_tracking WHERE last_heard < ?',
-                 None),
-                ('purging_log',
-                 'DELETE FROM purging_log WHERE timestamp < ?',
-                 None),
-                ('mesh_connections',
-                 'DELETE FROM mesh_connections WHERE last_seen < ?',
-                 None),
-                ('daily_stats',
-                 'DELETE FROM daily_stats WHERE date < ?',
-                 None),
+                ('packet_stream', 'timestamp'),
+                ('message_stats', 'timestamp'),
+                ('complete_contact_tracking', 'last_heard'),
+                ('purging_log', 'timestamp'),
+                ('mesh_connections', 'last_seen'),
+                ('daily_stats', 'date'),
             ]
-            _PURGEABLE = {t for t, _, _ in _purge_ops}
+            _PURGEABLE = {table for table, _ in _purge_ops}
             try:
                 data = request.get_json(silent=True) or {}
                 raw = data.get('keep_days', 'all')
@@ -2005,24 +1997,30 @@ class BotDataViewer:
                 }
 
                 if tables_filter is None:
-                    ops_to_run = [(t, sql, _params_for[t]) for t, sql, _ in _purge_ops]
+                    ops_to_run = [
+                        (table, column, _params_for[table][0])
+                        for table, column in _purge_ops
+                    ]
                 else:
                     want = set(tables_filter)
                     ops_to_run = [
-                        (t, sql, _params_for[t])
-                        for t, sql, _ in _purge_ops
-                        if t in want
+                        (table, column, _params_for[table][0])
+                        for table, column in _purge_ops
+                        if table in want
                     ]
 
-                with self.db_manager.connection() as conn:
-                    cur = conn.cursor()
-                    for tbl, sql, params in ops_to_run:
-                        try:
-                            cur.execute(sql, params)
-                            deleted[tbl] = cur.rowcount
-                        except Exception:
-                            deleted[tbl] = 0
-                    conn.commit()
+                for table, column, cutoff in ops_to_run:
+                    try:
+                        deleted[table] = (
+                            self.db_manager.delete_timestamp_rows_in_chunks(
+                                table,
+                                column,
+                                cutoff,
+                                progress_label=f'manual {table.replace("_", " ")} purge',
+                            )
+                        )
+                    except Exception:
+                        deleted[table] = 0
 
                 total = sum(deleted.values())
                 self.logger.info(
@@ -4916,7 +4914,6 @@ class BotDataViewer:
         Uses [Data_Retention] packet_stream_retention_days when days_to_keep is not provided."""
         try:
             import sqlite3
-            import time
 
             if days_to_keep is None:
                 days_to_keep = 3
@@ -4925,38 +4922,22 @@ class BotDataViewer:
                         days_to_keep = self.config.getint('Data_Retention', 'packet_stream_retention_days')
 
             cutoff_time = time.time() - (days_to_keep * 24 * 60 * 60)
-
-            # Use DEFERRED isolation; longer timeout to wait out bot writes
-            with closing(sqlite3.connect(self.db_path, timeout=60, isolation_level='DEFERRED')) as conn:
-                cursor = conn.cursor()
-
-                # Use WAL mode for better concurrent access (if not already set)
-                try:
-                    cursor.execute('PRAGMA journal_mode=WAL')
-                except sqlite3.OperationalError:
-                    pass  # Ignore if database is locked - WAL may already be set
-
-                # Delete in smaller batches to avoid long locks
-                batch_size = 1000
-                total_deleted = 0
-
-                while True:
-                    cursor.execute(
-                        'DELETE FROM packet_stream WHERE id IN '
-                        '(SELECT id FROM packet_stream WHERE timestamp < ? LIMIT ?)',
-                        (cutoff_time, batch_size)
-                    )
-                    deleted_count = cursor.rowcount
-                    conn.commit()
-
-                    if deleted_count == 0:
-                        break
-                    total_deleted += deleted_count
-                    if deleted_count == batch_size:
-                        time.sleep(0.1)
-
-                if total_deleted > 0:
-                    self.logger.info(f"Cleaned up {total_deleted} old packet stream entries (older than {days_to_keep} days)")
+            batch_size, pause_seconds = retention_delete_settings(self.config)
+            total_deleted = delete_timestamp_rows_in_chunks(
+                self._with_db_connection,
+                'packet_stream',
+                'timestamp',
+                cutoff_time,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                logger=self.logger,
+                progress_label='packet stream',
+            )
+            if total_deleted > 0:
+                self.logger.info(
+                    f"Cleaned up {total_deleted} old packet stream entries "
+                    f"(older than {days_to_keep} days)"
+                )
 
         except sqlite3.OperationalError as e:
             self.logger.warning(f"Database busy during cleanup (will retry next cycle): {e}")

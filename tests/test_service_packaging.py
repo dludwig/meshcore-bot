@@ -25,8 +25,16 @@ def test_service_units_do_not_make_code_tree_writable():
     assert "ReadWritePaths=/var/lib/meshcore-bot" in unit
     assert "ReadWritePaths=/etc/meshcore-bot" in unit
     assert "UMask=0077" in unit
+    assert "MemoryMax=1G" in unit
+    assert "CPUQuota=200%" in unit
+    assert "MemoryMax=512M" not in unit
+    assert "CPUQuota=50%" not in unit
 
     deb_builder = (REPO_ROOT / "scripts/build-deb.sh").read_text(encoding="utf-8")
+    assert "MemoryMax=1G" in deb_builder
+    assert "CPUQuota=200%" in deb_builder
+    assert "MemoryMax=512M" not in deb_builder
+    assert "CPUQuota=50%" not in deb_builder
     assert 'chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_ROOT}"' not in deb_builder
     assert "migrate_service_layout.py" in deb_builder
     assert 'chmod 0600 "${BUILD_DIR}${CONF_DIR}/config.ini"' in deb_builder

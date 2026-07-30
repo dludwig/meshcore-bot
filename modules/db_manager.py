@@ -10,11 +10,15 @@ import re
 import sqlite3
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from .db_migrations import MigrationRunner
+from .db_retention import (
+    delete_timestamp_rows_in_chunks,
+    retention_delete_settings,
+)
 from .security_utils import VALID_JOURNAL_MODES
 
 
@@ -44,6 +48,8 @@ class DBManager:
         'bot_metadata',
         'packet_stream',
         'message_stats',
+        'command_stats',
+        'path_stats',
         'greeted_users',
         'repeater_contacts',
         'complete_contact_tracking',  # Repeater manager
@@ -250,22 +256,30 @@ class DBManager:
         expiration timestamp has passed.
         """
         try:
-            with self.connection() as conn:
-                cursor = conn.cursor()
+            cutoff = (
+                datetime.now(timezone.utc)
+                .replace(tzinfo=None)
+                .isoformat(sep=" ", timespec="seconds")
+            )
+            geocoding_deleted = self.delete_timestamp_rows_in_chunks(
+                'geocoding_cache',
+                'expires_at',
+                cutoff,
+                progress_label='geocoding cache',
+            )
+            generic_deleted = self.delete_timestamp_rows_in_chunks(
+                'generic_cache',
+                'expires_at',
+                cutoff,
+                progress_label='generic cache',
+            )
 
-                # Clean up geocoding cache
-                cursor.execute("DELETE FROM geocoding_cache WHERE expires_at < datetime('now')")
-                geocoding_deleted = cursor.rowcount
-
-                # Clean up generic cache
-                cursor.execute("DELETE FROM generic_cache WHERE expires_at < datetime('now')")
-                generic_deleted = cursor.rowcount
-
-                conn.commit()
-
-                total_deleted = geocoding_deleted + generic_deleted
-                if total_deleted > 0:
-                    self.logger.info(f"Cleaned up {total_deleted} expired cache entries ({geocoding_deleted} geocoding, {generic_deleted} generic)")
+            total_deleted = geocoding_deleted + generic_deleted
+            if total_deleted > 0:
+                self.logger.info(
+                    f"Cleaned up {total_deleted} expired cache entries "
+                    f"({geocoding_deleted} geocoding, {generic_deleted} generic)"
+                )
 
         except Exception as e:
             self.logger.error(f"Error cleaning up expired cache: {e}")
@@ -273,13 +287,21 @@ class DBManager:
     def cleanup_geocoding_cache(self) -> None:
         """Remove expired geocoding cache entries"""
         try:
-            with self.connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM geocoding_cache WHERE expires_at < datetime('now')")
-                deleted_count = cursor.rowcount
-                conn.commit()
-                if deleted_count > 0:
-                    self.logger.info(f"Cleaned up {deleted_count} expired geocoding cache entries")
+            cutoff = (
+                datetime.now(timezone.utc)
+                .replace(tzinfo=None)
+                .isoformat(sep=" ", timespec="seconds")
+            )
+            deleted_count = self.delete_timestamp_rows_in_chunks(
+                'geocoding_cache',
+                'expires_at',
+                cutoff,
+                progress_label='geocoding cache',
+            )
+            if deleted_count > 0:
+                self.logger.info(
+                    f"Cleaned up {deleted_count} expired geocoding cache entries"
+                )
         except Exception as e:
             self.logger.error(f"Error cleaning up geocoding cache: {e}")
 
@@ -417,6 +439,35 @@ class DBManager:
         except Exception as e:
             self.logger.error(f"Error executing update: {e}")
             return 0
+
+    def delete_timestamp_rows_in_chunks(
+        self,
+        table: str,
+        timestamp_column: str,
+        cutoff: Any,
+        *,
+        future_cutoff: Any | None = None,
+        progress_label: str | None = None,
+    ) -> int:
+        """Delete retained history without monopolizing SQLite's writer lock."""
+        if table not in self.ALLOWED_TABLES:
+            raise ValueError(
+                f"Table name '{table}' not in allowed tables whitelist"
+            )
+        batch_size, pause_seconds = retention_delete_settings(
+            getattr(self.bot, "config", None)
+        )
+        return delete_timestamp_rows_in_chunks(
+            self.connection,
+            table,
+            timestamp_column,
+            cutoff,
+            batch_size=batch_size,
+            pause_seconds=pause_seconds,
+            future_cutoff=future_cutoff,
+            logger=self.logger,
+            progress_label=progress_label,
+        )
 
     def execute_query_on_connection(self, conn: sqlite3.Connection, query: str, params: tuple = ()) -> list[dict]:
         """Execute a query on an existing connection. Caller owns the connection."""

@@ -346,7 +346,11 @@ class TestCleanupRepeaterRetention:
 
     def test_does_not_raise_when_db_raises(self, rm):
         from unittest.mock import patch as _patch
-        with _patch.object(rm.db_manager, "execute_update", side_effect=Exception("db error")):
+        with _patch.object(
+            rm.db_manager,
+            "delete_timestamp_rows_in_chunks",
+            side_effect=Exception("db error"),
+        ):
             rm.cleanup_repeater_retention()  # Should not raise
         rm.logger.error.assert_called()
 

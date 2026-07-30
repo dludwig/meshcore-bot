@@ -3248,9 +3248,11 @@ class RepeaterManager:
 
             cutoff_date = datetime.now() - timedelta(days=days_to_keep_logs)
 
-            deleted_count = self.db_manager.execute_update(
-                'DELETE FROM purging_log WHERE timestamp < ?',
-                (cutoff_date.isoformat(),)
+            deleted_count = self.db_manager.delete_timestamp_rows_in_chunks(
+                'purging_log',
+                'timestamp',
+                cutoff_date.isoformat(),
+                progress_label='purging log',
             )
 
             if deleted_count > 0:
@@ -3271,17 +3273,21 @@ class RepeaterManager:
 
             # daily_stats and unique_advert_packets use date column
             cutoff_date = (datetime.now() - timedelta(days=daily_stats_days)).date().isoformat()
-            n = self.db_manager.execute_update(
-                'DELETE FROM daily_stats WHERE date < ?',
-                (cutoff_date,)
+            n = self.db_manager.delete_timestamp_rows_in_chunks(
+                'daily_stats',
+                'date',
+                cutoff_date,
+                progress_label='daily stats',
             )
             if n > 0:
                 self.logger.info(f"Cleaned up {n} old daily_stats entries (older than {daily_stats_days} days)")
             total_deleted += n
 
-            n = self.db_manager.execute_update(
-                'DELETE FROM unique_advert_packets WHERE date < ?',
-                (cutoff_date,)
+            n = self.db_manager.delete_timestamp_rows_in_chunks(
+                'unique_advert_packets',
+                'date',
+                cutoff_date,
+                progress_label='unique advert packets',
             )
             if n > 0:
                 self.logger.info(f"Cleaned up {n} old unique_advert_packets entries (older than {daily_stats_days} days)")
@@ -3289,9 +3295,11 @@ class RepeaterManager:
 
             # observed_paths uses last_seen (timestamp)
             cutoff_ts = (datetime.now() - timedelta(days=observed_paths_days)).isoformat()
-            n = self.db_manager.execute_update(
-                'DELETE FROM observed_paths WHERE last_seen < ?',
-                (cutoff_ts,)
+            n = self.db_manager.delete_timestamp_rows_in_chunks(
+                'observed_paths',
+                'last_seen',
+                cutoff_ts,
+                progress_label='observed paths',
             )
             if n > 0:
                 self.logger.info(f"Cleaned up {n} old observed_paths entries (older than {observed_paths_days} days)")

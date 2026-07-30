@@ -197,7 +197,7 @@ sudo systemctl restart meshcore-bot
 - No shell access for service user
 - Executable code and the virtual environment are root-owned
 - Only configuration, state, and log directories are service-writable
-- Resource limits (512MB RAM, 50% CPU)
+- Resource limits (1GB RAM, up to two CPU cores)
 
 ### Reliability
 - Automatic restart on failure
@@ -238,9 +238,14 @@ environment from the current requirements.
 
 ### High Resource Usage
 The service has built-in limits:
-- Memory: 512MB maximum
-- CPU: 50% maximum
+- Memory: 1GB maximum
+- CPU: 200% maximum (up to two fully utilized CPU cores)
 - File descriptors: 65536 maximum
+
+These are ceilings, not reservations. The 1GB/200% baseline gives the bot and
+its web-viewer child process enough headroom for graph loading and bounded
+SQLite maintenance on Raspberry Pi 4-class systems without allowing them to
+consume the whole host.
 
 ## Uninstallation
 

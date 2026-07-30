@@ -239,6 +239,63 @@ These settings control how graph edges are stored in the database.
 - Set to `false` on devices that don't use the path command
 - Default: `true`
 
+## Raspberry Pi / Low-Power Profile
+
+For a Raspberry Pi 4 using an SD card, start with:
+
+```ini
+[Path_Command]
+graph_based_validation = true
+graph_capture_enabled = true
+min_edge_observations = 5
+graph_edge_expiration_days = 7
+graph_startup_load_days = 7
+graph_write_strategy = batched
+graph_batch_interval_seconds = 60
+graph_batch_max_pending = 250
+graph_use_bidirectional = true
+graph_use_hop_position = true
+graph_multi_hop_enabled = true
+graph_multi_hop_max_hops = 2
+graph_prefer_stored_keys = true
+
+[Data_Retention]
+packet_stream_retention_days = 3
+observed_paths_retention_days = 30
+mesh_connections_retention_days = 7
+daily_stats_retention_days = 90
+purging_log_retention_days = 90
+retention_delete_batch_size = 1000
+retention_delete_pause_seconds = 0.1
+```
+
+`batched` persistence groups dirty edges into one transaction, reducing WAL
+and SD-card transaction churn. A 60-second interval can lose at most roughly
+one minute of not-yet-flushed graph updates after abrupt power loss. Use
+`hybrid` if immediate persistence of newly discovered edges matters more than
+write volume.
+
+`observed_paths_retention_days` is the main bound on multi-byte graph
+derivation work because lifetime edge identity and counts are derived from all
+retained path evidence before the selected browser timeframe is applied.
+Thirty days is a practical Pi baseline; use 14 days for very busy meshes or 90
+days when historical fidelity matters more than database size and query cost.
+
+Retention deletes are committed in chunks and pause briefly between batches.
+This prevents a large first cleanup from holding SQLite's only writer lock for
+minutes. Reduce `retention_delete_batch_size` or increase
+`retention_delete_pause_seconds` if maintenance still causes visible I/O-wait
+spikes; doing so lengthens the cleanup.
+
+For the web graph, use **Multi-byte Only**, a **72-hour edge window**, a
+**7-day node window**, and a minimum observation threshold around **5**. These
+settings reduce response and rendering work; retained-history length controls
+the underlying multi-byte aggregation cost.
+
+The installed systemd service allows up to 1GB of memory and 200% CPU (two
+cores). These are upper limits rather than reserved resources. A USB SSD is
+still the most effective way to reduce SD-card wear on high-volume nodes.
+
 ## Preset Configurations
 
 ### `balanced` (Default)

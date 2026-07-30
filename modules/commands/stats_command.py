@@ -809,27 +809,26 @@ class StatsCommand(BaseCommand):
             cutoff_time = now - (days_to_keep * 24 * 60 * 60)
             future_cutoff = now + self.FUTURE_TIMESTAMP_GRACE_SECONDS
 
-            with self.bot.db_manager.connection() as conn:
-                cursor = conn.cursor()
-
-                deleted = {}
-                for table in ('message_stats', 'command_stats', 'path_stats'):
-                    cursor.execute(
-                        f'DELETE FROM {table} WHERE timestamp < ? OR timestamp > ?',  # noqa: S608 - fixed table names
-                        (cutoff_time, future_cutoff),
+            deleted = {}
+            for table in ('message_stats', 'command_stats', 'path_stats'):
+                deleted[table] = (
+                    self.bot.db_manager.delete_timestamp_rows_in_chunks(
+                        table,
+                        'timestamp',
+                        cutoff_time,
+                        future_cutoff=future_cutoff,
+                        progress_label=table.replace('_', ' '),
                     )
-                    deleted[table] = cursor.rowcount
+                )
 
-                conn.commit()
-
-                total_deleted = sum(deleted.values())
-                if total_deleted > 0:
-                    self.logger.info(
-                        f"Cleaned up {total_deleted} old stats entries "
-                        f"({deleted['message_stats']} messages, "
-                        f"{deleted['command_stats']} commands, "
-                        f"{deleted['path_stats']} paths)"
-                    )
+            total_deleted = sum(deleted.values())
+            if total_deleted > 0:
+                self.logger.info(
+                    f"Cleaned up {total_deleted} old stats entries "
+                    f"({deleted['message_stats']} messages, "
+                    f"{deleted['command_stats']} commands, "
+                    f"{deleted['path_stats']} paths)"
+                )
 
         except Exception as e:
             self.logger.error(f"Error cleaning up old stats: {e}")

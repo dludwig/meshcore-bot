@@ -12,10 +12,14 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import closing, suppress
+from contextlib import closing, contextmanager, suppress
 from pathlib import Path
 from typing import Optional
 
+from ..db_retention import (
+    delete_timestamp_rows_in_chunks,
+    retention_delete_settings,
+)
 from ..utils import resolve_path
 
 
@@ -599,7 +603,6 @@ class BotIntegration:
         Uses [Data_Retention] packet_stream_retention_days when days_to_keep is not provided."""
         try:
             import sqlite3
-            import time
 
             if days_to_keep is None:
                 days_to_keep = 3
@@ -610,14 +613,31 @@ class BotIntegration:
             cutoff_time = time.time() - (days_to_keep * 24 * 60 * 60)
 
             db_path = self._get_web_viewer_db_path()
-            with closing(sqlite3.connect(str(db_path), timeout=self.sqlite_connect_timeout_sec)) as conn:
-                cursor = conn.cursor()
+            batch_size, pause_seconds = retention_delete_settings(self.bot.config)
 
-                # Clean up old packet stream data
-                cursor.execute('DELETE FROM packet_stream WHERE timestamp < ?', (cutoff_time,))
-                deleted_count = cursor.rowcount
+            @contextmanager
+            def cleanup_connection():
+                with closing(
+                    sqlite3.connect(
+                        str(db_path),
+                        timeout=self.sqlite_connect_timeout_sec,
+                    )
+                ) as conn:
+                    conn.execute(
+                        f"PRAGMA busy_timeout={int(self.sqlite_connect_timeout_sec * 1000)}"
+                    )
+                    yield conn
 
-                conn.commit()
+            deleted_count = delete_timestamp_rows_in_chunks(
+                cleanup_connection,
+                'packet_stream',
+                'timestamp',
+                cutoff_time,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                logger=self.bot.logger,
+                progress_label='packet stream',
+            )
 
             if deleted_count > 0:
                 self.bot.logger.info(f"Cleaned up {deleted_count} old packet stream entries (older than {days_to_keep} days)")

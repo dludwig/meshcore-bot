@@ -937,6 +937,13 @@ anonymize_users = false
 # The scheduler runs cleanup daily so retention is enforced even when the
 # standalone web viewer is not running. Shorter retention reduces DB size.
 #
+# Old rows are deleted in committed chunks so live packet/contact/graph writers
+# can run between batches. These defaults suit Raspberry Pi and SD-card installs.
+# Smaller batches/longer pauses reduce I/O bursts but take longer to drain a
+# large first-run backlog.
+retention_delete_batch_size = 1000
+retention_delete_pause_seconds = 0.1
+#
 # Packet stream (web viewer real-time display and transmission_tracker)
 # 2-3 days is enough for most deployments; 7 days if you need longer history.
 packet_stream_retention_days = 3
@@ -1156,6 +1163,7 @@ graph_path_validation_obs_divisor = 50.0
 #   14 - Good balance of coverage vs. memory (default for unconfigured installs)
 #   7  - Reduced memory footprint for Raspberry Pi Zero 2 W
 # Note: edges older than graph_edge_expiration_days are never loaded regardless of this value.
+# Raspberry Pi 4 / SD-card profile: use 7 to make that effective bound explicit.
 graph_startup_load_days = 0
 
 # Enable graph data capture from incoming packets (default: true)
