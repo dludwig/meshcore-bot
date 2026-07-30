@@ -99,6 +99,12 @@ MIX_ROWS = 8
 # at the far end; one such node exists in the live history.
 MAX_PLOTTED_HOPS = 64
 
+# Flood hop buckets carrying less than this share of the series are not drawn.
+# The tail decays for ~20 hops in bars under a pixel tall, which reads as noise;
+# the amount withheld is reported alongside the chart rather than dropped
+# quietly.
+FLOOD_MIN_SHARE_PCT = 0.1
+
 # Metrics that are already a ratio: a period "total" has to be the mean of the
 # daily values, not their sum — adding percentages together means nothing.
 RATIO_METRICS = frozenset({"multibyte_share"})
@@ -856,17 +862,52 @@ class DashboardStatsService:
                 )
             )
 
+        totals = {key: sum(count for _, count in series) for key, series in distribution.items()}
+
+        # The flood tail is a long thin decay — on the live mesh it runs to 63
+        # hops in bars under a pixel tall. Hide the buckets carrying less than
+        # FLOOD_MIN_SHARE_PCT of the series, but count what was hidden: an
+        # unannounced cut is the same lie as a truncated category list.
+        flood_total = totals["flood_packets"]
+        hidden_packets = 0
+        hidden_buckets = 0
+        if flood_total:
+            kept = []
+            for hop, count in distribution["flood_packets"]:
+                if count and (count / flood_total) * 100 < FLOOD_MIN_SHARE_PCT:
+                    hidden_packets += count
+                    hidden_buckets += 1
+                    kept.append([hop, None])
+                else:
+                    kept.append([hop, count])
+            distribution["flood_packets"] = kept
+
         # Pad both onto one contiguous axis so the bars line up, bounded by the
-        # hops that actually carry something: an axis that runs on past the last
-        # observation spends its width on nothing.
+        # hops that actually show something: an axis that runs on past the last
+        # drawn bar spends its width on nothing.
         populated = [
-            hop for series in distribution.values() for hop, count in series if count
+            hop
+            for series in distribution.values()
+            for hop, count in series
+            if count
         ]
         if populated:
             low, high = min(populated), max(populated)
             for key, series in distribution.items():
                 counts = dict(series)
-                distribution[key] = [[hop, counts.get(hop, 0)] for hop in range(low, high + 1)]
+                # Gaps pad with 0 ("no packets at this hop"), which is a
+                # different claim from the None used above for "withheld".
+                distribution[key] = [
+                    [hop, counts.get(hop, 0)] for hop in range(low, high + 1)
+                ]
+
+        distribution["totals"] = totals
+        distribution["flood_hidden"] = {
+            "packets": hidden_packets,
+            "buckets": hidden_buckets,
+            "share_pct": round(hidden_packets / flood_total * 100, 2) if flood_total else 0,
+            "threshold_pct": FLOOD_MIN_SHARE_PCT,
+        }
         return distribution
 
     @staticmethod

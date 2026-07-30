@@ -522,15 +522,25 @@
                 this.charts[canvasId].destroy();
                 delete this.charts[canvasId];
             }
+            const withheld = (hops || {}).flood_hidden || {};
+            setText('hops-hidden-note', withheld.packets
+                ? formatNumber(withheld.packets) + ' further flood packets (' +
+                  withheld.share_pct + '%) sit in ' + withheld.buckets +
+                  ' hop buckets below ' + withheld.threshold_pct + '% each, and are not drawn.'
+                : '');
+
             if (nodes.length === 0 && flood.length === 0) return;
 
             const labels = (nodes.length ? nodes : flood).map((b) => b[0]);
-            const share = (series) => {
-                const total = series.reduce((sum, b) => sum + b[1], 0);
-                return { total, values: series.map((b) => (total ? (b[1] / total) * 100 : 0)) };
-            };
-            const nodeShare = share(nodes);
-            const floodShare = share(flood);
+            const totals = (hops || {}).totals || {};
+            // Percentages are shares of the whole series, not of the bars that
+            // survived the display threshold — otherwise hiding the tail would
+            // silently inflate every remaining bar.
+            const share = (series, total) => series.map(
+                (b) => (b[1] === null || !total ? null : (b[1] / total) * 100)
+            );
+            const nodeShare = share(nodes, totals.nodes);
+            const floodShare = share(flood, totals.flood_packets);
 
             // A path can be 64 hops at one byte per hop, so the axis may carry
             // 64 grouped categories. Rounded corners and default bar padding
@@ -540,7 +550,7 @@
             if (nodes.length) {
                 datasets.push({
                     label: 'Nodes (adverts, 7d)',
-                    data: nodeShare.values,
+                    data: nodeShare,
                     counts: nodes.map((b) => b[1]),
                     unit: 'nodes',
                     backgroundColor: COLOR.accent,
@@ -552,7 +562,7 @@
             if (flood.length) {
                 datasets.push({
                     label: 'Flood packets (' + (packetWindowLabel || 'retained') + ')',
-                    data: floodShare.values,
+                    data: floodShare,
                     counts: flood.map((b) => b[1]),
                     unit: 'packets',
                     backgroundColor: COLOR.flood,
@@ -578,8 +588,9 @@
                                 title: (items) => items[0].label + ' hops away',
                                 label: (ctx) => {
                                     const count = ctx.dataset.counts[ctx.dataIndex];
+                                    if (count === null || count === undefined) return null;
                                     return ctx.dataset.label + ': ' + formatNumber(count) + ' ' +
-                                        ctx.dataset.unit + ' (' + ctx.parsed.y.toFixed(1) + '%)';
+                                        ctx.dataset.unit + ' (' + ctx.parsed.y.toFixed(2) + '%)';
                                 },
                             },
                         },
@@ -1072,8 +1083,11 @@
             'had already travelled when it arrived, over whatever the packet stream retains ' +
             '(typically 3 days). Because one counts nodes and the other counts packets, both ' +
             'are drawn as a share of their own total; the tooltip gives the raw counts. ' +
-            'Flood packets carry no sender identity, so they cannot be reduced to a shortest ' +
-            'path per node the way adverts can.',
+            'Hop buckets holding under 0.1% of the flood series are omitted — that tail ' +
+            'decays for around twenty hops in bars under a pixel tall — and the amount left ' +
+            'out is stated beneath the chart. Percentages stay shares of the full series, ' +
+            'not of the drawn subset. Flood packets carry no sender identity, so they cannot ' +
+            'be reduced to a shortest path per node the way adverts can.',
     };
 
     function initTooltips() {

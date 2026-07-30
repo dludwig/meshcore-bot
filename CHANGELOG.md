@@ -55,8 +55,15 @@ semantic versioning.
   earlier raw path-length chart, which read bytes as hops, and the chart built
   on the untrustworthy stored hop count.
 
-  The chart plots the full protocol range: a 64-byte path is 64 hops at one
-  byte per hop. The old dashboard's `BETWEEN 0 AND 32` filters, carried forward
+  Hop buckets holding under 0.1% of the flood series are not drawn — the tail
+  decays for around twenty hops in bars under a pixel tall — and the amount
+  withheld is stated beneath the chart (1,467 packets, 0.9%, on the live mesh,
+  taking the axis from 64 buckets to 44). Percentages remain shares of the full
+  series rather than of the drawn subset, so hiding the tail cannot inflate the
+  bars that remain. The node series is never thresholded.
+
+  The chart still computes the full protocol range: a 64-byte path is 64 hops
+  at one byte per hop. The old dashboard's `BETWEEN 0 AND 32` filters, carried forward
   at first, discarded 5,654 flood packets arriving from as far as 63 hops, and
   because that limit applies after the per-node minimum it would erase a node
   whose closest path was longer than 32 hops rather than plotting it at the far

@@ -824,6 +824,56 @@ class TestHopConventions:
             )
         assert dict(self._hops(viewer)["nodes"]) == {48: 1}
 
+    def test_negligible_flood_buckets_are_withheld_and_counted(self, viewer):
+        """The long thin tail is hidden, but never silently."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', ?, 1)",
+                # 2000 at hop 3, then single packets far out: each is 0.05% of
+                # 2002, comfortably under the 0.1% display threshold.
+                [(time.time(), 3) for _ in range(2000)] + [(time.time(), 40), (time.time(), 55)],
+            )
+        hops = self._hops(viewer)
+        drawn = dict(hops["flood_packets"])
+
+        assert drawn[3] == 2000
+        assert 40 not in drawn and 55 not in drawn, "withheld buckets fall outside the axis"
+        assert hops["flood_hidden"] == {
+            "packets": 2,
+            "buckets": 2,
+            "share_pct": 0.1,
+            "threshold_pct": 0.1,
+        }
+        # Percentages must divide by the whole series, not the drawn subset.
+        assert hops["totals"]["flood_packets"] == 2002
+
+    def test_withheld_bucket_inside_the_axis_is_null_not_zero(self, viewer):
+        """Null says "not shown"; zero would claim no packets travelled that far."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', ?, 1)",
+                [(time.time(), 2) for _ in range(1000)]
+                + [(time.time(), 5)]                       # 0.09% — withheld
+                + [(time.time(), 9) for _ in range(100)],  # keeps the axis open past it
+            )
+        drawn = dict(self._hops(viewer)["flood_packets"])
+        assert drawn[5] is None, "a withheld bucket inside the range must be null"
+        assert drawn[6] == 0, "a genuinely empty bucket stays zero"
+
+    def test_a_single_bucket_is_never_withheld(self, viewer):
+        """One bucket holding everything is 100%, not below threshold."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.execute(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', 7, 1)",
+                (time.time(),),
+            )
+        hops = self._hops(viewer)
+        assert dict(hops["flood_packets"]) == {7: 1}
+        assert hops["flood_hidden"]["packets"] == 0
+
     def test_axis_stops_at_the_last_populated_hop(self, viewer):
         """An axis running past the last observation spends its width on nothing."""
         with sqlite3.connect(viewer.db_path) as conn:

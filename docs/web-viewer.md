@@ -168,6 +168,12 @@ packets, so each is drawn as a share of its own total. Flood packets carry no
 sender identity, which is why they cannot be reduced to a shortest path per
 node the way adverts can.
 
+Flood hop buckets holding under 0.1% of the series are omitted, because that
+tail decays over roughly twenty hops in bars thinner than a pixel. The number of
+packets withheld is printed beneath the chart, and percentages stay shares of
+the full series so that hiding the tail cannot inflate the remaining bars. The
+node series is shown in full.
+
 **Neighbour signal is reported only where two sources agree.**
 `complete_contact_tracking.hop_count` is not a reliable direct-neighbour marker:
 on a representative database it claims 800 zero-hop contacts while only 68 have
