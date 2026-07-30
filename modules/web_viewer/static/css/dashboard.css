@@ -175,23 +175,6 @@
     color: #ea868f;
 }
 
-/* ── Mini bar (tracked vs known) ───────────────────────────────────────── */
-
-.mini-bar {
-    height: 6px;
-    width: 100%;
-    margin-top: 0.4rem;
-    border-radius: 3px;
-    background-color: var(--bg-tertiary);
-    overflow: hidden;
-}
-
-.mini-bar__fill {
-    height: 100%;
-    background-color: #0d6efd;
-    border-radius: 3px;
-}
-
 /* ── Stacked route-mix bar ─────────────────────────────────────────────── */
 
 .stacked-bar {
@@ -266,6 +249,53 @@
 .mix-row__count {
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
+}
+
+/* ── Direct-neighbour signal rows ──────────────────────────────────────── */
+
+.neighbor-row {
+    display: grid;
+    grid-template-columns: minmax(6rem, 11rem) 1fr auto;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.2rem 0;
+    font-size: 0.82rem;
+}
+
+.neighbor-row + .neighbor-row {
+    border-top: 1px solid var(--border-color);
+}
+
+.neighbor-row__name {
+    color: var(--text-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Fixed -12..+14 dB scale, so a bar means the same thing on every refresh. */
+.neighbor-row__track {
+    height: 10px;
+    min-width: 3rem;
+    border-radius: 5px;
+    background-color: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.neighbor-row__fill {
+    height: 100%;
+    border-radius: 5px;
+}
+
+.neighbor-row__values {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.neighbor-row__snr {
+    color: var(--text-color);
+    font-weight: 600;
 }
 
 /* ── Signal percentile readout ─────────────────────────────────────────── */

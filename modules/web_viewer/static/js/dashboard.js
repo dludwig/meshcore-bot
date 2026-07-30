@@ -350,16 +350,8 @@
             this.tile('new-nodes', mesh.new_nodes_24h, deltas.new_nodes, series.new_nodes);
             setText('new-nodes-7d', formatNumber(mesh.new_nodes_7d) + ' in 7d');
             setText('gone-quiet', formatNumber(mesh.gone_quiet_7d));
-            setText('contacts-tracked', formatNumber(mesh.contacts_tracked));
-            setText('contacts-known', 'of ' + formatNumber(mesh.contacts_known));
-            const trackedBar = el('contacts-bar-fill');
-            if (trackedBar) {
-                const ratio = mesh.contacts_known
-                    ? Math.min(100, (mesh.contacts_tracked / mesh.contacts_known) * 100)
-                    : 0;
-                trackedBar.style.width = ratio.toFixed(1) + '%';
-            }
             setText('coverage-countries', formatNumber(mesh.countries));
+            setText('coverage-known', formatNumber(mesh.contacts_known));
             setText('coverage-states', formatNumber(mesh.states));
             setText('coverage-cities', formatNumber(mesh.cities));
 
@@ -375,7 +367,7 @@
             this.renderRouteMix(mesh.route_mix, coverage.packets_window_label);
             this.renderHistogram('hopHistogramChart', mesh.hop_histogram, 'Contacts', COLOR.accent);
             this.renderHistogram('pathLenHistogramChart', mesh.path_len_histogram, 'Advert paths', COLOR.flood);
-            this.renderSignal(mesh.snr, mesh.rssi);
+            this.renderNeighbors(mesh.neighbors);
             this.renderDoughnut('contactsEncodingChart', 'contacts-encoding-summary',
                 (mesh.encoding || {}).contacts_7d, 'contacts');
             this.renderDoughnut('packetsEncodingChart', 'packets-encoding-summary',
@@ -383,7 +375,6 @@
             setText('packets-window-label', coverage.packets_window_label || 'no data');
             this.renderMultibyteTrend(series.multibyte_share);
             this.renderMix('role-mix', mesh.role_mix);
-            this.renderMix('device-mix', mesh.device_mix);
 
             this.renderSourceNotes(coverage);
         }
@@ -552,15 +543,92 @@
             });
         }
 
-        renderSignal(snr, rssi) {
-            const stats = snr || {};
-            setText('snr-p10', formatSigned(stats.p10));
-            setText('snr-p50', formatSigned(stats.p50));
-            setText('snr-p90', formatSigned(stats.p90));
-            setText('rssi-p50', formatSigned((rssi || {}).p50));
-            const n = stats.n;
-            setText('signal-sample',
-                n ? formatNumber(n) + ' messages, last 7d' : 'No signal samples in the last 7 days.');
+        /**
+         * Direct (zero-hop) neighbours: the distribution plus the weakest links.
+         * Only these have a meaningful SNR — a relayed packet's SNR describes
+         * the last hop, not the node that sent it.
+         */
+        renderNeighbors(neighbors) {
+            const data = neighbors || {};
+            const snr = data.snr || {};
+            const count = data.count || 0;
+
+            setText('neighbors-count', formatNumber(count));
+            setText('neighbors-window', 'heard in the last ' + (data.window_days || 7) + 'd');
+            setText('neighbors-snr-min', formatSigned(snr.min));
+            setText('neighbors-snr-p50', formatSigned(snr.p50));
+            setText('neighbors-snr-max', formatSigned(snr.max));
+            setText('neighbors-rssi', formatSigned((data.rssi || {}).p50));
+
+            this.renderNeighborHistogram(data.histogram);
+
+            const list = el('neighbors-weakest');
+            if (!list) return;
+            const weakest = Array.isArray(data.weakest) ? data.weakest : [];
+            if (weakest.length === 0) {
+                list.replaceChildren(
+                    makeTextElement('div', 'No direct neighbours heard recently.', 'dashboard-empty')
+                );
+                return;
+            }
+            list.replaceChildren();
+            weakest.forEach((item) => list.appendChild(neighborRow(item)));
+        }
+
+        renderNeighborHistogram(histogram) {
+            const canvasId = 'neighborSnrChart';
+            const canvas = el(canvasId);
+            if (!canvas || typeof Chart === 'undefined') return;
+            const bins = Array.isArray(histogram) ? histogram : [];
+            const colors = themeColors();
+
+            if (this.charts[canvasId]) {
+                this.charts[canvasId].destroy();
+                delete this.charts[canvasId];
+            }
+            if (bins.length === 0) return;
+
+            this.charts[canvasId] = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: bins.map((b) => b[0]),
+                    datasets: [{
+                        label: 'Neighbours',
+                        data: bins.map((b) => b[1]),
+                        backgroundColor: bins.map((b) => snrColor(b[0])),
+                        borderRadius: 3,
+                    }],
+                },
+                options: noAnimation({
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: (items) => {
+                                    const low = Number(items[0].label);
+                                    return low + ' to ' + (low + 2) + ' dB SNR';
+                                },
+                                label: (ctx) => formatNumber(ctx.parsed.y) + ' neighbours',
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'SNR (dB)', color: colors.muted,
+                                     font: { size: 10 } },
+                            ticks: { color: colors.muted, font: { size: 10 } },
+                            grid: { display: false },
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: colors.muted, font: { size: 10 }, precision: 0 },
+                            grid: { color: colors.grid },
+                        },
+                    },
+                }),
+            });
         }
 
         renderDoughnut(canvasId, summaryId, encoding, noun) {
@@ -801,6 +869,54 @@
 
     // ── leaderboard configuration ────────────────────────────────────────
 
+    /**
+     * Link-quality colour for an SNR value. The boundaries are LoRa-practical
+     * rather than arbitrary: below 0 dB the signal is under the noise floor and
+     * only spreading recovers it, and below about -7 dB even that starts to
+     * fail at the higher spreading factors.
+     */
+    function snrColor(snr) {
+        if (snr === null || snr === undefined) return '#adb5bd';
+        if (snr < -7) return '#dc3545';
+        if (snr < 0) return '#fd7e14';
+        if (snr < 6) return '#ffc107';
+        return '#198754';
+    }
+
+    /** One weakest-link row: name, SNR bar positioned on a fixed scale, values. */
+    function neighborRow(item) {
+        const row = document.createElement('div');
+        row.className = 'neighbor-row';
+
+        const name = makeTextElement('div', item.name, 'neighbor-row__name');
+        name.title = String(item.name ?? '') + ' (' + String(item.role ?? '') + ')';
+
+        // Fixed -12..+14 dB scale so bars are comparable between refreshes
+        // rather than rescaling to whatever the current worst link happens to be.
+        const track = document.createElement('div');
+        track.className = 'neighbor-row__track';
+        const fill = document.createElement('div');
+        fill.className = 'neighbor-row__fill';
+        const ratio = Math.max(0, Math.min(1, ((Number(item.snr) + 12) / 26)));
+        fill.style.width = (ratio * 100).toFixed(1) + '%';
+        fill.style.backgroundColor = snrColor(item.snr);
+        track.appendChild(fill);
+
+        const values = document.createElement('div');
+        values.className = 'neighbor-row__values';
+        values.append(
+            makeTextElement('span', formatSigned(item.snr) + ' dB', 'neighbor-row__snr'),
+            makeTextElement('span',
+                item.rssi === null || item.rssi === undefined
+                    ? ''
+                    : ' / ' + Math.round(item.rssi) + ' dBm',
+                'neighbor-row__rssi')
+        );
+
+        row.append(name, track, values);
+        return row;
+    }
+
     function rankedRow(rank, name, badgeText, badgeClass) {
         const row = document.createElement('div');
         row.className = 'top-list-row';
@@ -1013,10 +1129,13 @@
         'delta-info':
             'Change compares the last complete calendar day against the day before it — ' +
             'not a rolling 24 hours. The headline number above it is a rolling 24-hour count.',
-        'signal-info':
-            'SNR and RSSI percentiles over messages received in the last 7 days, from ' +
-            'message_stats where both are recorded on every row. Contact records carry ' +
-            'signal data for only a small, self-selected minority of nodes.',
+        'neighbors-info':
+            'Nodes heard directly, with no repeater in between, in the last 7 days. ' +
+            'Only these have a meaningful SNR: a relayed packet\'s SNR measures the last ' +
+            'hop into this radio, not the link to whoever sent it, so averaging across all ' +
+            'hop counts describes nothing in particular. Bars use a fixed -12 to +14 dB ' +
+            'scale; below 0 dB the signal is under the noise floor and only the spreading ' +
+            'factor is recovering it.',
     };
 
     function initTooltips() {

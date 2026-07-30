@@ -85,6 +85,11 @@ SERIES_METRICS: dict[str, str] = {
 
 SUMMARY_SERIES_POINTS = 30
 
+# Direct-neighbour signal panel: how many of the weakest links to list, and the
+# width of the SNR histogram buckets in dB.
+WEAKEST_NEIGHBOURS = 8
+SNR_BIN_DB = 2
+
 # Metrics that are already a ratio: a period "total" has to be the mean of the
 # daily values, not their sum — adding percentages together means nothing.
 RATIO_METRICS = frozenset({"multibyte_share"})
@@ -733,7 +738,7 @@ class DashboardStatsService:
                 )
             ]
             mesh["role_mix"] = self._mix(conn, "role")
-            mesh["device_mix"] = self._mix(conn, "device_type")
+            mesh["neighbors"] = self._direct_neighbor_signal(conn)
 
         if sources & SOURCE_OBSERVED_PATHS:
             mesh["path_len_histogram"] = [
@@ -766,9 +771,6 @@ class DashboardStatsService:
                 "total": row[3] or 0,
             }
 
-        if sources & SOURCE_MESSAGE_STATS:
-            mesh["snr"], mesh["rssi"] = self._signal_distribution(conn)
-
         if self.multibyte_contacts_fn is not None:
             try:
                 result = self.multibyte_contacts_fn(conn.cursor())
@@ -784,7 +786,7 @@ class DashboardStatsService:
         return mesh
 
     def _mix(self, conn: sqlite3.Connection, column: str) -> list[list[Any]]:
-        """Contact counts per role/device_type, unmapped ordinals folded into Unknown."""
+        """Contact counts per role, unmapped ordinals folded into Unknown."""
         buckets: dict[str, int] = {}
         for value, count in conn.execute(
             f"SELECT {column}, COUNT(*) FROM complete_contact_tracking GROUP BY {column}"  # noqa: S608 - fixed identifiers
@@ -793,36 +795,74 @@ class DashboardStatsService:
             buckets[key] = buckets.get(key, 0) + (count or 0)
         return [[name, count] for name, count in sorted(buckets.items(), key=lambda kv: -kv[1])]
 
-    def _signal_distribution(self, conn: sqlite3.Connection) -> tuple[dict, dict]:
-        """SNR/RSSI distribution over the last 7 days of received messages.
+    def _direct_neighbor_signal(self, conn: sqlite3.Connection) -> dict[str, Any]:
+        """Per-neighbour signal for nodes heard directly, weakest link first.
 
-        Deliberately sourced from message_stats, where snr is populated on every
-        row, rather than complete_contact_tracking, where it is populated on ~7%
-        — presenting that biased sample as network-wide would be a lie.
+        Scoped to ``hop_count = 0`` because that is the only population where
+        SNR means anything: a relayed packet's SNR describes the last hop into
+        this radio, not the link to the node that originated it.  Averaging
+        those together produces a number that describes nothing in particular.
+
+        This is also why the data is complete rather than sampled —
+        complete_contact_tracking records snr and signal_strength for exactly
+        the zero-hop contacts and leaves them NULL for everything further away.
+
+        Recency-scoped as well: a neighbour last heard two months ago says
+        nothing about the link today.
         """
-        cutoff = time.time() - 7 * 86400
-        snr_values = sorted(
-            float(row[0])
-            for row in conn.execute(
-                "SELECT snr FROM message_stats WHERE snr IS NOT NULL AND timestamp >= ? AND timestamp <= ?",
-                (cutoff, time.time()),
-            )
-        )
+        window_days = 7
+        rows = conn.execute(
+            """
+            SELECT public_key, name, role, snr, signal_strength, hop_count, last_heard
+            FROM complete_contact_tracking
+            WHERE hop_count = 0 AND snr IS NOT NULL
+              AND last_heard > datetime('now', 'localtime', ?)
+            ORDER BY snr ASC
+            """,
+            (f"-{window_days} days",),
+        ).fetchall()
+
+        values = sorted(float(row["snr"]) for row in rows)
         rssi_values = sorted(
-            float(row[0])
-            for row in conn.execute(
-                "SELECT rssi FROM message_stats WHERE rssi IS NOT NULL AND timestamp >= ? AND timestamp <= ?",
-                (cutoff, time.time()),
-            )
+            float(row["signal_strength"]) for row in rows if row["signal_strength"] is not None
         )
-        snr = {
-            "p10": _percentile(snr_values, 0.10),
-            "p50": _percentile(snr_values, 0.50),
-            "p90": _percentile(snr_values, 0.90),
-            "n": len(snr_values),
+        return {
+            "count": len(rows),
+            "window_days": window_days,
+            "snr": {
+                "min": round(values[0], 1) if values else None,
+                "p50": _percentile(values, 0.50),
+                "max": round(values[-1], 1) if values else None,
+            },
+            "rssi": {"p50": _percentile(rssi_values, 0.50)},
+            "histogram": self._snr_histogram(values),
+            "weakest": [
+                {
+                    "name": row["name"] or (row["public_key"] or "")[:12],
+                    "role": normalize_role(row["role"]),
+                    "snr": round(float(row["snr"]), 1),
+                    "rssi": (
+                        round(float(row["signal_strength"]), 0)
+                        if row["signal_strength"] is not None
+                        else None
+                    ),
+                    "last_heard": row["last_heard"],
+                }
+                for row in rows[:WEAKEST_NEIGHBOURS]
+            ],
         }
-        rssi = {"p50": _percentile(rssi_values, 0.50), "n": len(rssi_values)}
-        return snr, rssi
+
+    @staticmethod
+    def _snr_histogram(sorted_values: list[float]) -> list[list[Any]]:
+        """Bin neighbour SNR into fixed dB buckets so the shape is comparable over time."""
+        if not sorted_values:
+            return []
+        bins: dict[int, int] = {}
+        for value in sorted_values:
+            edge = int(math.floor(value / SNR_BIN_DB) * SNR_BIN_DB)
+            bins[edge] = bins.get(edge, 0) + 1
+        low, high = min(bins), max(bins)
+        return [[edge, bins.get(edge, 0)] for edge in range(low, high + SNR_BIN_DB, SNR_BIN_DB)]
 
     def _bot_snapshot(self, conn: sqlite3.Connection, sources: int) -> dict[str, Any]:
         """Rolling 24-hour bot activity (distinct from the calendar-day rollup)."""

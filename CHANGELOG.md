@@ -21,8 +21,15 @@ semantic versioning.
   sends a strong `ETag`, so the page's 30-second poll is normally a bodyless
   `304`, and polling stops entirely while the tab is hidden.
 - New dashboard tiles and charts: routing mix (flood vs direct), hop-count and
-  path-length histograms, an SNR/RSSI distribution, a 30-day multibyte adoption
-  trend, busiest repeaters, and a role/device mix.
+  path-length histograms, a 30-day multibyte adoption trend, busiest repeaters,
+  and a role mix.
+- Direct-neighbour signal panel: the nodes heard with no repeater in between,
+  their SNR distribution, and the weakest links named. Scoped to `hop_count = 0`
+  because that is the only population where SNR means anything — a relayed
+  packet's SNR measures the last hop into this radio, not the link to whoever
+  sent it, so a network-wide average describes nothing in particular.
+  `complete_contact_tracking` records signal for exactly the zero-hop contacts,
+  so this is a complete census of the neighbours rather than a sample.
 - New `[Web_Viewer]` settings: `dashboard_snapshot_enabled`,
   `dashboard_snapshot_interval_seconds`, `dashboard_snapshot_history_days`, and
   `dashboard_packet_backfill_rows`.

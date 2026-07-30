@@ -39,9 +39,9 @@
 <!-- ══ Mesh ══════════════════════════════════════════════════════════════ -->
 <h2 class="dashboard-section-title"><i class="fas fa-project-diagram"></i> Mesh</h2>
 
-<!-- Row 1 — stat tiles -->
+<!-- Row 1 — stat tiles (five, so col-xl auto-splits them evenly) -->
 <div class="row g-3 mb-1">
-    <div class="col-6 col-md-4 col-xl-2">
+    <div class="col-6 col-md-4 col-xl">
         <div class="stat-tile">
             <div class="stat-tile__label">Nodes heard 24h</div>
             <div class="stat-tile__row">
@@ -52,7 +52,7 @@
                 aria-label="Nodes heard per day, last 30 days"></canvas></div>
         </div>
     </div>
-    <div class="col-6 col-md-4 col-xl-2">
+    <div class="col-6 col-md-4 col-xl">
         <div class="stat-tile">
             <div class="stat-tile__label">Adverts 24h</div>
             <div class="stat-tile__row">
@@ -63,7 +63,7 @@
                 aria-label="Adverts per day, last 30 days"></canvas></div>
         </div>
     </div>
-    <div class="col-6 col-md-4 col-xl-2">
+    <div class="col-6 col-md-4 col-xl">
         <div class="stat-tile">
             <div class="stat-tile__label">New nodes 24h</div>
             <div class="stat-tile__row">
@@ -75,7 +75,7 @@
                 aria-label="New nodes per day, last 30 days"></canvas></div>
         </div>
     </div>
-    <div class="col-6 col-md-4 col-xl-2">
+    <div class="col-6 col-md-4 col-xl">
         <div class="stat-tile">
             <div class="stat-tile__label">Gone quiet 7d</div>
             <div class="stat-tile__row">
@@ -84,17 +84,7 @@
             <div class="stat-tile__sub">Heard last week, silent this week</div>
         </div>
     </div>
-    <div class="col-6 col-md-4 col-xl-2">
-        <div class="stat-tile">
-            <div class="stat-tile__label">Tracked contacts</div>
-            <div class="stat-tile__row">
-                <span class="stat-tile__value" id="contacts-tracked">—</span>
-                <span class="stat-tile__sub" id="contacts-known">—</span>
-            </div>
-            <div class="mini-bar"><div class="mini-bar__fill" id="contacts-bar-fill" style="width:0%"></div></div>
-        </div>
-    </div>
-    <div class="col-6 col-md-4 col-xl-2">
+    <div class="col-6 col-md-4 col-xl">
         <div class="stat-tile">
             <div class="stat-tile__label">Coverage</div>
             <div class="stat-tile__row">
@@ -105,6 +95,7 @@
                 <span id="coverage-states">—</span> states ·
                 <span id="coverage-cities">—</span> cities
             </div>
+            <div class="stat-tile__sub"><span id="coverage-known">—</span> contacts known</div>
         </div>
     </div>
 </div>
@@ -151,33 +142,9 @@
     </div>
     <div class="col-12 col-lg-3">
         <div class="card h-100">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="fas fa-signal"></i> Signal</span>
-                <button type="button" class="dashboard-info-btn" id="signal-info"
-                        aria-label="Where signal figures come from"
-                        data-bs-toggle="tooltip" data-bs-placement="top">
-                    <i class="fas fa-info-circle" aria-hidden="true"></i>
-                </button>
-            </div>
+            <div class="card-header"><i class="fas fa-microchip"></i> Roles</div>
             <div class="card-body">
-                <p class="dashboard-note mb-2">SNR (dB)</p>
-                <div class="signal-grid mb-3">
-                    <div>
-                        <div class="signal-grid__value" id="snr-p10">—</div>
-                        <div class="signal-grid__label">p10</div>
-                    </div>
-                    <div>
-                        <div class="signal-grid__value" id="snr-p50">—</div>
-                        <div class="signal-grid__label">median</div>
-                    </div>
-                    <div>
-                        <div class="signal-grid__value" id="snr-p90">—</div>
-                        <div class="signal-grid__label">p90</div>
-                    </div>
-                </div>
-                <p class="dashboard-note mb-1">RSSI median (dBm)</p>
-                <div class="signal-grid__value" id="rssi-p50">—</div>
-                <p class="dashboard-note mt-3 mb-0" id="signal-sample">—</p>
+                <div id="role-mix"><div class="dashboard-empty">Loading…</div></div>
             </div>
         </div>
     </div>
@@ -260,12 +227,42 @@
     </div>
     <div class="col-12 col-lg-6">
         <div class="card h-100">
-            <div class="card-header"><i class="fas fa-microchip"></i> Role &amp; device mix</div>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-signal"></i> Direct neighbours &amp; signal</span>
+                <button type="button" class="dashboard-info-btn" id="neighbors-info"
+                        aria-label="What counts as a direct neighbour"
+                        data-bs-toggle="tooltip" data-bs-placement="top">
+                    <i class="fas fa-info-circle" aria-hidden="true"></i>
+                </button>
+            </div>
             <div class="card-body">
-                <p class="dashboard-note mb-2">Roles</p>
-                <div id="role-mix" class="mb-3"><div class="dashboard-empty">Loading…</div></div>
-                <p class="dashboard-note mb-2">Device types</p>
-                <div id="device-mix"><div class="dashboard-empty">Loading…</div></div>
+                <div class="d-flex align-items-baseline gap-2 flex-wrap mb-2">
+                    <span class="stat-tile__value" id="neighbors-count">—</span>
+                    <span class="dashboard-note">nodes heard with no repeater in between,
+                        <span id="neighbors-window">—</span></span>
+                </div>
+                <div class="signal-grid mb-3">
+                    <div>
+                        <div class="signal-grid__value" id="neighbors-snr-min">—</div>
+                        <div class="signal-grid__label">worst SNR</div>
+                    </div>
+                    <div>
+                        <div class="signal-grid__value" id="neighbors-snr-p50">—</div>
+                        <div class="signal-grid__label">median SNR</div>
+                    </div>
+                    <div>
+                        <div class="signal-grid__value" id="neighbors-snr-max">—</div>
+                        <div class="signal-grid__label">best SNR</div>
+                    </div>
+                </div>
+                <div class="chart-box" style="height:130px">
+                    <canvas id="neighborSnrChart"
+                        aria-label="Direct neighbours by signal-to-noise ratio"></canvas>
+                </div>
+                <p class="dashboard-note mt-3 mb-2">
+                    Weakest links (median RSSI <span id="neighbors-rssi">—</span> dBm)
+                </p>
+                <div id="neighbors-weakest"><div class="dashboard-empty">Loading…</div></div>
             </div>
         </div>
     </div>

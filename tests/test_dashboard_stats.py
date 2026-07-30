@@ -587,6 +587,86 @@ class TestDerivedWindows:
         assert windows["windows"]["users"][-1]["label"] == f"All retained ({retention}d)"
 
 
+class TestDirectNeighbourSignal:
+    """SNR is only meaningful for nodes heard with no repeater in between."""
+
+    def _seed_neighbours(self, viewer, rows):
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO complete_contact_tracking
+                    (public_key, name, role, hop_count, snr, signal_strength, last_heard)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime', ?))
+                """,
+                rows,
+            )
+
+    def _signal(self, viewer):
+        with closing(viewer._dashboard_connection()) as conn:
+            return viewer.dashboard_stats._direct_neighbor_signal(conn)
+
+    def test_relayed_contacts_are_excluded(self, viewer):
+        """A relayed packet's SNR describes the last hop, not the sender."""
+        self._seed_neighbours(viewer, [
+            (_pk(1), "direct", "repeater", 0, 5.0, -70.0, "-1 hours"),
+            (_pk(2), "one-hop", "repeater", 1, -9.0, -110.0, "-1 hours"),
+            (_pk(3), "far", "companion", 5, 12.0, -50.0, "-1 hours"),
+        ])
+        signal = self._signal(viewer)
+        assert signal["count"] == 1
+        assert [n["name"] for n in signal["weakest"]] == ["direct"]
+        assert signal["snr"]["p50"] == 5.0
+
+    def test_weakest_links_come_first(self, viewer):
+        self._seed_neighbours(viewer, [
+            (_pk(i), f"n{i}", "repeater", 0, snr, -60.0 - i, "-2 hours")
+            for i, snr in enumerate([8.0, -9.5, 2.0, -3.0, 13.0])
+        ])
+        signal = self._signal(viewer)
+        assert [n["snr"] for n in signal["weakest"]] == [-9.5, -3.0, 2.0, 8.0, 13.0]
+        assert signal["snr"]["min"] == -9.5
+        assert signal["snr"]["max"] == 13.0
+
+    def test_stale_neighbours_are_excluded(self, viewer):
+        """A link not exercised in a week says nothing about the link today."""
+        self._seed_neighbours(viewer, [
+            (_pk(1), "recent", "repeater", 0, 4.0, -80.0, "-2 days"),
+            (_pk(2), "stale", "repeater", 0, -11.0, -115.0, "-40 days"),
+        ])
+        signal = self._signal(viewer)
+        assert signal["count"] == 1
+        assert [n["name"] for n in signal["weakest"]] == ["recent"]
+
+    def test_histogram_bins_are_fixed_width_and_contiguous(self, viewer):
+        self._seed_neighbours(viewer, [
+            (_pk(i), f"n{i}", "repeater", 0, snr, -70.0, "-1 hours")
+            for i, snr in enumerate([-5.0, -4.5, 0.5, 5.0])
+        ])
+        histogram = self._signal(viewer)["histogram"]
+        edges = [b[0] for b in histogram]
+        assert edges == list(range(-6, 6, 2)), histogram
+        assert sum(b[1] for b in histogram) == 4
+        # An empty bucket in the middle is present with a zero, not skipped.
+        assert dict(histogram)[-2] == 0
+
+    def test_no_neighbours_degrades_cleanly(self, viewer):
+        signal = self._signal(viewer)
+        assert signal["count"] == 0
+        assert signal["weakest"] == []
+        assert signal["histogram"] == []
+        assert signal["snr"]["p50"] is None
+
+    def test_snapshot_exposes_neighbours_not_device_mix(self, viewer):
+        """role and device_type are the same field twice — only role is charted."""
+        self._seed_neighbours(viewer, [(_pk(1), "n", "repeater", 0, 3.0, -75.0, "-1 hours")])
+        _refresh(viewer)
+        with viewer.app.test_client() as client:
+            mesh = client.get("/api/dashboard/summary").get_json()["mesh"]
+        assert "device_mix" not in mesh
+        assert "role_mix" in mesh
+        assert mesh["neighbors"]["count"] == 1
+
+
 class TestRoleBucketing:
 
     @pytest.mark.parametrize(

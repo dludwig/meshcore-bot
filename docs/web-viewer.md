@@ -139,14 +139,19 @@ proxy_set_header X-Forwarded-Proto $scheme;
 ### Dashboard
 - Health strip: bot status, database size, uptime, connected clients, radio state,
   and snapshot age with a manual refresh control
-- **Mesh**: nodes heard, adverts, new nodes, nodes gone quiet, tracked/known
-  contacts, and geographic coverage — each with a 30-day sparkline and a
-  change chip
-- Routing mix (flood vs direct), hop-count and path-length histograms, and an
-  SNR/RSSI distribution
+- **Mesh**: nodes heard, adverts, new nodes, nodes gone quiet, and geographic
+  coverage — the count tiles carry a 30-day sparkline and a change chip
+- Routing mix (flood vs direct), hop-count and path-length histograms, and the
+  role mix
 - Path encoding: multibyte share among contacts and among incoming packets,
   plus a 30-day multibyte adoption trend
-- Busiest repeaters and the role/device mix
+- Busiest repeaters, and **direct neighbours** — the nodes heard with no
+  repeater in between, their SNR distribution, and the weakest links named.
+  Restricted to `hop_count = 0` deliberately: a relayed packet's SNR measures
+  the last hop into this radio, not the link to whoever originated it, so
+  mixing hop counts together yields a number that describes nothing. The bot's
+  contact records store signal for exactly the zero-hop contacts, which makes
+  this a complete census of the neighbours rather than a sample.
 - **Bot**: messages, commands, reply rate, and unique users, plus the top
   commands/users/channels and longest paths
 - Live activity feed
