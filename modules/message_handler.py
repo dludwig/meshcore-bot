@@ -78,7 +78,7 @@ class MessageHandler:
 
         self.bot_channel_backup = {}
         self.bot_backup_channels = {}
-        self.bot_backup_enabled = False
+        self.bot_backup_enabled = None
         self.bot_backup_wait_time = 0
 
     @staticmethod
@@ -3187,10 +3187,29 @@ class MessageHandler:
 
     async def process_message(self, message: MeshMessage) -> None:
         """Process a received message"""
-        # Check if multitest is listening and notify it
+        try:
+            mcl = message.channel.lower()
+            if mcl == "#testing" or mcl == "#foobot" or mcl == "#foo":
+                if message.content_lower and (
+                    message.content_lower.startswith("/") or message.content_lower.startswith("!")
+                ):
+                    message.content_lower = message.content_lower[1:]
+                    self.logger.warn(f"trimmed message.content_lower to {message.content_lower}")
+
+                if message.content and (message.content.startswith("/") or message.content.startswith("!")):
+                    message.content = message.content[1:]
+                    self.logger.warn(f"trimmed message.content to {message.content}")
+
+            if message.sender_id.lower().startswith("meshbud"):
+                should_back_up_bot_or_non_bot_channel = False
+                self.logger.warn(f"never respond to {message.sender_id}")
+
+        except Exception as e:
+            self.logger.error(f"foobot error {e}")
 
         should_back_up_bot_or_non_bot_channel = True
 
+        # Check if multitest is listening and notify it
         if self.multitest_listener:
             try:
                 self.multitest_listener.on_message_received(message)
@@ -3249,7 +3268,7 @@ class MessageHandler:
             f"Processing message: '{message.content}' from {message.sender_id} in {'DM' if message.is_dm else message.channel}"
         )
 
-        if self.bot_backup_enabled == False:
+        if self.bot_backup_enabled == None:
             self.bot_backup_enabled = self.bot.command_manager.get_bot_backup_enabled()
 
         if self.bot_backup_enabled:

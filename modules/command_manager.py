@@ -660,17 +660,16 @@ class CommandManager:
 
     def load_bot_channel_backup(self) -> dict:
 
-        self.bot_backup_enabled = self.bot.config.getboolean("Bot_Channel_Backup", "enabled", fallback=False)
-
-        self.bot_backup_wait_time = self.bot.config.getint("Bot_Channel_Backup", "wait_time", fallback=20)
-
-        foo = self.bot.config.get("Bot_Channel_Backup", "backup_channels_and_bots_json", fallback="")
-
         try:
+            self.bot_backup_enabled = self.bot.config.getboolean("Bot_Channel_Backup", "enabled", fallback=False)
+            self.bot_backup_wait_time = self.bot.config.getint("Bot_Channel_Backup", "wait_time", fallback=20)
+
+            foo = self.bot.config.get("Bot_Channel_Backup", "backup_channels_and_bots_json", fallback="{}")
+
             bar = json.loads(foo)
             return bar
         except json.JSONDecodeError:
-            self.logger.error("Bot_Channel_Backup invalid_json")
+            self.logger.error("Bot_Channel_Backup load error")
             return None
 
     def format_keyword_response(self, response_format: str, message: MeshMessage) -> str:
