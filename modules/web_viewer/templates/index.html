@@ -137,12 +137,12 @@
                     <i class="fas fa-info-circle" aria-hidden="true"></i>
                 </button>
             </div>
-            <div class="card-body">
+            <div class="card-body card-body--fill">
                 <p class="dashboard-note mb-2">
                     Nodes by their closest advert path, and how far arriving
                     flood packets had travelled
                 </p>
-                <div class="chart-box chart-box--tall">
+                <div class="chart-box chart-box--fill">
                     <canvas id="hopsHistogramChart"
                         aria-label="Nodes and flood packets by hop distance"></canvas>
                 </div>
@@ -152,8 +152,8 @@
     <div class="col-12 col-lg-3">
         <div class="card h-100">
             <div class="card-header"><i class="fas fa-microchip"></i> Roles</div>
-            <div class="card-body">
-                <div id="role-mix"><div class="dashboard-empty">Loading…</div></div>
+            <div class="card-body card-body--fill">
+                <div id="role-mix" class="mix-fill"><div class="dashboard-empty">Loading…</div></div>
             </div>
         </div>
     </div>
@@ -366,64 +366,6 @@
             </div>
             <div class="card-body">
                 <div id="top-paths-list"><div class="dashboard-empty">Loading…</div></div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Row 7 — live activity -->
-<div class="row">
-    <div class="col-12">
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <span><i class="fas fa-satellite-dish me-2"></i>Live Activity
-                    <span id="live-dot" class="status-indicator status-disconnected ms-2"
-                          title="SocketIO connection"></span>
-                </span>
-                <div class="d-flex gap-2 align-items-center flex-wrap">
-                    <div class="d-flex gap-2 align-items-center" id="live-filters">
-                        <small class="text-muted">Filter:</small>
-                        <div class="form-check form-check-inline mb-0">
-                            <input class="form-check-input live-filter-cb" type="checkbox"
-                                   id="filter-packet" data-type="packet" checked>
-                            <label class="form-check-label" for="filter-packet"
-                                   style="font-size:0.8rem;color:#fd7e14">Packets</label>
-                        </div>
-                        <div class="form-check form-check-inline mb-0">
-                            <input class="form-check-input live-filter-cb" type="checkbox"
-                                   id="filter-command" data-type="command" checked>
-                            <label class="form-check-label" for="filter-command"
-                                   style="font-size:0.8rem;color:#198754">Commands</label>
-                        </div>
-                        <div class="form-check form-check-inline mb-0">
-                            <input class="form-check-input live-filter-cb" type="checkbox"
-                                   id="filter-message" data-type="message" checked>
-                            <label class="form-check-label" for="filter-message"
-                                   style="font-size:0.8rem;color:#0dcaf0">Messages</label>
-                        </div>
-                    </div>
-                    <button class="btn btn-sm btn-outline-secondary" id="live-scroll-top"
-                            title="Scroll to newest"><i class="fas fa-arrow-up"></i></button>
-                    <button class="btn btn-sm btn-outline-secondary" id="live-scroll-bottom"
-                            title="Scroll to oldest"><i class="fas fa-arrow-down"></i></button>
-                    <span id="live-count" class="badge bg-secondary">0</span>
-                    <button class="btn btn-sm btn-outline-secondary" id="live-pause-btn">
-                        <i class="fas fa-pause" id="live-pause-icon"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary" id="live-clear-btn">
-                        <i class="fas fa-trash-alt"></i>
-                    </button>
-                    <a href="/realtime" class="btn btn-sm btn-outline-primary">
-                        Full Monitor <i class="fas fa-external-link-alt ms-1"></i>
-                    </a>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <div id="live-feed" class="live-feed">
-                    <div class="text-muted text-center py-3" id="live-placeholder">
-                        <i class="fas fa-hourglass-half"></i> Connecting…
-                    </div>
-                </div>
             </div>
         </div>
     </div>

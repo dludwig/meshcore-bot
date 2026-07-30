@@ -856,10 +856,14 @@ class DashboardStatsService:
                 )
             )
 
-        # Pad both onto one contiguous axis so the bars line up.
-        edges = [hop for series in distribution.values() for hop, _ in series]
-        if edges:
-            low, high = min(edges), max(edges)
+        # Pad both onto one contiguous axis so the bars line up, bounded by the
+        # hops that actually carry something: an axis that runs on past the last
+        # observation spends its width on nothing.
+        populated = [
+            hop for series in distribution.values() for hop, count in series if count
+        ]
+        if populated:
+            low, high = min(populated), max(populated)
             for key, series in distribution.items():
                 counts = dict(series)
                 distribution[key] = [[hop, counts.get(hop, 0)] for hop in range(low, high + 1)]

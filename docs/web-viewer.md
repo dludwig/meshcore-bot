@@ -146,6 +146,10 @@ proxy_set_header X-Forwarded-Proto $scheme;
   plus a 30-day multibyte adoption trend
 - Busiest repeaters, and **one-hop neighbours** (24-hour or 7-day window)
 
+The live packet feed lives on the **Real-time** page rather than here; the
+dashboard reads a single snapshot per poll and holds no streaming
+subscriptions.
+
 Two measurement notes for the mesh charts:
 
 **Hops are derived, and the two path tables disagree on units.**

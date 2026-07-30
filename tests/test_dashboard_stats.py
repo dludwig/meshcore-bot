@@ -824,6 +824,28 @@ class TestHopConventions:
             )
         assert dict(self._hops(viewer)["nodes"]) == {48: 1}
 
+    def test_axis_stops_at_the_last_populated_hop(self, viewer):
+        """An axis running past the last observation spends its width on nothing."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO observed_paths (public_key, from_prefix, to_prefix, path_hex,
+                    path_length, bytes_per_hop, packet_type, last_seen)
+                VALUES (?, 'aa', 'bb', 'ab', 2, 1, 'advert', datetime('now','localtime'))
+                """,
+                (_pk(1),),
+            )
+            conn.execute(
+                "INSERT INTO packet_stream (timestamp, data, type, route_type_name, path_len, "
+                "bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', 5, 1)",
+                (time.time(),),
+            )
+        hops = self._hops(viewer)
+        assert [h for h, _ in hops["nodes"]] == [2, 3, 4, 5]
+        # Both ends of the axis carry an observation in at least one series.
+        assert hops["nodes"][0][1] or hops["flood_packets"][0][1]
+        assert hops["nodes"][-1][1] or hops["flood_packets"][-1][1]
+
     def test_impossible_hop_counts_are_dropped(self, viewer):
         """Beyond 64 the path field cannot hold it, so the value is corrupt."""
         with sqlite3.connect(viewer.db_path) as conn:

@@ -1001,89 +1001,6 @@
         },
     };
 
-    // ── live activity feed ───────────────────────────────────────────────
-
-    function initLiveFeed() {
-        const feed = el('live-feed');
-        const dot = el('live-dot');
-        const countBadge = el('live-count');
-        const placeholder = el('live-placeholder');
-        if (!feed || !window.connectionManager) return;
-
-        const TYPE_COLORS = { packet: '#fd7e14', command: '#198754', message: '#0dcaf0' };
-        const activeFilters = { packet: true, command: true, message: true };
-        const MAX_ENTRIES = 100;
-        let paused = false;
-        let total = 0;
-
-        function applyFilters() {
-            Array.from(feed.children).forEach((node) => {
-                const type = node.dataset.type;
-                if (type) node.style.display = activeFilters[type] ? '' : 'none';
-            });
-        }
-
-        document.querySelectorAll('.live-filter-cb').forEach((checkbox) => {
-            checkbox.addEventListener('change', () => {
-                activeFilters[checkbox.dataset.type] = checkbox.checked;
-                applyFilters();
-            });
-        });
-
-        function addEntry(label, text, type) {
-            if (paused) return;
-            if (placeholder && placeholder.parentNode) placeholder.remove();
-            const node = document.createElement('div');
-            node.dataset.type = type;
-            node.className = 'live-feed__entry';
-            node.style.borderLeftColor = TYPE_COLORS[type] || '#6c757d';
-            node.append(
-                makeTextElement('span', new Date().toLocaleTimeString(), 'text-muted me-2'),
-                makeTextElement('strong', label),
-                makeTextElement('span', ' ' + String(text ?? ''), 'text-muted')
-            );
-            if (!activeFilters[type]) node.style.display = 'none';
-            feed.insertBefore(node, feed.firstChild);
-            total += 1;
-            if (countBadge) countBadge.textContent = total;
-            while (feed.children.length > MAX_ENTRIES) feed.removeChild(feed.lastChild);
-        }
-
-        el('live-pause-btn')?.addEventListener('click', () => {
-            paused = !paused;
-            const icon = el('live-pause-icon');
-            if (icon) icon.className = paused ? 'fas fa-play' : 'fas fa-pause';
-        });
-        el('live-clear-btn')?.addEventListener('click', () => {
-            feed.replaceChildren();
-            total = 0;
-            if (countBadge) countBadge.textContent = '0';
-        });
-        el('live-scroll-top')?.addEventListener('click', () => { feed.scrollTop = 0; });
-        el('live-scroll-bottom')?.addEventListener('click', () => { feed.scrollTop = feed.scrollHeight; });
-
-        const socket = window.connectionManager.socket;
-        socket.on('connect', () => {
-            if (dot) dot.className = 'status-indicator status-connected ms-2';
-            socket.emit('subscribe_packets');
-            socket.emit('subscribe_commands');
-            socket.emit('subscribe_messages');
-        });
-        socket.on('disconnect', () => {
-            if (dot) dot.className = 'status-indicator status-disconnected ms-2';
-        });
-        socket.on('packet_data', (d) => {
-            addEntry(d.payload_type_name || d.type_name || 'Packet', d.from_name || d.pubkey_prefix || '', 'packet');
-        });
-        socket.on('command_data', (d) => {
-            addEntry('Cmd: ' + (d.command || '?'), (d.user || '') + ' → ' + (d.channel || ''), 'command');
-        });
-        socket.on('message_data', (d) => {
-            const channel = d.channel ? '[' + d.channel + '] ' : (d.is_dm ? '[DM] ' : '');
-            addEntry(d.sender || '?', channel + (d.content || ''), 'message');
-        });
-    }
-
     // ── connected clients modal ──────────────────────────────────────────
 
     async function loadConnectedClients() {
@@ -1178,7 +1095,6 @@
             event.preventDefault();
             loadConnectedClients();
         });
-        initLiveFeed();
         initTooltips();
     });
 

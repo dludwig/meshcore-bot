@@ -165,32 +165,27 @@ class TestPageRoutes:
         resp = client.get("/")
         assert resp.status_code == 200
 
-    def test_index_live_activity_controls(self, client):
-        """Dashboard index page contains scroll buttons and type-filter checkboxes."""
+    def test_index_loads_the_external_dashboard_script(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
-        html = resp.data.decode()
-        # Scroll buttons
-        assert 'id="live-scroll-top"' in html
-        assert 'id="live-scroll-bottom"' in html
-        # Filter checkboxes with data-type attributes
-        assert 'data-type="packet"' in html
-        assert 'data-type="command"' in html
-        assert 'data-type="message"' in html
-        assert 'live-filter-cb' in html
-        # Behaviour lives in the external, nonce-free dashboard script
-        assert 'js/dashboard.js' in html
+        assert 'js/dashboard.js' in resp.data.decode()
 
-    def test_dashboard_script_wires_live_feed_controls(self):
-        """The extracted dashboard script still implements the feed behaviour."""
+    def test_dashboard_does_not_subscribe_to_live_streams(self, client):
+        """The live feed moved to /realtime; the dashboard must not re-add it.
+
+        It opened three SocketIO subscriptions and re-rendered on every packet,
+        duplicating a page that already exists, so the dashboard now costs one
+        snapshot read per poll and nothing else.
+        """
+        html = client.get("/").data.decode()
         script = (
             Path(__file__).resolve().parents[1]
             / "modules" / "web_viewer" / "static" / "js" / "dashboard.js"
         ).read_text(encoding="utf-8")
-        assert "applyFilters" in script
-        assert "live-scroll-top" in script
-        assert "live-scroll-bottom" in script
-        assert "initLiveFeed" in script
+        for marker in ("live-feed", "live-filter-cb", "live-scroll-top"):
+            assert marker not in html, marker
+        for marker in ("subscribe_packets", "subscribe_commands", "subscribe_messages"):
+            assert marker not in script, marker
 
     def test_realtime(self, client):
         resp = client.get("/realtime")

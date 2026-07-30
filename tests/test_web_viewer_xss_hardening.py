@@ -72,8 +72,8 @@ def test_dashboard_has_no_html_parser_sink_for_api_or_mesh_values() -> None:
     # and role values all terminate in textContent-backed DOM construction.
     for safe_sink in (
         "node.textContent = String(value ?? '');",
-        "makeTextElement('strong', label)",
-        "makeTextElement('span', ' ' + String(text ?? ''), 'text-muted')",
+        "makeTextElement('div', item.name, 'neighbor-row__name')",
+        "makeTextElement('span', name, 'fw-semibold top-list-row__name')",
         "label.title = String(name ?? '');",
         "makeTextElement('code', item.path_string, 'small text-break')",
         "idCell.appendChild(makeTextElement('code', client.client_id))",

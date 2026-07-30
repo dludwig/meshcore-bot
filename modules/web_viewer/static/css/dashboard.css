@@ -342,6 +342,29 @@
     height: 240px;
 }
 
+/* Cards in an equal-height row: let the chart or list take the slack instead
+ * of leaving it as dead space under a fixed-height canvas.  Chart.js needs a
+ * positioned parent with a real height, which flex-basis: 0 + flex-grow gives
+ * it — plain height: 100% resolves against an auto-height parent and collapses.
+ */
+.card-body--fill {
+    display: flex;
+    flex-direction: column;
+}
+
+.chart-box--fill {
+    flex: 1 1 0;
+    min-height: 200px;
+    height: auto;
+}
+
+.mix-fill {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-evenly;
+}
+
 .doughnut-box {
     position: relative;
     max-width: 190px;
@@ -383,23 +406,6 @@
 .tooltip.dashboard-hint .tooltip-inner {
     max-width: min(22rem, 92vw);
     text-align: left;
-}
-
-/* ── Live activity feed ────────────────────────────────────────────────── */
-
-.live-feed {
-    height: 260px;
-    overflow-y: auto;
-    background-color: var(--bg-secondary);
-    padding: 0.5rem;
-}
-
-.live-feed__entry {
-    padding: 3px 8px;
-    margin-bottom: 3px;
-    font-size: 0.82rem;
-    border-radius: 2px;
-    border-left: 3px solid var(--border-color);
 }
 
 @media (max-width: 575.98px) {

@@ -94,6 +94,10 @@ semantic versioning.
 
 - The orphaned `/stats` page, which was unreachable from the navigation and
   rendered stub charts that never populated.
+- The dashboard's Live Activity feed. It opened three SocketIO subscriptions
+  and re-rendered on every packet to duplicate a page that already exists at
+  `/realtime`, so the dashboard now costs one snapshot read per poll and
+  nothing else.
 
 ### Deprecated
 
