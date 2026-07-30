@@ -13,7 +13,11 @@ the bot returns a richer ``repeater_info`` mapping and has a device-contacts fal
 Behavioral parity is preserved via :class:`PathInferenceConfig.bot_command`:
 
 * ``bot_command=False`` (the web/default path) reproduces the web viewer's previous decode logic
-  byte-for-byte. The web's ``decode_path_nodes`` output must not change.
+  byte-for-byte. The web's ``decode_path_nodes`` output must not change — with one deliberate
+  exception: ``_graph_path_validation_bonus_web`` used to compare uppercase ``path_context``
+  tokens against lowercased stored hex, so its segment bonus could never fire. Fixing that case
+  mismatch means the path-validation bonus (and therefore some confidence scores) can now be
+  higher than before. No node resolves to a *different* repeater purely from case.
 * ``bot_command=True`` (built by ``PathCommand``) enables the bot command's extra behaviors:
   SNR bonuses, zero-hop/SNR gating on graph evidence, ``proximity_method='path'`` selection with
   sender/previous/next-node proximity, simple-proximity tie-breakers, and the final-hop
@@ -464,7 +468,7 @@ def select_by_single_proximity(repeaters, reference_location, direction, cfg: Pa
     return None, 0.0
 
 
-def select_by_path_proximity(repeaters_with_location, node_id, path_context, sender_location, cfg: PathInferenceConfig, *, db_manager, logger):
+def select_by_path_proximity(repeaters_with_location, node_id, path_context, sender_location, cfg: PathInferenceConfig, *, db_manager, logger, node_index=None):
     """Select a repeater based on proximity to its previous/next nodes in the path."""
     try:
         scored_repeaters = calculate_recency_weighted_scores(repeaters_with_location, cfg)
@@ -472,7 +476,7 @@ def select_by_path_proximity(repeaters_with_location, node_id, path_context, sen
         if not recent_repeaters:
             return None, 0.0
 
-        current_index = path_context.index(node_id) if node_id in path_context else -1
+        current_index = _resolve_node_index(node_id, path_context, node_index)
         if current_index == -1:
             return None, 0.0
 
@@ -508,7 +512,23 @@ def select_by_path_proximity(repeaters_with_location, node_id, path_context, sen
         return None, 0.0
 
 
-def select_geographic(repeaters, node_id, path_context, cfg: PathInferenceConfig, *, db_manager, logger, sender_location=None):
+def _resolve_node_index(node_id, path_context, node_index=None) -> int:
+    """Position of ``node_id`` within ``path_context``, or -1.
+
+    Prefers the caller's loop index. With 1-byte prefixes the same hop value can
+    legitimately appear more than once in a path, and ``list.index()`` would
+    always resolve to the first occurrence — giving every repeat the neighbours
+    and hop position of hop #1.
+    """
+    if node_index is not None and 0 <= node_index < len(path_context):
+        return node_index
+    try:
+        return path_context.index(node_id)
+    except (ValueError, AttributeError):
+        return -1
+
+
+def select_geographic(repeaters, node_id, path_context, cfg: PathInferenceConfig, *, db_manager, logger, sender_location=None, node_index=None):
     """Pick the best repeater geographically, dispatching on ``proximity_method``.
 
     For the web/default path (``bot_command=False``) this is always simple proximity, matching the
@@ -528,7 +548,7 @@ def select_geographic(repeaters, node_id, path_context, cfg: PathInferenceConfig
             return None, 0.0
 
         if cfg.proximity_method == 'path' and path_context and node_id:
-            result = select_by_path_proximity(repeaters_with_location, node_id, path_context, sender_location, cfg, db_manager=db_manager, logger=logger)
+            result = select_by_path_proximity(repeaters_with_location, node_id, path_context, sender_location, cfg, db_manager=db_manager, logger=logger, node_index=node_index)
             if result[0] is not None:
                 return result
             elif cfg.path_proximity_fallback:
@@ -576,7 +596,10 @@ def _graph_path_validation_bonus_web(candidate_public_key, path_context, current
                     stored_nodes = [stored_hex[i:i+n] for i in range(0, len(stored_hex), n)]
                     if (len(stored_hex) % n) != 0:
                         stored_nodes = [stored_hex[i:i+2] for i in range(0, len(stored_hex), 2)]
-                    decoded_nodes = path_context if path_context else [decoded_path_hex[i:i+n] for i in range(0, len(decoded_path_hex), n)]
+                    # path_context tokens are uppercase (see node_ids above) while
+                    # stored_hex is lowercased, so fold before comparing segments.
+                    decoded_nodes = ([node.lower() for node in path_context] if path_context
+                                     else [decoded_path_hex[i:i+n] for i in range(0, len(decoded_path_hex), n)])
 
                     common_segments = 0
                     min_len = min(len(stored_nodes), len(decoded_nodes))
@@ -641,28 +664,32 @@ def _graph_path_validation_bonus_bot(candidate_public_key, candidate_prefix, pat
                 if (len(decoded_path_hex) % path_n) != 0:
                     decoded_nodes = [decoded_path_hex[i:i+2] for i in range(0, len(decoded_path_hex), 2)]
 
-                    common_segments = 0
-                    min_len = min(len(stored_nodes), len(decoded_nodes))
-                    for i in range(min_len):
-                        if stored_nodes[i] == decoded_nodes[i]:
-                            common_segments += 1
-                        else:
-                            break
+                # Scoring runs for every stored path, not just ragged ones: for a
+                # uniform-width path the remainder above is always 0, which used to
+                # leave this whole block unreachable.
+                common_segments = 0
+                min_len = min(len(stored_nodes), len(decoded_nodes))
+                for i in range(min_len):
+                    if stored_nodes[i] == decoded_nodes[i]:
+                        common_segments += 1
+                    else:
+                        break
 
-                    if common_segments >= 2:
-                        segment_bonus = min(0.2, 0.05 * common_segments)
-                        obs_bonus = min(0.15, obs_count / cfg.graph_path_validation_obs_divisor)
-                        path_validation_bonus = max(path_validation_bonus, segment_bonus + obs_bonus)
-                        path_validation_bonus = min(cfg.graph_path_validation_max_bonus, path_validation_bonus)
-                        if path_validation_bonus >= cfg.graph_path_validation_max_bonus * 0.9:
-                            break
+                if common_segments >= 2:
+                    segment_bonus = min(0.2, 0.05 * common_segments)
+                    obs_bonus = min(0.15, obs_count / cfg.graph_path_validation_obs_divisor)
+                    path_validation_bonus = max(path_validation_bonus, segment_bonus + obs_bonus)
+                    path_validation_bonus = min(cfg.graph_path_validation_max_bonus, path_validation_bonus)
+                    if path_validation_bonus >= cfg.graph_path_validation_max_bonus * 0.9:
+                        break
     except Exception as e:
         logger.debug(f"Error checking path validation for {candidate_prefix}: {e}")
     return path_validation_bonus
 
 
 def select_repeater_by_graph(repeaters, node_id, path_context, cfg: PathInferenceConfig, *,
-                             mesh_graph, db_manager, logger, graph_n, path_prefix_hex_chars=None):
+                             mesh_graph, db_manager, logger, graph_n, path_prefix_hex_chars=None,
+                             node_index=None):
     """Select the best repeater for a colliding prefix using mesh-graph evidence.
 
     ``graph_n`` is the configured prefix width in hex chars (edge keys use it). When the path was
@@ -678,10 +705,7 @@ def select_repeater_by_graph(repeaters, node_id, path_context, cfg: PathInferenc
         path_prefix_hex_chars = graph_n
     prefix_n = path_prefix_hex_chars if path_prefix_hex_chars >= 2 else graph_n
 
-    try:
-        current_index = path_context.index(node_id) if node_id in path_context else -1
-    except Exception:
-        current_index = -1
+    current_index = _resolve_node_index(node_id, path_context, node_index)
     if current_index == -1:
         return None, 0.0, None
 
@@ -858,7 +882,8 @@ def _has_valid_location(repeater) -> bool:
 
 
 def select_node_repeater(node_id, candidates, node_ids, cfg: PathInferenceConfig, *,
-                         mesh_graph, db_manager, logger, graph_n, sender_location=None) -> NodeSelection:
+                         mesh_graph, db_manager, logger, graph_n, sender_location=None,
+                         node_index=None) -> NodeSelection:
     """Resolve one path node from its candidate repeaters (recency + graph + geographic).
 
     Returns a :class:`NodeSelection`; each caller maps it to its own output shape.
@@ -884,16 +909,19 @@ def select_node_repeater(node_id, candidates, node_ids, cfg: PathInferenceConfig
                 recent_repeaters, node_id, node_ids, cfg,
                 mesh_graph=mesh_graph, db_manager=db_manager, logger=logger,
                 graph_n=graph_n, path_prefix_hex_chars=len(node_id) if node_id else graph_n,
+                node_index=node_index,
             )
 
         if cfg.geographic_guessing_enabled:
             geo_repeater, geo_confidence = select_geographic(
                 recent_repeaters, node_id, node_ids, cfg,
                 db_manager=db_manager, logger=logger, sender_location=sender_location,
+                node_index=node_index,
             )
 
         selected_repeater, confidence, method = _combine_selection(
-            node_id, node_ids, cfg, graph_repeater, graph_confidence, geo_repeater, geo_confidence, method
+            node_id, node_ids, cfg, graph_repeater, graph_confidence, geo_repeater, geo_confidence, method,
+            node_index=node_index,
         )
 
         if selected_repeater and confidence >= 0.5:
@@ -906,11 +934,19 @@ def select_node_repeater(node_id, candidates, node_ids, cfg: PathInferenceConfig
     return NodeSelection('not_found', matches=0, recent_repeaters=[])
 
 
-def _combine_selection(node_id, node_ids, cfg, graph_repeater, graph_confidence, geo_repeater, geo_confidence, method):
+def _combine_selection(node_id, node_ids, cfg, graph_repeater, graph_confidence, geo_repeater, geo_confidence, method,
+                       node_index=None):
     """Choose between graph and geographic selections (web vs bot semantics)."""
     selected_repeater = None
     confidence = 0.0
-    is_final_hop = (node_id == node_ids[-1] if node_ids else False)
+    # Compare by position, not value: a 1-byte prefix that repeats in the path
+    # would otherwise mark every occurrence as the final hop.
+    if not node_ids:
+        is_final_hop = False
+    elif node_index is not None and 0 <= node_index < len(node_ids):
+        is_final_hop = (node_index == len(node_ids) - 1)
+    else:
+        is_final_hop = (node_id == node_ids[-1])
 
     if cfg.bot_command:
         if cfg.graph_geographic_combined and graph_repeater and geo_repeater:
@@ -1065,7 +1101,7 @@ def decode_path_nodes(
 
     decoded_path = []
     try:
-        for node_id in node_ids:
+        for node_index, node_id in enumerate(node_ids):
             if lookup_func is not None:
                 results = lookup_func(node_id)
             elif cfg.max_repeater_age_days > 0:
@@ -1117,6 +1153,7 @@ def decode_path_nodes(
                     node_id, repeaters_data, node_ids, cfg,
                     mesh_graph=mesh_graph, db_manager=db_manager, logger=logger,
                     graph_n=prefix_hex_chars,
+                    node_index=node_index,
                 )
 
                 if selection.status == 'resolved':

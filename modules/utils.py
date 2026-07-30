@@ -881,17 +881,11 @@ async def rate_limited_nominatim_geocode(
         geolocator = get_nominatim_geocoder(timeout=timeout)
         return await asyncio.to_thread(geolocator.geocode, query, timeout=timeout)
 
-    # Wait for rate limiter
-    await bot.nominatim_rate_limiter.wait_for_request()
+    # Atomically reserve a slot shared with synchronous worker-thread callers.
+    await bot.nominatim_rate_limiter.wait_and_request()
 
-    # Make the request
     geolocator = get_nominatim_geocoder(timeout=timeout)
-    result = await asyncio.to_thread(geolocator.geocode, query, timeout=timeout)
-
-    # Record the request
-    bot.nominatim_rate_limiter.record_request()
-
-    return result
+    return await asyncio.to_thread(geolocator.geocode, query, timeout=timeout)
 
 
 async def rate_limited_nominatim_reverse(bot: Any, coordinates: str, timeout: int = 10) -> Optional[Any]:
@@ -910,17 +904,11 @@ async def rate_limited_nominatim_reverse(bot: Any, coordinates: str, timeout: in
         geolocator = get_nominatim_geocoder(timeout=timeout)
         return await asyncio.to_thread(geolocator.reverse, coordinates, timeout=timeout)
 
-    # Wait for rate limiter
-    await bot.nominatim_rate_limiter.wait_for_request()
+    # Atomically reserve a slot shared with synchronous worker-thread callers.
+    await bot.nominatim_rate_limiter.wait_and_request()
 
-    # Make the request
     geolocator = get_nominatim_geocoder(timeout=timeout)
-    result = await asyncio.to_thread(geolocator.reverse, coordinates, timeout=timeout)
-
-    # Record the request
-    bot.nominatim_rate_limiter.record_request()
-
-    return result
+    return await asyncio.to_thread(geolocator.reverse, coordinates, timeout=timeout)
 
 
 def rate_limited_nominatim_geocode_sync(
@@ -941,17 +929,11 @@ def rate_limited_nominatim_geocode_sync(
         geolocator = get_nominatim_geocoder(timeout=timeout)
         return geolocator.geocode(query, timeout=timeout)
 
-    # Wait for rate limiter
-    bot.nominatim_rate_limiter.wait_for_request_sync()
+    # Reserve the slot before the request, not after: this runs on worker threads.
+    bot.nominatim_rate_limiter.wait_and_request_sync()
 
-    # Make the request
     geolocator = get_nominatim_geocoder(timeout=timeout)
-    result = geolocator.geocode(query, timeout=timeout)
-
-    # Record the request
-    bot.nominatim_rate_limiter.record_request()
-
-    return result
+    return geolocator.geocode(query, timeout=timeout)
 
 
 def rate_limited_nominatim_reverse_sync(bot: Any, coordinates: str, timeout: int = 10) -> Optional[Any]:
@@ -970,17 +952,11 @@ def rate_limited_nominatim_reverse_sync(bot: Any, coordinates: str, timeout: int
         geolocator = get_nominatim_geocoder(timeout=timeout)
         return geolocator.reverse(coordinates, timeout=timeout)
 
-    # Wait for rate limiter
-    bot.nominatim_rate_limiter.wait_for_request_sync()
+    # Reserve the slot before the request, not after: this runs on worker threads.
+    bot.nominatim_rate_limiter.wait_and_request_sync()
 
-    # Make the request
     geolocator = get_nominatim_geocoder(timeout=timeout)
-    result = geolocator.reverse(coordinates, timeout=timeout)
-
-    # Record the request
-    bot.nominatim_rate_limiter.record_request()
-
-    return result
+    return geolocator.reverse(coordinates, timeout=timeout)
 
 
 async def geocode_zipcode(bot: Any, zipcode: str, default_country: Optional[str] = None, timeout: int = 10) -> tuple[Optional[float], Optional[float]]:

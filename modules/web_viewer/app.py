@@ -49,7 +49,7 @@ from modules.database_restore import (
     DatabaseRestoreError,
     stage_database_restore,
 )
-from modules.ini_writer import update_ini_values
+from modules.ini_writer import IniValueError, update_ini_values
 from modules.security_utils import (
     VALID_JOURNAL_MODES,
     SafeUrlPolicy,
@@ -78,6 +78,23 @@ def _validate_dynamic_key(key: str) -> "str | None":
     if key[:1] in ('#', ';'):
         return f'Invalid key "{key}": cannot start with # or ;'
     return None
+
+
+def _validate_feed_interval(raw: object) -> int:
+    """Coerce a feed poll interval, rejecting values that break the poller.
+
+    feed_manager compares ``current_time - last_check >= interval``: anything
+    <= 0 leaves every feed permanently due and hammers the source URL, and a
+    None (JSON ``null``) raises a TypeError that aborts the whole poll cycle for
+    every feed, not just this one.
+    """
+    try:
+        interval = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("check_interval_seconds must be a positive integer")
+    if interval <= 0:
+        raise ValueError("check_interval_seconds must be a positive integer")
+    return interval
 
 
 def _apply_werkzeug_websocket_fix() -> None:
@@ -199,15 +216,26 @@ class BotDataViewer:
     }
 
     def __init__(self, db_path="meshcore_bot.db", repeater_db_path=None, config_path="config.ini"):
-        # Setup comprehensive logging
-        self._setup_logging()
-
         # Set bot root directory (project root) for path validation
         # This is the directory containing the modules folder
         self.bot_root = Path(os.path.join(os.path.dirname(__file__), '..', '..')).resolve()
         # Resolve relative config path so viewer finds config when started as subprocess (cwd may differ)
         if not os.path.isabs(config_path):
             config_path = str(self.bot_root / config_path)
+
+        # Load configuration before logging so [Logging] log_file can select
+        # journal/console-only vs file logging (same rules as the main bot).
+        self.config = self._load_config(config_path)
+        self.config_path = config_path  # kept for config.ini write-back endpoints
+
+        # Resolve db_path relative to the config file's directory — matches core.py's bot_root
+        # property which is Path(config_file).parent.resolve().  Using self.bot_root (the project
+        # code root, 2 dirs above app.py) as the base caused a mismatch when config.ini lived
+        # elsewhere (e.g. a separate deployment directory), resulting in a blank realtime monitor
+        # because the web viewer and bot opened different database files.
+        self._config_base = Path(config_path).parent.resolve() if os.path.exists(config_path) else self.bot_root
+
+        self._setup_logging()
 
         self.app = Flask(
             __name__,
@@ -256,16 +284,12 @@ class BotDataViewer:
         self._db_last_used = 0
         self._db_timeout = 300  # 5 minutes connection timeout
 
-        # Load configuration
-        self.config = self._load_config(config_path)
-        self.config_path = config_path  # kept for config.ini write-back endpoints
-
-        # Resolve db_path relative to the config file's directory — matches core.py's bot_root
-        # property which is Path(config_file).parent.resolve().  Using self.bot_root (the project
-        # code root, 2 dirs above app.py) as the base caused a mismatch when config.ini lived
-        # elsewhere (e.g. a separate deployment directory), resulting in a blank realtime monitor
-        # because the web viewer and bot opened different database files.
-        self._config_base = Path(config_path).parent.resolve() if os.path.exists(config_path) else self.bot_root
+        # The contacts list needs all-time multibyte hop-prefix evidence for its
+        # capability badge.  Cache that derived set between requests and invalidate
+        # it when the underlying multibyte-path population changes.
+        self._contacts_badge_cache_lock = threading.Lock()
+        self._contacts_badge_cache_signature = None
+        self._contacts_badge_cache_chunks: set[str] = set()
 
         # Use [Bot] db_path when [Web_Viewer] db_path is unset
         bot_db = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
@@ -328,11 +352,27 @@ class BotDataViewer:
         self.logger.info("BotDataViewer initialized with Flask-SocketIO 5.x best practices")
 
     def _setup_logging(self):
-        """Setup comprehensive logging with rotation"""
+        """Setup logging; file handler only when [Logging] log_file is set.
+
+        Empty log_file (or missing [Logging] section) means console/journal only,
+        matching the main bot. When a log file is configured, viewer logs go next
+        to it as web_viewer.log (e.g. /var/log/meshcore-bot/web_viewer.log).
+        """
         from logging.handlers import RotatingFileHandler
 
-        # Create logs directory if it doesn't exist
-        os.makedirs('logs', exist_ok=True)
+        log_file = ''
+        log_max_bytes = 5 * 1024 * 1024
+        log_backup_count = 3
+        if getattr(self, 'config', None) is not None and self.config.has_section('Logging'):
+            log_file = self.config.get('Logging', 'log_file', fallback='').strip()
+            try:
+                log_max_bytes = self.config.getint('Logging', 'log_max_bytes', fallback=log_max_bytes)
+            except (configparser.Error, ValueError, TypeError):
+                pass
+            try:
+                log_backup_count = self.config.getint('Logging', 'log_backup_count', fallback=log_backup_count)
+            except (configparser.Error, ValueError, TypeError):
+                pass
 
         # Get or create logger (don't use basicConfig as it may conflict with existing logging)
         self.logger = logging.getLogger('modern_web_viewer')
@@ -341,29 +381,47 @@ class BotDataViewer:
         # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()
 
-        # Create rotating file handler (max 5MB per file, keep 3 backups)
-        file_handler = RotatingFileHandler(
-            'logs/web_viewer_modern.log',
-            maxBytes=5 * 1024 * 1024,  # 5 MB
-            backupCount=3,
-            encoding='utf-8'
-        )
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_formatter)
-        self.logger.addHandler(file_handler)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-        # Create console handler
+        # Console handler (captured by journald under systemd)
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(console_formatter)
+        console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
         # Prevent propagation to root logger to avoid duplicate messages
         self.logger.propagate = False
 
-        self.logger.info("Web viewer logging initialized with rotation (5MB max, 3 backups)")
+        if not log_file:
+            self.logger.info("No log file specified, using console/journal logging only")
+            return
+
+        # Place viewer log beside the bot log (same directory as log_file)
+        bot_log_path = Path(resolve_path(log_file, self._config_base))
+        viewer_log_path = bot_log_path.parent / 'web_viewer.log'
+        try:
+            viewer_log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                str(viewer_log_path),
+                maxBytes=log_max_bytes,
+                backupCount=log_backup_count,
+                encoding='utf-8',
+            )
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
+            self.logger.info(
+                "Web viewer logging initialized (file=%s, max=%s bytes, backups=%s)",
+                viewer_log_path,
+                log_max_bytes,
+                log_backup_count,
+            )
+        except (OSError, PermissionError) as e:
+            self.logger.warning(
+                "Could not open web viewer log file %s: %s. Using console/journal only.",
+                viewer_log_path,
+                e,
+            )
 
     def _load_config(self, config_path):
         """Load configuration from file"""
@@ -375,7 +433,13 @@ class BotDataViewer:
     def _get_version_info(self) -> dict[str, str | None]:
         """Get version info for footer via centralized version resolver. Never raises."""
         info = resolve_runtime_version(self.bot_root)
+        display = info.get("display")
         return {
+            # 'display' is what the footer renders — same value !version reports,
+            # so the two can't drift apart on dev or detached-tag checkouts. The
+            # "unknown" sentinel is dropped so the footer omits the version
+            # rather than advertising that we couldn't work it out.
+            "display": None if display == "unknown" else display,
             "tag": info.get("tag"),
             "branch": info.get("branch"),
             "commit": info.get("commit"),
@@ -852,7 +916,7 @@ class BotDataViewer:
             bot_name = ''
             name_managed = False
             if self.config:
-                auto_manage = self.config.get('Bot', 'auto_manage_contacts', fallback='false').lower()
+                auto_manage = self.config.get('Bot', 'auto_manage_contacts', fallback='device').lower()
                 bot_name = (self.config.get('Bot', 'bot_name', fallback='') or '').strip()
                 try:
                     auto_update_name = self.config.getboolean('Bot', 'auto_update_device_name', fallback=True)
@@ -1052,6 +1116,10 @@ class BotDataViewer:
                     'reload_queued': reload_queued,
                     'restart_required': restart_required,
                 })
+            except IniValueError as exc:
+                # A submitted key/value would corrupt the INI (newline, [ ], …).
+                # Nothing was written; report it as a client error.
+                return jsonify({'success': False, 'error': str(exc)}), 400
             except Exception:
                 self.logger.exception("Error saving plugin settings")
                 return jsonify({'success': False, 'error': 'Internal error — see server logs'}), 500
@@ -1330,17 +1398,24 @@ class BotDataViewer:
                         self.config.add_section('Connection')
                     ini_updates: dict[str, str] = {}
                     if 'alert_enabled' in data:
-                        val = 'true' if str(data['alert_enabled']).lower() == 'true' else 'false'
-                        self.config.set('Connection', 'radio_zombie_alert_enabled', val)
-                        ini_updates['radio_zombie_alert_enabled'] = val
+                        ini_updates['radio_zombie_alert_enabled'] = (
+                            'true' if str(data['alert_enabled']).lower() == 'true' else 'false'
+                        )
                     if 'alert_email' in data:
-                        val = str(data['alert_email'])
-                        self.config.set('Connection', 'radio_zombie_alert_email', val)
-                        ini_updates['radio_zombie_alert_email'] = val
+                        ini_updates['radio_zombie_alert_email'] = str(data['alert_email'])
                     if ini_updates:
+                        # Persist first: alert_email is free-form client JSON, so
+                        # a rejected value must not leave the in-memory config
+                        # holding something that was never written to disk.
                         update_ini_values(self.config_path, {'Connection': ini_updates})
+                        for ini_key, ini_val in ini_updates.items():
+                            self.config.set('Connection', ini_key, ini_val)
                     config_saved = True
                     self.logger.info("Zombie alert settings written to config.ini")
+                except IniValueError as exc:
+                    # Not an OSError — without this the route would 500.
+                    self.logger.warning("Rejected zombie alert config value: %s", exc)
+                    return jsonify({'success': False, 'error': str(exc)}), 400
                 except OSError as exc:
                     self.logger.error("Failed to write zombie alert settings to config.ini: %s", exc)
                     return jsonify({
@@ -1552,14 +1627,17 @@ class BotDataViewer:
                 if data.get('save_to_config', False):
                     try:
                         enabled_val = 'true' if alert_enabled else 'false'
-                        self.config.set('Connection', 'radio_offline_threshold', str(offline_threshold))
-                        self.config.set('Connection', 'radio_offline_alert_enabled', enabled_val)
-                        self.config.set('Connection', 'radio_offline_alert_email', alert_email)
-                        update_ini_values(self.config_path, {'Connection': {
+                        offline_ini = {
                             'radio_offline_threshold': str(offline_threshold),
                             'radio_offline_alert_enabled': enabled_val,
                             'radio_offline_alert_email': alert_email,
-                        }})
+                        }
+                        # Persist first: alert_email is free-form client input, so
+                        # a rejected value must not leave the in-memory config
+                        # holding something that was never written to disk.
+                        update_ini_values(self.config_path, {'Connection': offline_ini})
+                        for ini_key, ini_val in offline_ini.items():
+                            self.config.set('Connection', ini_key, ini_val)
                         config_saved = True
                         self.logger.info("Radio offline alert settings written to config.ini")
                     except Exception as exc:
@@ -2084,12 +2162,34 @@ class BotDataViewer:
 
         @self.app.route('/api/contacts')
         def api_contacts():
-            """Get contact data. Optional query param: since=24h|7d|30d|90d|all (default 30d)."""
+            """Get filtered contact data, optionally paginated for the interactive list."""
             try:
                 since = request.args.get('since', '30d')
                 if since not in ('24h', '7d', '30d', '90d', 'all'):
                     since = '30d'
-                contacts = self._get_tracking_data(since=since)
+                paginate = 'page' in request.args or 'page_size' in request.args
+                page = None
+                page_size = None
+                if paginate:
+                    try:
+                        page = max(1, int(request.args.get('page', '1')))
+                    except (TypeError, ValueError):
+                        page = 1
+                    try:
+                        page_size = max(1, min(200, int(request.args.get('page_size', '100'))))
+                    except (TypeError, ValueError):
+                        page_size = 100
+                search = request.args.get('search', '').strip()[:100]
+                sort = request.args.get('sort', 'last_seen')
+                direction = request.args.get('direction', 'desc').lower()
+                contacts = self._get_tracking_data(
+                    since=since,
+                    page=page,
+                    page_size=page_size,
+                    search=search,
+                    sort=sort,
+                    direction=direction,
+                )
                 return jsonify(contacts)
             except Exception as e:
                 self.logger.error(f"Error getting contacts: {e}")
@@ -5203,7 +5303,8 @@ class BotDataViewer:
             cursor.execute(
                 f"""
                 SELECT DISTINCT path_hex, bytes_per_hop FROM observed_paths
-                WHERE bytes_per_hop IN (2, 3) AND path_hex IS NOT NULL AND length(path_hex) > 0
+                WHERE bytes_per_hop >= 2 AND bytes_per_hop <= 3
+                AND path_hex IS NOT NULL AND length(path_hex) > 0
                 {extra}
                 """
             )
@@ -5220,6 +5321,35 @@ class BotDataViewer:
         except Exception as e:
             self.logger.debug(f"Could not load multibyte hop chunks: {e}")
         return chunks
+
+    def _get_cached_contact_multibyte_hop_chunks(self, cursor) -> set[str]:
+        """Return all-time contact badge evidence without rebuilding it per page request."""
+        try:
+            # last_seen changes when an existing path is observed again; count changes on
+            # inserts and retention deletes.  Together they cheaply invalidate the cache while
+            # using the multibyte covering index rather than the wide observed_paths table.
+            cursor.execute(
+                """
+                SELECT MAX(last_seen), COUNT(*) FROM observed_paths
+                WHERE bytes_per_hop >= 2 AND bytes_per_hop <= 3
+                """
+            )
+            signature_row = cursor.fetchone()
+            signature = tuple(signature_row) if signature_row else (None, 0)
+        except Exception as e:
+            self.logger.debug(f"Could not fingerprint multibyte hop chunks: {e}")
+            return self._collect_multibyte_hop_chunks(cursor)
+
+        lock = getattr(self, '_contacts_badge_cache_lock', None)
+        if lock is None:
+            lock = self._contacts_badge_cache_lock = threading.Lock()
+        with lock:
+            if getattr(self, '_contacts_badge_cache_signature', None) == signature:
+                return self._contacts_badge_cache_chunks
+            chunks = self._collect_multibyte_hop_chunks(cursor)
+            self._contacts_badge_cache_signature = signature
+            self._contacts_badge_cache_chunks = chunks
+            return chunks
 
     @staticmethod
     def _bucket_hop_chunks(multibyte_hop_chunks: set[str]) -> dict[int, set[str]]:
@@ -5881,12 +6011,23 @@ class BotDataViewer:
             if conn:
                 conn.close()
 
-    def _get_tracking_data(self, since='30d', include_detail=False):
+    def _get_tracking_data(
+        self,
+        since='30d',
+        include_detail=False,
+        page: int | None = None,
+        page_size: int | None = None,
+        search: str = '',
+        sort: str = 'last_seen',
+        direction: str = 'desc',
+    ):
         """Get contact tracking data. since: 24h, 7d, 30d, 90d, or all (heard in that window).
 
         include_detail=False (the interactive /api/contacts list) omits per-contact ``all_paths``
         and ``raw_advert_data`` to keep the payload small; the UI fetches those on demand via
-        /api/contact-detail. include_detail=True (the export endpoint) keeps the full fields.
+        /api/contact-detail.  The interactive route supplies ``page`` and ``page_size`` so path
+        enrichment is limited to visible contacts. include_detail=True (the export endpoint)
+        keeps the legacy full-result behavior and full fields.
         """
         conn = None
         try:
@@ -5908,11 +6049,75 @@ class BotDataViewer:
                 '30d': "'-30 days'",
                 '90d': "'-90 days'",
             }
+            where_parts = []
+            where_params: list[Any] = []
             if since in datetime_offsets:
-                where_clause = f" WHERE c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
-            else:  # 'all'
-                where_clause = ''
-            params = ()
+                where_parts.append(
+                    f"c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
+                )
+
+            search = (search or '').strip().lower()[:100]
+            if search and not include_detail:
+                # Match the former client-side behavior: public keys are prefix-only,
+                # while names, roles, device types, and locations match anywhere.
+                escaped = search.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                where_parts.append(
+                    "("
+                    "LOWER(COALESCE(c.public_key, '')) LIKE ? ESCAPE '\\' OR "
+                    "LOWER(COALESCE(c.name, '')) LIKE ? ESCAPE '\\' OR "
+                    "LOWER(COALESCE(c.role, '')) LIKE ? ESCAPE '\\' OR "
+                    "LOWER(COALESCE(c.device_type, '')) LIKE ? ESCAPE '\\' OR "
+                    "LOWER(COALESCE(c.city, '')) LIKE ? ESCAPE '\\' OR "
+                    "LOWER(COALESCE(c.state, '')) LIKE ? ESCAPE '\\' OR "
+                    "LOWER(COALESCE(c.country, '')) LIKE ? ESCAPE '\\'"
+                    ")"
+                )
+                where_params.extend([f'{escaped}%'] + [f'%{escaped}%'] * 6)
+
+            where_clause = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
+
+            pagination = None
+            filtered_stats = None
+            if page is not None and page_size is not None and not include_detail:
+                page_size = max(1, min(200, int(page_size)))
+                page = max(1, int(page))
+                cursor.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total_items,
+                        SUM(CASE WHEN c.last_heard >= datetime('now', 'localtime', '-24 hours') THEN 1 ELSE 0 END) AS contacts_24h,
+                        SUM(CASE WHEN c.last_heard >= datetime('now', 'localtime', '-7 days') THEN 1 ELSE 0 END) AS contacts_7d,
+                        SUM(CASE WHEN c.first_heard >= datetime('now', 'localtime', '-7 days')
+                                  AND LOWER(COALESCE(c.device_type, '')) LIKE '%companion%' THEN 1 ELSE 0 END) AS new_companions,
+                        SUM(CASE WHEN c.first_heard >= datetime('now', 'localtime', '-7 days')
+                                  AND LOWER(COALESCE(c.device_type, '')) LIKE '%repeater%' THEN 1 ELSE 0 END) AS new_repeaters,
+                        SUM(CASE WHEN c.first_heard >= datetime('now', 'localtime', '-7 days')
+                                  AND (LOWER(COALESCE(c.device_type, '')) LIKE '%room%'
+                                       OR LOWER(COALESCE(c.device_type, '')) LIKE '%server%') THEN 1 ELSE 0 END) AS new_room_servers
+                    FROM complete_contact_tracking c
+                    """ + where_clause,
+                    tuple(where_params),
+                )
+                aggregate = cursor.fetchone()
+                total_items = int(aggregate['total_items'] or 0)
+                total_pages = max(1, (total_items + page_size - 1) // page_size)
+                page = min(page, total_pages)
+                pagination = {
+                    'page': page,
+                    'page_size': page_size,
+                    'total_items': total_items,
+                    'total_pages': total_pages,
+                    'has_previous': page > 1,
+                    'has_next': page < total_pages,
+                }
+                filtered_stats = {
+                    'contacts_24h': int(aggregate['contacts_24h'] or 0),
+                    'contacts_7d': int(aggregate['contacts_7d'] or 0),
+                    'contacts_total': total_items,
+                    'new_companions': int(aggregate['new_companions'] or 0),
+                    'new_repeaters': int(aggregate['new_repeaters'] or 0),
+                    'new_room_servers': int(aggregate['new_room_servers'] or 0),
+                }
 
             # Fetch contacts directly (no join/group-by). The recent paths per contact are
             # loaded in a second query below and assembled in Python. This avoids materializing
@@ -5920,6 +6125,44 @@ class BotDataViewer:
             # column (incl. the raw_advert_data blob) on every request. last_advert_timestamp is
             # the per-contact value, so it matches the old MAX(...) over a single contact's rows.
             detail_cols = "c.raw_advert_data," if include_detail else ""
+            sort_expressions = {
+                'username': "LOWER(COALESCE(c.name, ''))",
+                'device_type': "LOWER(COALESCE(c.device_type, ''))",
+                'location': (
+                    "LOWER(CASE "
+                    "WHEN c.city IS NOT NULL AND c.city != '' AND c.state IS NOT NULL AND c.state != '' "
+                    "THEN c.city || ', ' || c.state "
+                    "WHEN c.city IS NOT NULL AND c.city != '' THEN c.city "
+                    "WHEN c.latitude IS NOT NULL AND c.longitude IS NOT NULL "
+                    "AND c.latitude != 0 AND c.longitude != 0 THEN printf('%s, %s', c.latitude, c.longitude) "
+                    "ELSE '' END)"
+                ),
+                'snr': 'COALESCE(c.snr, 0)',
+                'hop_count': 'COALESCE(c.hop_count, 0)',
+                'first_heard': "COALESCE(c.first_heard, '')",
+                'last_seen': "COALESCE(c.last_heard, '')",
+                'advert_count': 'COALESCE(c.advert_count, 0)',
+            }
+            sort = sort if sort in (*sort_expressions.keys(), 'distance') else 'last_seen'
+            direction = 'asc' if direction == 'asc' else 'desc'
+            if sort == 'distance':
+                if bot_lat is None or bot_lon is None:
+                    sort_expression = '0'
+                else:
+                    conn.create_function('contacts_distance_km', 2, lambda lat, lon: (
+                        self._calculate_distance(bot_lat, bot_lon, lat, lon)
+                        if lat is not None and lon is not None else 0
+                    ))
+                    sort_expression = 'contacts_distance_km(c.latitude, c.longitude)'
+            else:
+                sort_expression = sort_expressions[sort]
+
+            query_params = list(where_params)
+            limit_clause = ''
+            if pagination is not None:
+                limit_clause = ' LIMIT ? OFFSET ?'
+                query_params.extend([page_size, (page - 1) * page_size])
+
             cursor.execute("""
                 SELECT
                     c.public_key, c.name, c.role, c.device_type,
@@ -5932,31 +6175,41 @@ class BotDataViewer:
                     c.last_advert_timestamp as last_message
                 FROM complete_contact_tracking c
                 """ + where_clause + """
-                ORDER BY c.last_heard DESC
-            """, params)
+                ORDER BY """ + sort_expression + f" {direction.upper()}, c.public_key ASC" + limit_clause,
+                tuple(query_params),
+            )
 
             main_rows = cursor.fetchall()
 
-            # Fetch the 50 most recent advert paths per contact and group them in Python keyed by
-            # public_key. With idx_observed_paths_advert_pk_seen this runs as an ordered covering
-            # index scan (no temp B-tree). We don't filter to the windowed keys here: the assembly
-            # loop only looks up paths for contacts in main_rows, and adding a JOIN to the key set
-            # pushes the planner off the covering index into a much slower nested-loop plan.
-            cursor.execute("""
-                WITH recent_paths AS (
-                    SELECT public_key, path_hex, path_length, bytes_per_hop,
-                           observation_count, last_seen,
-                           ROW_NUMBER() OVER (PARTITION BY public_key ORDER BY last_seen DESC) as rn
-                    FROM observed_paths
-                    WHERE packet_type = 'advert' AND public_key IS NOT NULL
-                )
-                SELECT public_key, path_hex, path_length, bytes_per_hop, observation_count, last_seen
-                FROM recent_paths WHERE rn <= 50
-                ORDER BY public_key, last_seen DESC
-            """)
-
             paths_by_key = {}
-            for prow in cursor.fetchall():
+            path_rows = []
+            if main_rows:
+                path_params: list[Any] = []
+                page_key_clause = ''
+                if pagination is not None:
+                    # The interactive list enriches only the visible page.  At most 200 keys are
+                    # supplied, staying comfortably below SQLite's parameter limit and turning
+                    # the former all-history window scan into targeted index lookups.
+                    page_keys = [row['public_key'] for row in main_rows]
+                    placeholders = ','.join('?' for _ in page_keys)
+                    page_key_clause = f' AND public_key IN ({placeholders})'
+                    path_params.extend(page_keys)
+                cursor.execute("""
+                    WITH recent_paths AS (
+                        SELECT public_key, path_hex, path_length, bytes_per_hop,
+                               observation_count, last_seen,
+                               ROW_NUMBER() OVER (PARTITION BY public_key ORDER BY last_seen DESC) as rn
+                        FROM observed_paths
+                        WHERE packet_type = 'advert' AND public_key IS NOT NULL
+                    """ + page_key_clause + """
+                    )
+                    SELECT public_key, path_hex, path_length, bytes_per_hop, observation_count, last_seen
+                    FROM recent_paths WHERE rn <= 50
+                    ORDER BY public_key, last_seen DESC
+                """, tuple(path_params))
+                path_rows = cursor.fetchall()
+
+            for prow in path_rows:
                 if not prow['path_hex']:  # Skip empty paths
                     continue
                 bph = None
@@ -5975,7 +6228,7 @@ class BotDataViewer:
                     'last_seen': prow['last_seen'] if prow['last_seen'] is not None else None
                 })
 
-            multibyte_hop_chunks = self._collect_multibyte_hop_chunks(cursor)
+            multibyte_hop_chunks = self._get_cached_contact_multibyte_hop_chunks(cursor)
             chunk_buckets = self._bucket_hop_chunks(multibyte_hop_chunks)
 
             tracking = []
@@ -6216,10 +6469,14 @@ class BotDataViewer:
             except Exception as e:
                 self.logger.debug(f"Could not get server stats: {e}")
 
-            return {
+            result = {
                 'tracking_data': tracking,
                 'server_stats': server_stats
             }
+            if pagination is not None:
+                result['pagination'] = pagination
+                result['filtered_stats'] = filtered_stats
+            return result
         except Exception as e:
             self.logger.error(f"Error getting tracking data: {e}")
             return {'error': str(e)}
@@ -6358,7 +6615,7 @@ class BotDataViewer:
             feed_url = data.get('feed_url')
             channel_name = data.get('channel_name')
             feed_name = data.get('feed_name')
-            check_interval = data.get('check_interval_seconds', 300)
+            check_interval = _validate_feed_interval(data.get('check_interval_seconds', 300))
             api_config = data.get('api_config')
             output_format = data.get('output_format')
             message_send_interval = data.get('message_send_interval_seconds')
@@ -6415,7 +6672,7 @@ class BotDataViewer:
 
             if 'check_interval_seconds' in data:
                 updates.append('check_interval_seconds = ?')
-                params.append(data['check_interval_seconds'])
+                params.append(_validate_feed_interval(data['check_interval_seconds']))
 
             if 'enabled' in data:
                 updates.append('enabled = ?')

@@ -211,10 +211,10 @@ advert_interval_hours = 0
 startup_advert = false
 
 # Auto-manage contact list when new contacts are discovered
-# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits) (default)
 # bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
-# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = bot
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts
+auto_manage_contacts = device
 
 # When auto_manage_contacts = device, the bot schedules one-shot jobs after connect:
 #   - Firmware: manual per-type contact adds + overwrite oldest non-favourite on full + auto-add chat (companions) only (bitmask 0x03)
@@ -324,6 +324,14 @@ language = en
 # Path to translation files directory (relative to bot root)
 # Default: translations/
 translation_path = translations/
+
+# Automatically reply in the language of the incoming message.
+# When enabled, greeting-style commands detect the sender's language (from a
+# built-in keyword list, plus the optional langdetect package for longer text:
+# pip install meshcore-bot[lang]) and respond using the matching translation
+# file, falling back to `language` above when unsure.  Default: false
+auto_detect_language = false
+
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands
 # Only users with public keys listed here can execute admin commands
@@ -565,9 +573,12 @@ dm_only = true
 # CRITICAL: Only critical errors
 log_level = INFO
 
-# Log file path (leave empty for console only)
-# Bot will write logs to this file in addition to console
+# Log file path (leave empty for console/journald only)
+# Bot and web viewer write to this file in addition to console when set.
+# Empty: console only (captured by journald under systemd — preferred for services).
+# systemd service installs use: /var/log/meshcore-bot/meshcore_bot.log
 # Logs rotate at 5 MB with up to 3 backup files (e.g. meshcore_bot.log.1, .2, .3)
+# Web viewer file logs (when set) go beside this path as web_viewer.log
 log_file = meshcore_bot.log
 
 # Enable colored console output
@@ -1239,7 +1250,10 @@ greeting_message = Welcome to the mesh, @[{sender}]!
 # Channel-specific greeting messages (optional)
 # Format: channel_name:greeting_message,channel_name2:greeting_message2
 # If a channel has a specific greeting, it will be used instead of the default greeting_message
-# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
+# Example: Public:Welcome to Public channel, @[{sender}]!,general:Welcome to general, @[{sender}]!
+# Greeting text may contain commas, URLs and clock times: a fragment is only
+# treated as a new entry when the text before its first colon looks like a
+# channel name. (So avoid text like ", wx: sunny" if wx is also a channel.)
 # Multi-part greetings are supported per channel using pipe (|) separator
 # Leave empty to use greeting_message for all channels
 channel_greetings =
@@ -1511,12 +1525,14 @@ default_check_interval_seconds = 300
 
 # Maximum items to examine per check (the scan window). Filtered-out items count
 # against this; raise it for long feeds behind a restrictive filter (e.g. within_days)
-# so the scan reaches newer passing items.
+# so the scan reaches newer passing items. Values below 1 are clamped to 1.
 max_items_per_check = 10
 
 # Maximum items to post per check. Defaults to max_items_per_check when unset, so
 # existing setups are unchanged. Cap this (while raising max_items_per_check) to scan
-# deep without flooding a channel in a single poll.
+# deep without flooding a channel in a single poll. Values below 1 are clamped to 1;
+# to stop posting entirely set feed_manager_enabled = false, or disable one feed with
+# `feed disable <id>`.
 max_posts_per_check = 10
 
 # HTTP request timeout (seconds)
@@ -1749,6 +1765,9 @@ iata = XYZ
 # mqttN_port = 1883                   # MQTT broker port (1883 for TCP, 443 for WSS)
 # mqttN_transport = tcp/websockets    # Transport type (tcp or websockets)
 # mqttN_use_tls = true/false          # Enable TLS/SSL (required for WSS)
+# mqttN_tls_insecure = true/false     # INSECURE: skip certificate/hostname verification.
+#                                     # Default false. Only for self-signed brokers on a
+#                                     # trusted network — otherwise credentials are MITMable.
 # mqttN_websocket_path = /mqtt        # WebSocket path (for websockets transport)
 # mqttN_username =                     # MQTT username (optional, auto-generated for auth tokens)
 # mqttN_password =                     # MQTT password (optional, auto-generated for auth tokens)
@@ -1943,6 +1962,9 @@ enabled = false
 # For WebSockets: transport = websockets, set port (e.g. 443), websocket_path, often use_tls = true
 # websocket_path = /mqtt
 # use_tls = false
+# INSECURE: skip certificate/hostname verification. Default false. Only for
+# self-signed brokers on a trusted network — otherwise credentials are MITMable.
+# tls_insecure = false
 # username =
 # password =
 # client_id =

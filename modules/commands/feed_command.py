@@ -307,6 +307,14 @@ feed status 1"""
             feed_id = int(args[0])
             interval = int(args[1]) if len(args) > 1 else None
 
+            # A non-positive interval makes every poll cycle see the feed as due
+            # (current_time - last_check >= interval always holds), so the poller
+            # would hammer the URL forever.
+            if interval is not None and interval <= 0:
+                return await self.send_response(
+                    message, "Interval must be a positive number of seconds"
+                )
+
             success = self._update_subscription(feed_id, interval)
 
             if success:
@@ -418,7 +426,9 @@ feed status 1"""
         with self.bot.db_manager.connection() as conn:
             cursor = conn.cursor()
 
-            if interval:
+            # ``is not None``, not truthiness: 0 must not be mistaken for
+            # "no interval given" (callers reject it before reaching here).
+            if interval is not None:
                 cursor.execute('''
                     UPDATE feed_subscriptions
                     SET check_interval_seconds = ?, updated_at = CURRENT_TIMESTAMP

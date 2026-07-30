@@ -3726,7 +3726,7 @@ class MessageHandler:
                     return
                 else:
                     # COMPANION: track in DB; device add behaviour depends on auto_manage_contacts
-                    auto_manage_setting = self.bot.config.get("Bot", "auto_manage_contacts", fallback="false").lower()
+                    auto_manage_setting = self.bot.config.get("Bot", "auto_manage_contacts", fallback="device").lower()
                     if known_contact:
                         self.logger.info(
                             "👤 Known companion advert: %s — auto_manage_contacts=%s",
@@ -3826,7 +3826,7 @@ class MessageHandler:
 
             # For unknown contact types, handle based on auto_manage_contacts setting
             if hasattr(self.bot, "repeater_manager"):
-                auto_manage_setting = self.bot.config.get("Bot", "auto_manage_contacts", fallback="false").lower()
+                auto_manage_setting = self.bot.config.get("Bot", "auto_manage_contacts", fallback="device").lower()
 
                 if auto_manage_setting == "device":
                     # Device mode: Let device handle auto-addition, bot manages capacity

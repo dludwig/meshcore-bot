@@ -10,6 +10,10 @@ import subprocess
 from pathlib import Path
 
 from scripts.migrate_service_layout import migrate_service_layout
+from scripts.preserve_service_alternatives import (
+    backup_installed_only,
+    restore_backup,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,10 +52,160 @@ def test_standalone_installer_separates_code_and_private_state():
     assert "rsync -a --delete" in installer
     assert "rsync -a --update" not in installer
     assert "source-authoritative secure install" in installer
+    assert "preserve_service_alternatives.py" in installer
     assert 'VENV_BUILD="$INSTALL_DIR/.venv-build-$$"' in installer
     assert 'Preserving existing virtual environment' not in installer
     assert "Python 3.10+ installed" in installer
     assert "sys.version_info < (3, 10)" in installer
+    assert installer.index("command -v rsync") < installer.index(
+        "# Stop a running legacy service"
+    )
+    assert "trap restore_active_service_on_failure EXIT" in installer
+    assert "trap - EXIT" in installer
+    assert 'SERVICE_RESTART_PENDING=true' in installer
+    assert "SERVICE_RESTART_SAFE=false" in installer
+    assert "restart_previously_active_service" in installer
+    assert "Previously active service was restarted after the failed upgrade" in installer
+    assert 'sync_executable_tree "$dest_dir" "$rollback_backup"' in installer
+    assert 'sync_executable_tree "$rollback_backup" "$dest_dir"' in installer
+    assert "Refusing to restart a potentially partial code tree" in installer
+
+
+def test_service_documentation_matches_hardened_layout() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    getting_started = (REPO_ROOT / "docs/getting-started.md").read_text(encoding="utf-8")
+    service_docs = (REPO_ROOT / "docs/service-installation.md").read_text(
+        encoding="utf-8"
+    )
+    upgrade_docs = (REPO_ROOT / "docs/upgrade.md").read_text(encoding="utf-8")
+
+    for text in (readme, getting_started, service_docs):
+        assert "sudo nano /opt/meshcore-bot/config.ini" not in text
+        assert "sudo nano /etc/meshcore-bot/config.ini" in text
+
+    assert "Python 3.10+" in service_docs
+    assert "`rsync`" in service_docs
+    assert "sudo chown -R meshcore:meshcore /opt/meshcore-bot" not in service_docs
+    assert "patches the meshcore file" not in service_docs
+    assert "/var/lib/meshcore-bot" in service_docs
+    assert "Upgrading from v0.9.3 to v1.0.0" in upgrade_docs
+
+
+def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    installed = tmp_path / "installed"
+    backup = tmp_path / "backup"
+    (source / "nested").mkdir(parents=True)
+    (installed / "nested").mkdir(parents=True)
+
+    (source / "shipped.py").write_text("SOURCE = 2\n", encoding="utf-8")
+    (installed / "shipped.py").write_text("LOCAL = 1\n", encoding="utf-8")
+    (installed / "custom.py").write_text("CUSTOM = 1\n", encoding="utf-8")
+    (installed / "nested" / "custom.py").write_text("NESTED = 1\n", encoding="utf-8")
+    (installed / "ignored.pyc").write_bytes(b"cache")
+    (installed / "custom-link.py").symlink_to("custom.py")
+
+    preserved = backup_installed_only(source, installed, backup)
+
+    assert preserved == [
+        Path("custom-link.py"),
+        Path("custom.py"),
+        Path("nested/custom.py"),
+    ]
+    assert not (backup / "shipped.py").exists()
+    assert (backup / "custom-link.py").is_symlink()
+    assert (backup / "custom-link.py").readlink() == Path("custom.py")
+    assert not (backup / "ignored.pyc").exists()
+
+    shutil.rmtree(installed)
+    installed.mkdir()
+    (installed / "shipped.py").write_text("SOURCE = 2\n", encoding="utf-8")
+    (installed / "stale.py").write_text("STALE = 1\n", encoding="utf-8")
+
+    restored = restore_backup(backup, installed)
+
+    assert restored == preserved
+    assert (installed / "shipped.py").read_text(encoding="utf-8") == "SOURCE = 2\n"
+    assert (installed / "custom.py").read_text(encoding="utf-8") == "CUSTOM = 1\n"
+    assert (installed / "custom-link.py").is_symlink()
+    assert (installed / "custom-link.py").readlink() == Path("custom.py")
+    assert (installed / "nested" / "custom.py").read_text(encoding="utf-8") == "NESTED = 1\n"
+    assert not backup.exists()
+
+
+def test_service_sync_rolls_back_when_alternative_restore_fails(
+    tmp_path: Path,
+) -> None:
+    installer = (REPO_ROOT / "install-service.sh").read_text(encoding="utf-8")
+    function_block = installer.split("sync_executable_tree() {", 1)[1].split(
+        "# Copy files using smart copy function", 1
+    )[0]
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    rsync_count = tmp_path / "rsync-count"
+    rsync_count.write_text("0\n", encoding="utf-8")
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/bin/bash
+count_file="${FAKE_RSYNC_COUNT:?}"
+count="$(cat "$count_file")"
+printf '%s\\n' "$((count + 1))" > "$count_file"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        """#!/bin/bash
+case " $* " in
+    *" backup "*) exit 0 ;;
+    *" restore "*) exit 1 ;;
+    *) exit 2 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    harness = tmp_path / "sync-harness.sh"
+    harness.write_text(
+        """#!/bin/bash
+print_info() { :; }
+print_warning() { :; }
+print_error() { :; }
+print_success() { :; }
+SCRIPT_DIR="${FAKE_SCRIPT_DIR:?}"
+SERVICE_RESTART_SAFE=true
+sync_executable_tree() {
+"""
+        + function_block
+        + """
+copy_files_smart "$FAKE_SOURCE" "$FAKE_INSTALLED"
+result=$?
+printf 'result=%s safe=%s\\n' "$result" "$SERVICE_RESTART_SAFE"
+""",
+        encoding="utf-8",
+    )
+    harness.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_RSYNC_COUNT"] = str(rsync_count)
+    env["FAKE_SCRIPT_DIR"] = str(REPO_ROOT)
+    env["FAKE_SOURCE"] = str(tmp_path / "source")
+    env["FAKE_INSTALLED"] = str(tmp_path / "installed")
+    env["TMPDIR"] = str(tmp_path)
+    result = subprocess.run(
+        ["bash", str(harness)],
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "result=1 safe=true"
+    assert rsync_count.read_text(encoding="utf-8").strip() == "3"
 
 
 def _service_state_test_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:

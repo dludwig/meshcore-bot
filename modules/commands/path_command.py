@@ -675,6 +675,11 @@ class PathCommand(BaseCommand):
                         logger=self.logger,
                         graph_n=getattr(self.bot, 'prefix_hex_chars', 2),
                         sender_location=sender_location,
+                        # Deliberately NOT passing node_index: repeater_info below
+                        # is keyed by node_id, so a repeated 1-byte prefix shares
+                        # one entry. Resolving each occurrence separately would
+                        # make the later hop overwrite the earlier one's display.
+                        # Fixing that needs repeater_info re-keyed by hop index.
                     )
 
                     if selection.status == 'resolved':

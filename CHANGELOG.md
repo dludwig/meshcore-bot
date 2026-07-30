@@ -4,6 +4,185 @@ All notable changes to this project are documented here. The format loosely foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 semantic versioning.
 
+## [1.0.0] — 2026-07-28
+
+v1.0.0 marks the first stable release. It adds transport recovery, location and rain
+improvements, World Cup support, safer feed and outbound HTTP handling, command-prefix
+enhancements, and substantial web-viewer performance and security work.
+
+The configuration format, command syntax, service layout, and web-viewer API are now
+considered stable; breaking changes to them will come with a major version bump.
+
+### Added
+
+- Automatic serial, BLE, and TCP transport reconnect handling, including service
+  plugin re-subscription after reconnect.
+- Minute-level rain and precipitation nowcasts with optional proactive notifications.
+- World Cup command and live event announcement service.
+- Opt-in sender-language detection for localized greeting replies, with
+  keyword-first detection and an optional `langdetect` extra for longer text.
+- Centralized location resolution and geocoding helpers shared by weather, AQI,
+  path, and related commands.
+- Web-viewer plugin settings, node settings, multi-byte evidence views, and
+  paginated contacts APIs.
+- Database restore tooling and hardened service-layout migration for configuration,
+  state, logs, and local plugins.
+- Flexible command prefixes: single, multiple, or decorative prefixes, with
+  permissive and strict matching modes and optional bare commands.
+- Per-channel flood scope configuration for more granular message routing.
+- Optional packet-capture payload decoding — `GRP_TXT` channel messages are
+  decrypted and `ADVERT`s parsed into a nested `decoded` object. Publishing it to
+  MQTT is off by default and set per broker via `mqttN_include_decoded`.
+  Packet-log rotation (off/size/time) is configurable.
+- `{hops}` and `{hops_label}` placeholders for path command replies, and an RSSI
+  placeholder for test command responses.
+- Configuration is validated on every startup, surfacing misspelled sections and
+  keys that previously failed silently. `validate_config.py --strict` checks a
+  config before upgrading.
+- DARC MOWAS alerts map German region IDs (*Regionalschlüssel*) to MeshCore scopes,
+  limiting each alert to the regions it was issued for.
+- NWS gridpoint data as the US precipitation-nowcast source.
+- A tracked `LICENSE` file (MIT) and matching `pyproject.toml` license metadata, so
+  built wheels and packages carry the license the README has always declared.
+
+### Changed
+
+- Feed polling now has bounded response and item limits, duplicate queue protection,
+  per-feed serialization, and configurable post limits.
+- Direct-message responses are split at MeshCore byte limits without breaking UTF-8.
+- Mesh graph and contacts queries scope enrichment work to the requested page or
+  visible data.
+- Service installs keep executable code root-owned while configuration and runtime
+  state remain writable only by the service account.
+- The help command now respects its own `channels` override, falling back to the
+  global `monitor_channels` only when no help command is loaded.
+- The webhook service starts before the radio connection and returns HTTP 503
+  until the bot is connected, narrowing the window for connection refusals.
+- Weather alerts recognize NWS responses that mean "no coverage here" and stop
+  reporting them as errors.
+
+### Fixed
+
+- Closed outbound HTTP SSRF bypasses, including IPv4-mapped IPv6 and redirect/DNS
+  rebinding cases.
+- Hardened configuration reload rollback, scheduler operation claims, feed queue
+  deduplication, and blocking weather-provider calls.
+- Escaped user-controlled web-viewer content and neutralized Discord mentions.
+- Restored Python 3.10 compatibility and expanded CI coverage through Python 3.13.
+- `NEW_CONTACT` adverts are classified as known or new instead of always being
+  logged as newly discovered.
+- The standalone installer preserves custom alternative commands and symlinks, and
+  rolls back a partial executable sync rather than restarting a half-updated tree.
+- Startup validation now actually reports unknown and misspelled keys — including
+  in `*_Command` sections — with a "did you mean" suggestion, instead of only
+  checking section names and a hardcoded `[Connection]` pair.
+- `!aqi`, `!rain`, `!snow`, `!aurora`, `!prefix`, `!alert`, and `!gwx` no longer
+  block the event loop while geocoding; location resolution runs off-thread like
+  the forecast fetch already did. `!prefix` was the worst case, reverse-geocoding
+  once per matching repeater with the loop stalled throughout.
+- The Nominatim rate limiter reserves its slot before the request instead of
+  recording it afterwards, so concurrent geocodes can no longer clear the gate
+  together and breach the 1 req/s policy. The geocode caches are locked against
+  concurrent eviction.
+- The web viewer footer and the `!version` command agree on dev and detached-tag
+  checkouts; a detached checkout on a release tag reports that tag rather than
+  `HEAD-<sha>`.
+- `[Feed_Manager]` numeric limits are clamped to sane minimums. `max_items_per_check`
+  below 1 no longer takes Python's negative-slice meaning; `max_posts_per_check` is
+  enforced before an item is sent rather than after, while configured values below
+  1 are clamped to 1; `feed_request_timeout` below 1 no longer disables the HTTP
+  timeout outright; and `max_message_length` below 4 no longer lengthens the message
+  it is meant to cap.
+
+### Contributors
+
+Thanks to [@rlwilliamson-dev](https://github.com/rlwilliamson-dev) for the rain
+nowcast work and the NWS gridpoint source, and to
+[@fmoessbauer](https://github.com/fmoessbauer) for the MOWAS region-scope mapping
+and code-style fixes.
+
+## [0.9.3] — 2026-05-30
+
+### Changed
+
+- Bridged Discord messages set `allowed_mentions` to an empty list, so `@everyone`,
+  `@here`, and role mentions arrive as plain text instead of pinging the channel.
+
+### Documentation
+
+- Expanded the command reference for `cmd`, `version`, `weather`, and `path` with
+  usage examples and configuration options, and documented the `RandomLine`
+  configurable triggers.
+- Marked the global `[Aliases]` section deprecated in favor of per-command
+  `aliases =` keys, and clarified the `[Rate_Limits]` and `[Webhook]` sections.
+- Emphasized web-viewer security practices in the viewer documentation.
+
+## [0.9.2] — 2026-05-17
+
+### Fixed
+
+- Webhook channel lookup strips a leading `#`, so posts match hashtag channels
+  cached from the radio.
+- The webhook endpoint returns HTTP 500 when the mesh send fails, instead of
+  reporting success.
+
+### Changed
+
+- Packet capture applies log levels from its own verbose/debug settings rather
+  than setting the global logger level, and logs a per-packet summary whose level
+  follows those flags.
+- Clarified how `outgoing_flood_scope_override` and `flood_scopes` interact, with
+  more informative scope-resolution logging and RF-correlation eligibility checks.
+- Corrected the documentation URL in the systemd unit and the command User-Agent.
+
+## [0.9.1] — 2026-05-16
+
+The theme of this release is flood-scope control: which slice of the mesh a given
+outgoing message is flooded to.
+
+### Added
+
+- Optional regional `TC_FLOOD` scope configuration across services (weather,
+  earthquake, webhook). `CommandManager` resolves the scope from the incoming
+  message, the owning config section, or an explicit parameter.
+- Optional flood scope for scheduled channel messages via `channel:#scope:body`
+  in `[Scheduled_Messages]`.
+- Five-field cron expressions and preset aliases for `[Scheduled_Messages]`. The
+  legacy `HHMM` form is still parsed and warns.
+- `reply_prefix` and `minimum_path_bytes` settings for the path command.
+- `[Test_Command] response_format` supports piped path filters (`pathbytes_min`,
+  `prefix_if_nonempty`) and takes priority over `[Keywords]`.
+- Global and per-broker MQTT JWT settings: `jwt_ttl_seconds` and
+  `jwt_renewal_interval`.
+- `send_channel_message` accepts an explicit timestamp, enabling bit-identical
+  message replication and chronological display ordering.
+- DARC MOWAS retransmits bit-identical messages when a repeater ack is missing,
+  so an emergency alert is not lost to a dropped ack.
+
+### Fixed
+
+- Direct-message responses route by `sender_pubkey` rather than `sender_id`,
+  preventing misrouting when several nodes share a display name.
+- Keyword and `RandomLine` channel replies now carry their configured flood scope.
+- Scheduled sends are staggered by a deterministic delay
+  (`scheduled_message_max_stagger_seconds`, default 1.5) and skip the global user
+  rate limit, so simultaneous jobs are no longer dropped. Per-channel and
+  `bot_tx` limits still apply.
+- Mesh graph pending-update flushing no longer deadlocks.
+- The feed manager checks lock status before acquiring it to prevent coroutine
+  pileup, and the scheduler processes messages without blocking its main thread.
+- Advert flag parsing uses bitwise operations so invalid flag values degrade to a
+  warning instead of failing to parse.
+- DARC MOWAS message chunks get ascending timestamps, giving receivers correct
+  ordering and deduplication.
+- Service names strip leading and trailing underscores, so `<foo>_Service`
+  resolves to `<foo>` rather than `<foo>_`.
+
+### Contributors
+
+Thanks to [@fmoessbauer](https://github.com/fmoessbauer) for the MOWAS
+reliability work and the service-name fix (#182, #183).
+
 ## [0.9.0] — 2026-04-17
 
 v0.9.0 is a large release that focuses on operational reliability, observability, and
@@ -150,4 +329,8 @@ hardening fixes.
   v0.9.0.
 - Discord integration, kg7qin integration notes (`f2936be`, `de6279c`).
 
+[1.0.0]: https://github.com/agessaman/meshcore-bot/compare/v0.9.3...v1.0.0
+[0.9.3]: https://github.com/agessaman/meshcore-bot/compare/v0.9.2...v0.9.3
+[0.9.2]: https://github.com/agessaman/meshcore-bot/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/agessaman/meshcore-bot/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/agessaman/meshcore-bot/compare/v0.8.3...v0.9.0

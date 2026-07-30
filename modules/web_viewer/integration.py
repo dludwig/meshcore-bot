@@ -871,10 +871,30 @@ class WebViewerIntegration:
         except Exception as e:
             self.logger.error(f"Error stopping web viewer: {e}")
 
+    def _viewer_log_dir(self, config_path: str) -> Path | None:
+        """Return directory for viewer stdout/stderr files, or None for journal-only.
+
+        Mirrors the main bot: empty [Logging] log_file means console/journal only
+        (no files under the install tree). When set, use that file's parent
+        (e.g. /var/log/meshcore-bot).
+        """
+        log_file = ''
+        try:
+            if self.bot.config.has_section('Logging'):
+                log_file = self.bot.config.get('Logging', 'log_file', fallback='').strip()
+        except Exception:
+            log_file = ''
+        if not log_file:
+            return None
+        config_base = Path(config_path).parent.resolve()
+        return Path(resolve_path(log_file, config_base)).parent
+
     def _run_viewer(self):
         """Run the web viewer in a separate process"""
         stdout_file = None
         stderr_file = None
+        stdout_path = None
+        stderr_path = None
 
         try:
             # Get the path to the web viewer script
@@ -895,28 +915,35 @@ class WebViewerIntegration:
             if self.debug:
                 cmd.append("--debug")
 
-            # Ensure logs directory exists
-            os.makedirs('logs', exist_ok=True)
+            # Avoid PIPE deadlock: either inherit stdio (journald under systemd)
+            # or redirect to files beside the configured log_file.
+            log_dir = self._viewer_log_dir(config_path)
+            if log_dir is None:
+                # Inherit parent stdout/stderr so systemd/journald captures them.
+                # Do not create ./logs under the (often read-only) install tree.
+                popen_stdout = None
+                popen_stderr = None
+            else:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                stdout_path = log_dir / 'web_viewer_stdout.log'
+                stderr_path = log_dir / 'web_viewer_stderr.log'
+                # Open in write mode to prevent buffer blocking. Using 'w'
+                # (overwrite) instead of 'a' (append) since:
+                # - The web viewer already has proper logging to web_viewer.log
+                # - stdout/stderr are mainly for immediate debugging
+                # - Prevents unbounded log file growth
+                stdout_file = open(stdout_path, 'w')
+                stderr_file = open(stderr_path, 'w')
+                self._viewer_stdout_file = stdout_file
+                self._viewer_stderr_file = stderr_file
+                popen_stdout = stdout_file
+                popen_stderr = stderr_file
 
-            # Open log files in write mode to prevent buffer blocking
-            # This fixes the issue where subprocess.PIPE buffers (~64KB) fill up
-            # after ~5 minutes and cause the subprocess to hang.
-            # Using 'w' mode (overwrite) instead of 'a' (append) since:
-            # - The web viewer already has proper logging to web_viewer_modern.log
-            # - stdout/stderr are mainly for immediate debugging
-            # - Prevents unbounded log file growth
-            stdout_file = open('logs/web_viewer_stdout.log', 'w')
-            stderr_file = open('logs/web_viewer_stderr.log', 'w')
-
-            # Store file handles for proper cleanup
-            self._viewer_stdout_file = stdout_file
-            self._viewer_stderr_file = stderr_file
-
-            # Start the viewer process with log file redirection
+            # Start the viewer process
             self.viewer_process = subprocess.Popen(
                 cmd,
-                stdout=stdout_file,
-                stderr=stderr_file,
+                stdout=popen_stdout,
+                stderr=popen_stderr,
                 text=True
             )
 
@@ -926,32 +953,37 @@ class WebViewerIntegration:
             # Check if it started successfully
             if self.viewer_process and self.viewer_process.poll() is not None:
                 # Process failed immediately - read from log files for error reporting
-                stdout_file.flush()
-                stderr_file.flush()
-
-                # Read last few lines from stderr for error reporting
-                try:
-                    stderr_file.close()
-                    with open('logs/web_viewer_stderr.log') as f:
-                        stderr_lines = f.readlines()[-20:]  # Last 20 lines
-                        stderr = ''.join(stderr_lines)
-                except Exception:
-                    stderr = "Could not read stderr log"
-
-                # Read last few lines from stdout for error reporting
-                try:
-                    stdout_file.close()
-                    with open('logs/web_viewer_stdout.log') as f:
-                        stdout_lines = f.readlines()[-20:]  # Last 20 lines
-                        stdout = ''.join(stdout_lines)
-                except Exception:
-                    stdout = "Could not read stdout log"
+                stderr = ""
+                stdout = ""
+                if stderr_file is not None and stderr_path is not None:
+                    with suppress(Exception):
+                        stderr_file.flush()
+                        stderr_file.close()
+                    try:
+                        with open(stderr_path) as f:
+                            stderr = ''.join(f.readlines()[-20:])
+                    except Exception:
+                        stderr = "Could not read stderr log"
+                if stdout_file is not None and stdout_path is not None:
+                    with suppress(Exception):
+                        stdout_file.flush()
+                        stdout_file.close()
+                    try:
+                        with open(stdout_path) as f:
+                            stdout = ''.join(f.readlines()[-20:])
+                    except Exception:
+                        stdout = "Could not read stdout log"
 
                 self.logger.error(f"Web viewer failed to start. Return code: {self.viewer_process.returncode}")
                 if stderr and stderr.strip():
                     self.logger.error(f"Web viewer startup error: {stderr}")
                 if stdout and stdout.strip():
                     self.logger.error(f"Web viewer startup output: {stdout}")
+                elif log_dir is None:
+                    self.logger.error(
+                        "Web viewer startup output is in the service journal "
+                        "(empty [Logging] log_file; stdio inherited)"
+                    )
 
                 self.viewer_process = None
                 self._viewer_stdout_file = None
@@ -986,25 +1018,28 @@ class WebViewerIntegration:
 
             # Process exited - read from log files for error reporting if needed
             if self.viewer_process and self.viewer_process.returncode != 0:
-                stdout_file.flush()
-                stderr_file.flush()
-
-                # Read last few lines from stderr for error reporting
-                try:
-                    stderr_file.close()
-                    with open('logs/web_viewer_stderr.log') as f:
-                        stderr_lines = f.readlines()[-20:]  # Last 20 lines
-                        stderr = ''.join(stderr_lines)
-                except Exception:
-                    stderr = "Could not read stderr log"
-
-                # Close stdout file as well
-                with suppress(Exception):
-                    stdout_file.close()
+                stderr = ""
+                if stderr_file is not None and stderr_path is not None:
+                    with suppress(Exception):
+                        stderr_file.flush()
+                        stderr_file.close()
+                    try:
+                        with open(stderr_path) as f:
+                            stderr = ''.join(f.readlines()[-20:])
+                    except Exception:
+                        stderr = "Could not read stderr log"
+                if stdout_file is not None:
+                    with suppress(Exception):
+                        stdout_file.close()
 
                 self.logger.error(f"Web viewer process exited with code {self.viewer_process.returncode}")
                 if stderr and stderr.strip():
                     self.logger.error(f"Web viewer stderr: {stderr}")
+                elif log_dir is None:
+                    self.logger.error(
+                        "Web viewer stderr is in the service journal "
+                        "(empty [Logging] log_file; stdio inherited)"
+                    )
 
                 self._viewer_stdout_file = None
                 self._viewer_stderr_file = None

@@ -82,7 +82,7 @@ class RepeaterManager:
         self.contact_limit = 300  # MeshCore device limit (will be updated from device info)
         self.auto_purge_threshold = 280  # Start purging when 280+ contacts
         # Respect auto_manage_contacts: manual mode (false) = no auto-purge; device/bot = auto-purge on
-        auto_manage = bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower()
+        auto_manage = bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower()
         self._auto_manage_contacts = auto_manage
         self.auto_purge_enabled = (auto_manage != 'false')
 
@@ -2895,7 +2895,7 @@ class RepeaterManager:
         """Set companion-radio firmware: manual per-type adds + overwrite oldest non-favourite + chat-only (0x03)."""
         if not self.bot.meshcore or not hasattr(self.bot.meshcore, 'commands'):
             return False
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             self.logger.info('Skipping firmware autoadd setup — auto_manage_contacts is not device')
             return False
         try:
@@ -2915,7 +2915,7 @@ class RepeaterManager:
 
     async def sync_device_mode_favourites_pass1(self) -> None:
         """Favourite all on-device contacts whose pubkey is in the protected set (admin + announcements ACL)."""
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         if not self.bot.meshcore or not hasattr(self.bot.meshcore, 'commands'):
             return
@@ -2930,7 +2930,7 @@ class RepeaterManager:
             self.logger.debug('get_contacts before favourite pass1: %s', e)
         contacts = getattr(self.bot.meshcore, 'contacts', None) or {}
         for pub_key, c in list(contacts.items()):
-            if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+            if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
                 return
             pk = (pub_key or '').lower()
             if pk not in protected:
@@ -2956,7 +2956,7 @@ class RepeaterManager:
 
     async def sync_device_mode_favourites_pass2(self) -> None:
         """Clear favourite bit for contacts not in the protected set."""
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         if not self.bot.meshcore or not hasattr(self.bot.meshcore, 'commands'):
             return
@@ -2969,7 +2969,7 @@ class RepeaterManager:
             self.logger.debug('get_contacts before favourite pass2: %s', e)
         contacts = getattr(self.bot.meshcore, 'contacts', None) or {}
         for pub_key, c in list(contacts.items()):
-            if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+            if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
                 return
             pk = (pub_key or '').lower()
             if pk in protected:

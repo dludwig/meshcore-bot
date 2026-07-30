@@ -109,7 +109,7 @@ sudo ./install-service.sh
 
 2. Configure the bot:
 ```bash
-sudo nano /opt/meshcore-bot/config.ini
+sudo nano /etc/meshcore-bot/config.ini
 ```
 
 3. Start the service:
@@ -133,7 +133,9 @@ make deb
 sudo dpkg -i dist/meshcore-bot_*.deb
 ```
 
-The package installs the bot to `/opt/meshcore-bot/`, installs a systemd unit, and creates a `meshcore-bot` system user.
+The package installs root-owned code in `/opt/meshcore-bot/`, configuration in
+`/etc/meshcore-bot/`, mutable state in `/var/lib/meshcore-bot/`, logs in
+`/var/log/meshcore-bot/`, and creates a `meshcore-bot` system user.
 
 ### Docker Deployment
 For containerized deployment using Docker:
@@ -685,7 +687,7 @@ class MyCommand(BaseCommand):
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for the full text.
 
 ## Acknowledgments
 

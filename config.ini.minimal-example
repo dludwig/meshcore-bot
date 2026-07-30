@@ -149,10 +149,10 @@ advert_interval_hours = 0
 startup_advert = false
 
 # Auto-manage contact list when new contacts are discovered
-# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits) (default)
 # bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
-# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = false
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts
+auto_manage_contacts = device
 
 # Database path for main bot database
 # Default: meshcore_bot.db
@@ -181,6 +181,10 @@ language = en
 # Path to translation files directory (relative to bot root)
 # Default: translations/
 translation_path = translations/
+
+# Reply in the sender's language when detectable (default: false).
+# Install the optional detector for longer messages: pip install meshcore-bot[lang]
+auto_detect_language = false
 
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands
@@ -258,8 +262,10 @@ allow_private_urls = false
 # CRITICAL: Only critical errors
 log_level = INFO
 
-# Log file path (leave empty for console only)
-# Bot will write logs to this file in addition to console
+# Log file path (leave empty for console/journald only)
+# Bot and web viewer write to this file in addition to console when set.
+# Empty: console only (captured by journald under systemd — preferred for services).
+# systemd service installs use: /var/log/meshcore-bot/meshcore_bot.log
 # Logs rotate at 5 MB with up to 3 backup files (e.g. meshcore_bot.log.1, .2, .3)
 log_file = meshcore_bot.log
 

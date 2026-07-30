@@ -83,9 +83,13 @@ class ConfigIniStore(SettingsStore):
         return self.config.get(section, key, fallback=fallback)
 
     def write_values(self, section: str, values: dict[str, str]) -> dict:
-        # Update the in-memory config first so this process is consistent.
+        # Persist to disk first, preserving comments and taking a backup.  A
+        # rejected payload (IniValueError) must not leave this process's
+        # in-memory config holding values that were never written.
+        result = update_ini_values(self.config_path, {section: values})
+        # Mirror into the in-memory config so this process stays consistent.
         # Guard each set: a value containing '%' trips BasicInterpolation's
-        # before_set validation; the on-disk write below is the source of truth
+        # before_set validation; the on-disk write above is the source of truth
         # and is interpolation-free, so we skip the in-memory copy for such keys.
         if not self.config.has_section(section):
             self.config.add_section(section)
@@ -94,14 +98,16 @@ class ConfigIniStore(SettingsStore):
                 self.config.set(section, key, value)
             except ValueError:
                 logger.debug("Skipped in-memory cache of %s.%s (interpolation char)", section, key)
-        # Persist to disk, preserving comments and taking a backup.
-        return update_ini_values(self.config_path, {section: values})
+        return result
 
     def write_sections(
         self,
         updates: dict[str, dict[str, str]],
         deletes: Optional[dict[str, list[str] | set[str]]] = None,
     ) -> dict:
+        # Persist to disk first: a rejected payload (IniValueError) must not
+        # leave this process's in-memory config holding unwritten values.
+        result = update_ini_values(self.config_path, updates, deletes)
         # Mirror writes into the in-memory config so this process stays current.
         for section, values in (updates or {}).items():
             if not self.config.has_section(section):
@@ -115,7 +121,7 @@ class ConfigIniStore(SettingsStore):
             if self.config.has_section(section):
                 for key in keys:
                     self.config.remove_option(section, key)
-        return update_ini_values(self.config_path, updates, deletes)
+        return result
 
 
 class DatabaseStore(SettingsStore):

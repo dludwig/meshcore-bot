@@ -598,3 +598,44 @@ class TestIntegrationTimeoutConfig:
         assert wvi.viewer_stop_force_timeout_sec == 4
         assert wvi.port_cleanup_lsof_timeout_sec == 8
         assert wvi.port_cleanup_kill_timeout_sec == 1
+
+
+class TestViewerLogDir:
+    """Web viewer subprocess log dir follows [Logging] log_file."""
+
+    def test_empty_log_file_returns_none(self):
+        from modules.web_viewer.integration import WebViewerIntegration
+
+        bot = _make_bot()
+        bot.config.add_section("Logging")
+        bot.config.set("Logging", "log_file", "")
+        with patch("modules.web_viewer.integration.BotIntegration._init_http_session"), \
+             patch("modules.web_viewer.integration.BotIntegration._init_packet_stream_table"), \
+             patch("modules.web_viewer.integration.BotIntegration._start_drain_thread"):
+            wvi = WebViewerIntegration(bot)
+        assert wvi._viewer_log_dir("/tmp/config.ini") is None
+
+    def test_missing_logging_section_returns_none(self):
+        from modules.web_viewer.integration import WebViewerIntegration
+
+        bot = _make_bot()
+        assert not bot.config.has_section("Logging")
+        with patch("modules.web_viewer.integration.BotIntegration._init_http_session"), \
+             patch("modules.web_viewer.integration.BotIntegration._init_packet_stream_table"), \
+             patch("modules.web_viewer.integration.BotIntegration._start_drain_thread"):
+            wvi = WebViewerIntegration(bot)
+        assert wvi._viewer_log_dir("/tmp/config.ini") is None
+
+    def test_absolute_log_file_uses_parent(self, tmp_path: Path):
+        from modules.web_viewer.integration import WebViewerIntegration
+
+        bot = _make_bot()
+        log_dir = tmp_path / "var" / "log" / "meshcore-bot"
+        log_dir.mkdir(parents=True)
+        bot.config.add_section("Logging")
+        bot.config.set("Logging", "log_file", str(log_dir / "meshcore_bot.log"))
+        with patch("modules.web_viewer.integration.BotIntegration._init_http_session"), \
+             patch("modules.web_viewer.integration.BotIntegration._init_packet_stream_table"), \
+             patch("modules.web_viewer.integration.BotIntegration._start_drain_thread"):
+            wvi = WebViewerIntegration(bot)
+        assert wvi._viewer_log_dir(str(tmp_path / "config.ini")) == log_dir.resolve()

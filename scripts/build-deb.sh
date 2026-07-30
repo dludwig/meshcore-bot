@@ -15,7 +15,15 @@ VERSION="${1:-}"
 if [[ -z "${VERSION}" ]]; then
     VERSION="$(python3 -c "import tomllib; d=tomllib.load(open('${PROJECT_ROOT}/pyproject.toml','rb')); print(d['project']['version'])" 2>/dev/null || \
                python3 -c "import tomli; d=tomli.load(open('${PROJECT_ROOT}/pyproject.toml','rb')); print(d['project']['version'])" 2>/dev/null || \
-               grep -Po '(?<=^version = ")([^"]+)' "${PROJECT_ROOT}/pyproject.toml" || echo "0.9.1")"
+               grep -Po '(?<=^version = ")([^"]+)' "${PROJECT_ROOT}/pyproject.toml" || true)"
+fi
+# Never fall back to a hardcoded version: silently stamping a stale number onto
+# the package produces an apparent downgrade that upgrades will refuse.
+if [[ -z "${VERSION}" ]]; then
+    echo "ERROR: Could not read the version from pyproject.toml" >&2
+    echo "       Install tomli (Python 3.10) or pass the version explicitly:" >&2
+    echo "       ./scripts/build-deb.sh 1.0.0" >&2
+    exit 1
 fi
 
 # Validate VERSION: must be semver-like (digits and dots only) to prevent

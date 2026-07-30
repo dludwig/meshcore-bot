@@ -286,17 +286,30 @@ class MeshCoreBot:
             else:
                 language = 'en'
                 translation_path = 'translations/'
+            self.translation_path = translation_path
+            self._translator_cache: dict[str, Any] = {}
             self.translator = Translator(language, translation_path)
+            self._translator_cache[language] = self.translator
             self.logger.info(f"Localization initialized: {language}")
         except (OSError, ValueError, FileNotFoundError, json.JSONDecodeError) as e:
             self.logger.warning(f"Failed to initialize translator: {e}")
             # Create a dummy translator that just returns keys
             class DummyTranslator:
+                language = 'en'
+                base_language = 'en'
+
                 def translate(self, key, **kwargs):
                     return key
+
                 def get_value(self, key):
                     return None
+
+                def get_available_languages(self):
+                    return []
+
             self.translator = DummyTranslator()
+            self.translation_path = 'translations/'
+            self._translator_cache = {}
 
         # Initialize solar conditions configuration
         set_config(self.config)
@@ -578,6 +591,58 @@ class MeshCoreBot:
                         self.logger.warning(f"Invalid channel rate limit for {key}: {value!r}")
         return ChannelRateLimiter(limits)
 
+    def _available_translation_codes(self) -> set[str]:
+        """Return concrete locale codes from filesystem or bundled catalogs."""
+        try:
+            return {
+                code
+                for code in self.translator.get_available_languages()
+                if code
+            }
+        except (AttributeError, OSError) as e:
+            self.logger.debug("Could not enumerate translation files: %s", e)
+            return set()
+
+    def get_translator(self, language: str) -> Any:
+        """Return a cached translator without changing the bot-wide default."""
+        if not language:
+            return self.translator
+        available_codes = self._available_translation_codes()
+        resolved_language = language
+        if language not in available_codes:
+            locale_matches = sorted(
+                code
+                for code in available_codes
+                if code.replace("_", "-").split("-", 1)[0] == language
+            )
+            if locale_matches:
+                resolved_language = locale_matches[0]
+        cached = self._translator_cache.get(resolved_language)
+        if cached is not None:
+            return cached
+        try:
+            translator = Translator(resolved_language, self.translation_path)
+        except (OSError, ValueError, FileNotFoundError, json.JSONDecodeError) as e:
+            self.logger.warning(
+                "Failed to build translator for %r: %s", resolved_language, e
+            )
+            return self.translator
+        self._translator_cache[resolved_language] = translator
+        return translator
+
+    def available_languages(self) -> set[str]:
+        """Return detectable base languages from filesystem or bundled catalogs."""
+        available = {
+            language.replace("_", "-").split("-", 1)[0]
+            for language in self._available_translation_codes()
+            if language
+        }
+        available.add(
+            getattr(self.translator, "base_language", None)
+            or getattr(self.translator, "language", "en")
+        )
+        return available
+
     @staticmethod
     def _config_section_values(
         config: configparser.ConfigParser, section: str
@@ -781,6 +846,7 @@ class MeshCoreBot:
                     'Localization', 'translation_path', fallback='translations/'
                 )
                 new_translator = Translator(new_language, new_translation_path)
+                new_translator_cache = {new_language: new_translator}
 
                 old_state = {
                     "config": old_config,
@@ -793,6 +859,8 @@ class MeshCoreBot:
                     "channel_rate_limiter": self.channel_rate_limiter,
                     "tx_delay_ms": self.tx_delay_ms,
                     "translator": self.translator,
+                    "translation_path": self.translation_path,
+                    "translator_cache": self._translator_cache,
                     "command_config_state": self._command_config_state(
                         self.command_manager
                     ),
@@ -813,6 +881,8 @@ class MeshCoreBot:
                     self.nominatim_rate_limiter = new_nominatim_rate_limiter
                     self.channel_rate_limiter = new_channel_rate_limiter
                     self.tx_delay_ms = new_tx_delay_ms
+                    self.translation_path = new_translation_path
+                    self._translator_cache = new_translator_cache
                     self.translator = new_translator
                     # Commands and nested delegates require the real bot. They
                     # are therefore constructed after candidate publication,
@@ -859,6 +929,8 @@ class MeshCoreBot:
                     self.channel_rate_limiter = old_state["channel_rate_limiter"]
                     self.tx_delay_ms = old_state["tx_delay_ms"]
                     self.translator = old_state["translator"]
+                    self.translation_path = old_state["translation_path"]
+                    self._translator_cache = old_state["translator_cache"]
                     self._apply_command_config_state(
                         self.command_manager, old_state["command_config_state"]
                     )
@@ -996,10 +1068,10 @@ advert_interval_hours = 0
 startup_advert = false
 
 # Auto-manage contact list when new contacts are discovered
-# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits) (default)
 # bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
-# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = false
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts
+auto_manage_contacts = device
 
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands

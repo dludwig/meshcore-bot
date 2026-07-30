@@ -44,6 +44,69 @@ def _normalize_key(key: str) -> str:
     return key.strip().lower()
 
 
+class IniValueError(ValueError):
+    """A section/key/value would corrupt the INI file if written verbatim."""
+
+
+def _check_writable(
+    updates: dict[str, dict[str, str]] | None,
+    deletes: dict[str, list[str] | set[str]] | None,
+) -> None:
+    """Reject sections/keys/values that would not survive a round-trip.
+
+    Writes are line-based, so a newline inside a value ends the key's line and
+    everything after it is re-parsed as INI on the next load — which lets a
+    caller inject arbitrary sections/keys ("config injection") or break parsing
+    outright (``DuplicateSectionError``).  Keys have the same problem plus the
+    separators and comment markers that would change what the line means.
+
+    Raises ``IniValueError`` (a ``ValueError``) so callers can surface a 400
+    rather than half-writing a corrupt file.
+    """
+    for source in (updates or {}), (deletes or {}):
+        for section in source:
+            if not section.strip():
+                raise IniValueError("Invalid section: must not be blank")
+            if any(ch in section for ch in ("\n", "\r", "[", "]")):
+                raise IniValueError(
+                    f"Invalid section {section!r}: cannot contain newlines or [ ]"
+                )
+            # configparser treats DEFAULT specially: its keys leak into every
+            # other section, and ConfigParser.add_section('DEFAULT') raises.
+            if section.strip().upper() == "DEFAULT":
+                raise IniValueError(
+                    "Invalid section 'DEFAULT': its keys would apply to every section"
+                )
+
+    for section, kv in (updates or {}).items():
+        for key, value in kv.items():
+            key_str = str(key)
+            if not key_str.strip():
+                raise IniValueError(f"Invalid key in [{section}]: must not be blank")
+            if any(ch in key_str for ch in ("\n", "\r", "=", ":", "[", "]")):
+                raise IniValueError(
+                    f"Invalid key {key_str!r} in [{section}]: "
+                    "cannot contain newlines, = : or [ ]"
+                )
+            if key_str.strip()[:1] in ("#", ";"):
+                raise IniValueError(
+                    f"Invalid key {key_str!r} in [{section}]: cannot start with # or ;"
+                )
+            value_str = "" if value is None else str(value)
+            if "\n" in value_str or "\r" in value_str:
+                raise IniValueError(
+                    f"Invalid value for {key_str!r} in [{section}]: "
+                    "cannot contain newlines"
+                )
+
+    for section, keys in (deletes or {}).items():
+        for key in keys:
+            if any(ch in str(key) for ch in ("\n", "\r", "[", "]")):
+                raise IniValueError(
+                    f"Invalid key {key!r} in [{section}]: cannot contain newlines or [ ]"
+                )
+
+
 def backup_config(config_path: str, backup_dir: str | None = None) -> str:
     """Copy ``config_path`` to a timestamped ``.bak`` file and prune old ones.
 
@@ -104,6 +167,10 @@ def update_ini_values(
             "created_sections": [section, ...], # brand-new sections appended at EOF
         }
 
+    Raises ``IniValueError`` (a ``ValueError``) if any section, key or value
+    contains characters that would not survive the round-trip — see
+    :func:`_check_writable`.  Nothing is written when that happens.
+
     Limitation: a trailing inline comment (``key = value  ; note``) on a *changed*
     line is dropped, since the whole value portion is replaced.  Full-line
     comments and untouched lines are always preserved.
@@ -112,6 +179,9 @@ def update_ini_values(
 
     if not updates and not deletes:
         return {"backup_path": "", "changed": [], "added": [], "removed": [], "created_sections": []}
+
+    # Validate before touching the file so a bad payload can never half-write.
+    _check_writable(updates, deletes)
 
     with open(config_path, encoding="utf-8") as fh:
         lines = fh.readlines()

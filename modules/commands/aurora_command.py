@@ -215,7 +215,12 @@ class AuroraCommand(BaseCommand):
         if len(parts) >= 2:
             location = " ".join(parts[1:]).strip()
 
-        lat, lon, location_label, err_key = self._resolve_location(message, location)
+        # Offloaded: _resolve_location geocodes over blocking HTTP, so running it
+        # inline would stall the event loop before we ever reach the
+        # already-offloaded aurora fetch below.
+        lat, lon, location_label, err_key = await asyncio.to_thread(
+            self._resolve_location, message, location
+        )
         if lat is None or lon is None:
             region = self.default_state or self.default_country
             if err_key == "commands.aurora.no_location":

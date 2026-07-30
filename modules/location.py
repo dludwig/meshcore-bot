@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, Optional, Union
 
@@ -326,11 +327,10 @@ def reverse_geocode_region(
         from .utils import get_nominatim_geocoder
         limiter = getattr(bot, "nominatim_rate_limiter", None)
         if limiter is not None:
-            limiter.wait_for_request_sync()
+            # Reserve before the request: this runs on worker threads.
+            limiter.wait_and_request_sync()
         geolocator = get_nominatim_geocoder(timeout=timeout)
         result = geolocator.reverse(f"{lat}, {lon}", timeout=timeout, language="en")
-        if limiter is not None:
-            limiter.record_request()
         if result is not None and hasattr(result, "raw"):
             address = result.raw.get("address", {})
             city = (
@@ -353,13 +353,21 @@ def reverse_geocode_region(
     return city, suffix
 
 
+# Guards the check-then-evict below. These caches are plain dicts reached from
+# geocoding, which now runs on worker threads: without this, two concurrent
+# evictions raise KeyError or "dictionary changed size during iteration" and the
+# exception unwinds all the way out of the command, so the user gets no reply.
+_CACHE_PUT_LOCK = threading.Lock()
+
+
 def cache_put(
     cache: dict, key: Any, value: Any, *, cap: int = GEOCODE_CACHE_CAP
 ) -> None:
     """Insert into a size-capped cache, evicting the oldest entry when full."""
-    if key not in cache and len(cache) >= cap:
-        cache.pop(next(iter(cache)))
-    cache[key] = value
+    with _CACHE_PUT_LOCK:
+        if key not in cache and len(cache) >= cap:
+            cache.pop(next(iter(cache)))
+        cache[key] = value
 
 
 def zip_to_city_string(

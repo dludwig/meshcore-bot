@@ -182,7 +182,7 @@ class MessageScheduler:
         """One-shot jobs for auto_manage_contacts=device: firmware autoadd + favourite hygiene."""
         if self._apscheduler is None:
             return
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         try:
             delay_fw = max(0, self.bot.config.getint('Bot', 'device_mode_firmware_delay_seconds', fallback=30))
@@ -220,16 +220,30 @@ class MessageScheduler:
         """Run async coroutine on bot main loop from APScheduler thread (same pattern as send_scheduled_message)."""
         import asyncio
 
-        if hasattr(self.bot, 'main_event_loop') and self.bot.main_event_loop and self.bot.main_event_loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(coro, self.bot.main_event_loop)
-            try:
-                future.result(timeout=timeout)
-            except RuntimeError as e:
-                self.logger.warning('Event loop gone during device-mode job: %s', e)
-            except Exception as e:
-                self.logger.error('Device-mode scheduled job failed: %s', e)
-        else:
+        loop = getattr(self.bot, 'main_event_loop', None)
+        if not loop or not loop.is_running():
+            # Close the coroutine we were handed. Dropping it unawaited leaks it and
+            # emits "coroutine ... was never awaited" RuntimeWarning.
+            coro.close()
             self.logger.warning('No running main_event_loop — skipping device-mode scheduled job')
+            return
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError as e:
+            # This job runs on an APScheduler thread, so the loop can stop between
+            # the is_running() check above and this submit. The coroutine never got
+            # scheduled, so close it here too.
+            coro.close()
+            self.logger.warning('Event loop gone during device-mode job: %s', e)
+            return
+
+        try:
+            future.result(timeout=timeout)
+        except RuntimeError as e:
+            self.logger.warning('Event loop gone during device-mode job: %s', e)
+        except Exception as e:
+            self.logger.error('Device-mode scheduled job failed: %s', e)
 
     async def _device_mode_firmware_coro(self) -> None:
         await self.bot.repeater_manager.apply_device_mode_firmware_preferences()
@@ -241,18 +255,18 @@ class MessageScheduler:
         await self.bot.repeater_manager.sync_device_mode_favourites_pass2()
 
     def _device_mode_firmware_job_sync(self) -> None:
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             self.logger.debug('Skipping device_mode_firmware job — not device mode')
             return
         self._run_async_on_main_loop(self._device_mode_firmware_coro(), timeout=120.0)
 
     def _device_mode_favourite_pass1_job_sync(self) -> None:
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         self._run_async_on_main_loop(self._device_mode_favourite_pass1_coro(), timeout=600.0)
 
     def _device_mode_favourite_pass2_job_sync(self) -> None:
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         self._run_async_on_main_loop(self._device_mode_favourite_pass2_coro(), timeout=600.0)
 

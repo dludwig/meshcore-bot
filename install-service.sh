@@ -14,6 +14,8 @@
 #   ./install-service.sh          # Normal installation (non-destructive if already installed)
 #   ./install-service.sh --upgrade # Upgrade mode (copies new files, updates dependencies)
 #   ./install-service.sh -u        # Short form of --upgrade
+#   ./install-service.sh --update-venv           # Only refresh the venv, in place
+#   ./install-service.sh -u --update-venv        # Upgrade code, reuse the venv
 #
 # Prerequisites:
 #   - Linux system with systemd OR macOS
@@ -76,10 +78,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Parse command line arguments (before sudo check so help works)
 UPGRADE_MODE=false
+UPDATE_VENV=false
 for arg in "$@"; do
     case $arg in
         --upgrade|-u)
             UPGRADE_MODE=true
+            ;;
+        --update-venv)
+            UPDATE_VENV=true
             ;;
         --help|-h)
             echo "MeshCore Bot Service Installation Script"
@@ -88,12 +94,19 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --upgrade, -u    Upgrade mode: update files and dependencies"
+            echo "  --update-venv    Update dependencies inside the existing virtualenv"
+            echo "                   instead of rebuilding it from scratch. On its own"
+            echo "                   nothing else is touched: no file sync, no service"
+            echo "                   file changes. Combine with --upgrade to sync code"
+            echo "                   and still skip the slow rebuild."
             echo "  --help, -h       Show this help message"
             echo ""
             echo "Examples:"
-            echo "  $0               # Normal installation (non-destructive if already installed)"
-            echo "  $0 --upgrade     # Upgrade existing installation"
-            echo "  $0 -u            # Short form of --upgrade"
+            echo "  $0                     # Normal installation (non-destructive if already installed)"
+            echo "  $0 --upgrade           # Upgrade existing installation (rebuilds the venv)"
+            echo "  $0 -u                  # Short form of --upgrade"
+            echo "  $0 --update-venv       # Refresh dependencies only, keeping the venv"
+            echo "  $0 -u --update-venv    # Upgrade code and refresh the venv in place"
             exit 0
             ;;
         *)
@@ -103,6 +116,14 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# --update-venv on its own is a virtualenv-only run: skip the service user,
+# directory, file-sync and service-file steps entirely.  Combined with --upgrade
+# it stays a normal upgrade that reuses the virtualenv instead of rebuilding it.
+VENV_ONLY_MODE=false
+if [[ "$UPDATE_VENV" == true && "$UPGRADE_MODE" != true ]]; then
+    VENV_ONLY_MODE=true
+fi
 
 # Function to print section headers
 print_section() {
@@ -155,9 +176,15 @@ ask_yes_no() {
     done
 }
 
-if [[ "$UPGRADE_MODE" == true ]]; then
+if [[ "$VENV_ONLY_MODE" == true ]]; then
+    print_section "MeshCore Bot Virtual Environment Update"
+    print_info "Running in VENV-ONLY mode - only Python dependencies will change"
+elif [[ "$UPGRADE_MODE" == true ]]; then
     print_section "MeshCore Bot Service Upgrader"
     print_info "Running in UPGRADE mode - will update files and dependencies"
+    if [[ "$UPDATE_VENV" == true ]]; then
+        print_info "Reusing the existing virtualenv instead of rebuilding it"
+    fi
 else
     print_section "MeshCore Bot Service Installer"
 fi
@@ -237,14 +264,137 @@ if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
     print_error "Found: $(python3 --version 2>&1)"
     exit 1
 fi
+if ! command -v rsync &> /dev/null; then
+    print_error "rsync is required for a source-authoritative secure install"
+    print_error "Install rsync before stopping or upgrading the service"
+    exit 1
+fi
 
 # Stop a running legacy service before changing code or taking the SQLite
 # backup used for layout migration.  This runs only after sudo re-execution and
 # service-manager validation, so --help and unprivileged discovery stay inert.
-SERVICE_WAS_ACTIVE=false
+SERVICE_RESTART_PENDING=false
+SERVICE_RESTART_SAFE=true
+
+restart_previously_active_service() {
+    if [[ "$SERVICE_RESTART_PENDING" != true ]]; then
+        return 0
+    fi
+
+    if [[ "$IS_MACOS" == true ]]; then
+        if ! launchctl list "$PLIST_NAME" &>/dev/null; then
+            if ! launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null; then
+                return 1
+            fi
+        fi
+    elif ! systemctl start "$SERVICE_NAME"; then
+        return 1
+    fi
+
+    SERVICE_RESTART_PENDING=false
+    return 0
+}
+
+restore_active_service_on_failure() {
+    local status=$?
+    trap - EXIT
+    if [[ "$status" -ne 0 && "$SERVICE_RESTART_PENDING" == true && "$SERVICE_RESTART_SAFE" == true ]]; then
+        print_warning "Upgrade failed; attempting to restore the previously active service"
+        if restart_previously_active_service; then
+            print_warning "Previously active service was restarted after the failed upgrade"
+        else
+            print_error "Could not restart the previously active service; manual recovery is required"
+        fi
+    elif [[ "$status" -ne 0 && "$SERVICE_RESTART_PENDING" == true ]]; then
+        print_error "Upgrade failed and the executable rollback was incomplete"
+        print_error "Refusing to restart a potentially partial code tree; manual recovery is required"
+    fi
+    exit "$status"
+}
+
+trap restore_active_service_on_failure EXIT
+
+# Normalize virtualenv permissions after any pip activity.  pip inherits this
+# script's `umask 077`, so freshly written files (pyvenv.cfg, *.pth, compiled
+# *.so, dist-info metadata) land root-only and the service account cannot import
+# them -- Python aborts with "init_import_site: Failed to import the site
+# module".  Add read for all plus execute/traverse only where an execute bit
+# already exists.  No write bit is ever granted, so the service account still
+# cannot modify dependency code.
+harden_venv_permissions() {
+    local venv="$1"
+    chmod -R go-w "$venv" 2>/dev/null || true
+    chmod -R a+rX "$venv" 2>/dev/null || true
+}
+
+# Echo a human-readable reason when an existing virtualenv must not be updated
+# in place, or nothing when reuse is safe.  The rebuild path exists because a
+# service-writable venv can hide a malicious .pth or module that hardening would
+# then bless as root-owned executable code, so reuse demands a tree that is
+# root-owned and free of group/other write bits.
+venv_reuse_blocker() {
+    local venv="$1"
+
+    if [ ! -d "$venv" ]; then
+        echo "no virtualenv exists at $venv"
+        return
+    fi
+    if [ ! -x "$venv/bin/python" ]; then
+        echo "$venv has no usable interpreter at bin/python"
+        return
+    fi
+
+    local offender
+    offender="$(find "$venv" ! -user root -print 2>/dev/null | head -1)"
+    if [ -n "$offender" ]; then
+        echo "not root-owned throughout (e.g. $offender)"
+        return
+    fi
+
+    offender="$(find "$venv" \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null | head -1)"
+    if [ -n "$offender" ]; then
+        echo "group/other-writable paths present (e.g. $offender)"
+        return
+    fi
+
+    # A system Python upgrade leaves the venv pointing at a replaced interpreter
+    # or a stale site-packages version directory; in-place pip cannot repair it.
+    local venv_ver sys_ver
+    venv_ver="$("$venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+    sys_ver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+    if [ -z "$venv_ver" ]; then
+        echo "the interpreter at $venv/bin/python does not run"
+        return
+    fi
+    if [ -n "$sys_ver" ] && [ "$venv_ver" != "$sys_ver" ]; then
+        echo "virtualenv Python $venv_ver does not match system python3 $sys_ver"
+        return
+    fi
+}
+
+# Bring an existing virtualenv up to date with requirements.txt.  Plain
+# `pip install -r` (no --upgrade) is deliberate: it installs what is missing and
+# upgrades only what no longer satisfies a specifier, which is the fast path.
+# `--upgrade` would eagerly churn transitive dependencies on every run.  Extras
+# installed previously (profanity filter, geocoding) survive, unlike a rebuild.
+update_venv_in_place() {
+    local venv="$1"
+    local requirements="$2"
+
+    print_info "Reusing the existing virtualenv at $venv"
+    print_info "Synchronizing dependencies from $requirements"
+    if ! "$venv/bin/python" -m pip install --quiet -r "$requirements"; then
+        print_error "Failed to update Python dependencies"
+        print_info "Check your internet connection, or rebuild with: $0 --upgrade"
+        return 1
+    fi
+
+    harden_venv_permissions "$venv"
+    print_success "Dependencies are up to date in the existing virtualenv"
+}
+
 if [[ "$IS_MACOS" == true ]]; then
     if launchctl list "$PLIST_NAME" &>/dev/null; then
-        SERVICE_WAS_ACTIVE=true
         if ! launchctl unload "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null; then
             launchctl stop "$PLIST_NAME" 2>/dev/null || true
         fi
@@ -252,10 +402,60 @@ if [[ "$IS_MACOS" == true ]]; then
             print_error "The launchd service is still running; refusing an unsafe live database migration"
             exit 1
         fi
+        SERVICE_RESTART_PENDING=true
     fi
 elif systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    SERVICE_WAS_ACTIVE=true
     systemctl stop "$SERVICE_NAME"
+    SERVICE_RESTART_PENDING=true
+fi
+
+# ---------------------------------------------------------------------------
+# Virtualenv-only fast path.  Everything above still applies (privilege check,
+# service-manager and Python validation, stopping a running service); nothing
+# below does, so the run ends here rather than threading conditionals through
+# every remaining step.
+# ---------------------------------------------------------------------------
+if [[ "$VENV_ONLY_MODE" == true ]]; then
+    print_section "Updating Python Virtual Environment"
+
+    if [ ! -d "$INSTALL_DIR" ]; then
+        print_error "No installation found at $INSTALL_DIR"
+        print_info "Run a full install first: sudo $0"
+        exit 1
+    fi
+
+    REQUIREMENTS_SRC="$SCRIPT_DIR/requirements.txt"
+    if [ ! -f "$REQUIREMENTS_SRC" ]; then
+        print_error "requirements.txt not found at $REQUIREMENTS_SRC"
+        exit 1
+    fi
+
+    VENV_BLOCKER="$(venv_reuse_blocker "$INSTALL_DIR/venv")"
+    if [ -n "$VENV_BLOCKER" ]; then
+        print_error "Cannot update the virtualenv in place: $VENV_BLOCKER"
+        print_info "Rebuild it with: sudo $0 --upgrade"
+        exit 1
+    fi
+
+    update_venv_in_place "$INSTALL_DIR/venv" "$REQUIREMENTS_SRC" || exit 1
+
+    if [[ "$SERVICE_RESTART_PENDING" == true ]]; then
+        print_info "Restarting the service because it was running before the update"
+        if ! restart_previously_active_service; then
+            print_error "Failed to restart the service"
+            exit 1
+        fi
+        print_success "Service restarted"
+    elif [[ "$IS_MACOS" == true ]]; then
+        print_info "Service was not running; start it with: sudo launchctl load $LAUNCHD_DIR/$SERVICE_FILE"
+    else
+        print_info "Service was not running; start it with: sudo systemctl start $SERVICE_NAME"
+    fi
+
+    print_section "Virtual Environment Update Complete"
+    print_info "Code in $INSTALL_DIR, configuration and the service file were left untouched"
+    print_info "Dependencies came from $REQUIREMENTS_SRC"
+    exit 0
 fi
 
 print_section "Step 1: Setting Up Service User"
@@ -342,33 +542,87 @@ fi
 # fallback can preserve a newer/stale Python file written by a previously
 # compromised service account and then cement it as root-owned executable code.
 # Only the explicitly excluded runtime paths survive an upgrade.
+sync_executable_tree() {
+    local source_dir="$1"
+    local dest_dir="$2"
+
+    rsync -a --delete --exclude='.git' \
+        --exclude='__pycache__' \
+        --exclude='*.pyc' \
+        --exclude='*.pyo' \
+        --exclude='.DS_Store' \
+        --exclude='venv' \
+        --exclude='*.db' \
+        --exclude='*.db-shm' \
+        --exclude='*.db-wal' \
+        --exclude='*.log' \
+        --exclude='backups' \
+        --exclude='local/' \
+        --exclude='config.ini' \
+        "$source_dir/" "$dest_dir/"
+}
+
 copy_files_smart() {
     local source_dir="$1"
     local dest_dir="$2"
-    if ! command -v rsync &> /dev/null; then
-        print_error "rsync is required for a source-authoritative secure install; install rsync and retry"
+    local alternatives_backup
+    local rollback_backup
+
+    alternatives_backup="$(mktemp -d "${TMPDIR:-/tmp}/meshcore-alternatives.XXXXXX")"
+    rollback_backup="$(mktemp -d "${TMPDIR:-/tmp}/meshcore-executable-rollback.XXXXXX")"
+    if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" backup \
+          --source "$source_dir/modules/commands/alternatives" \
+          --installed "$dest_dir/modules/commands/alternatives" \
+          --backup "$alternatives_backup"; then
+        print_error "Failed to preserve installed-only alternative commands"
+        print_error "Partial backup retained at $alternatives_backup"
+        return 1
+    fi
+
+    print_info "Creating a rollback snapshot of the installed executable tree"
+    if ! sync_executable_tree "$dest_dir" "$rollback_backup"; then
+        print_error "Failed to create the executable rollback snapshot"
+        print_error "Incomplete snapshot retained at $rollback_backup"
         return 1
     fi
 
     print_info "Using rsync for source-authoritative executable synchronization"
-    if ! rsync -a --delete --exclude='.git' \
-          --exclude='__pycache__' \
-          --exclude='*.pyc' \
-          --exclude='*.pyo' \
-          --exclude='.DS_Store' \
-          --exclude='venv' \
-          --exclude='*.db' \
-          --exclude='*.db-shm' \
-          --exclude='*.db-wal' \
-          --exclude='*.log' \
-          --exclude='backups' \
-          --exclude='local/' \
-          --exclude='config.ini' \
-          "$source_dir/" "$dest_dir/"; then
-        print_error "rsync failed; refusing to continue with a partially synchronized code tree"
+    SERVICE_RESTART_SAFE=false
+    if ! sync_executable_tree "$source_dir" "$dest_dir"; then
+        print_warning "rsync failed; restoring the previous executable tree"
+        if sync_executable_tree "$rollback_backup" "$dest_dir"; then
+            SERVICE_RESTART_SAFE=true
+            rm -rf -- "$rollback_backup"
+            if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
+                  --installed "$dest_dir/modules/commands/alternatives" \
+                  --backup "$alternatives_backup"; then
+                print_error "Alternative-command backup retained at $alternatives_backup"
+            fi
+            print_warning "Previous executable tree restored after synchronization failure"
+        else
+            print_error "Executable rollback failed; snapshot retained at $rollback_backup"
+        fi
+        print_error "rsync failed; refusing to continue the upgrade"
+        return 1
+    fi
+    if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
+          --installed "$dest_dir/modules/commands/alternatives" \
+          --backup "$alternatives_backup"; then
+        print_error "Failed to restore installed-only alternative commands"
+        print_error "Backup retained at $alternatives_backup"
+        print_warning "Restoring the previous executable tree"
+        if sync_executable_tree "$rollback_backup" "$dest_dir"; then
+            SERVICE_RESTART_SAFE=true
+            rm -rf -- "$rollback_backup"
+            print_warning "Previous executable tree restored after alternative-command failure"
+        else
+            print_error "Executable rollback failed; snapshot retained at $rollback_backup"
+        fi
         return 1
     fi
 
+    SERVICE_RESTART_SAFE=true
+    rm -rf -- "$rollback_backup"
     print_success "Executable files synchronized authoritatively using rsync"
 }
 
@@ -381,7 +635,9 @@ copy_files_smart "$SCRIPT_DIR" "$INSTALL_DIR" || {
 # Write .version_info at install dir so web viewer and packet_capture show version after install
 if command -v git &>/dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
     GIT_HASH="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
-    if VERSION="$(git -C "$SCRIPT_DIR" describe --exact-match HEAD 2>/dev/null)"; then
+    # --tags matches lightweight tags too; must stay in step with the runtime
+    # lookup in modules/version_info.py or the two disagree about one commit.
+    if VERSION="$(git -C "$SCRIPT_DIR" describe --tags --exact-match HEAD 2>/dev/null)"; then
         INSTALLER_VER="$VERSION"
     else
         INSTALLER_VER="dev-${GIT_HASH}"
@@ -432,71 +688,95 @@ if [ ! -f "$CONFIG_FILE" ]; then
     fi
 fi
 
-# Build dependencies in a fresh environment.  The legacy venv was writable by
-# the service account; reusing it could preserve a malicious .pth/module and
-# turn that persistence into root-owned executable code during hardening.
 print_section "Step 4: Setting Up Python Virtual Environment"
-VENV_BUILD="$INSTALL_DIR/.venv-build-$$"
-VENV_OLD="$INSTALL_DIR/.venv-old-$$"
-rm -rf "$VENV_BUILD" "$VENV_OLD"
-print_info "Creating a fresh isolated Python environment"
-python3 -m venv "$VENV_BUILD"
-VENV_BUILD_PYTHON="$VENV_BUILD/bin/python"
 
-# Ensure pip is available and up to date inside the venv
-print_info "Ensuring pip is available and up to date in the virtual environment"
-$VENV_BUILD_PYTHON -m ensurepip --upgrade >/dev/null 2>&1 || true
-$VENV_BUILD_PYTHON -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-
-# Install dependencies in venv using python -m pip (more portable than calling pip directly)
-print_info "Installing Python dependencies from requirements.txt"
-print_info "This may take a few minutes depending on your internet connection..."
-if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
-    print_error "requirements.txt not found in installation directory"
-    exit 1
+# --update-venv skips the rebuild when the existing environment is safe to reuse.
+# If it is not, say why and fall back to a full rebuild rather than failing the
+# whole upgrade.
+VENV_UPDATED_IN_PLACE=false
+if [[ "$UPDATE_VENV" == true ]]; then
+    VENV_BLOCKER="$(venv_reuse_blocker "$INSTALL_DIR/venv")"
+    if [ -n "$VENV_BLOCKER" ]; then
+        print_warning "Cannot reuse the existing virtualenv: $VENV_BLOCKER"
+        print_info "Falling back to a full rebuild"
+    elif update_venv_in_place "$INSTALL_DIR/venv" "$INSTALL_DIR/requirements.txt"; then
+        VENV_UPDATED_IN_PLACE=true
+    else
+        print_warning "In-place dependency update failed; falling back to a full rebuild"
+    fi
 fi
-$VENV_BUILD_PYTHON -m pip install --quiet -r "$INSTALL_DIR/requirements.txt" || {
-    print_error "Failed to install Python dependencies"
-    print_info "You may need to check your internet connection or Python version"
-    rm -rf "$VENV_BUILD"
-    exit 1
-}
-if [ -d "$INSTALL_DIR/venv" ]; then
-    mv "$INSTALL_DIR/venv" "$VENV_OLD"
-fi
-if ! mv "$VENV_BUILD" "$INSTALL_DIR/venv"; then
-    [ -d "$VENV_OLD" ] && mv "$VENV_OLD" "$INSTALL_DIR/venv"
-    print_error "Failed to activate the newly built virtual environment"
-    exit 1
-fi
-rm -rf "$VENV_OLD"
-print_success "Installed all Python dependencies into a fresh virtual environment"
 
-# Optional extras
-echo ""
-print_info "Optional feature packages are available:"
-echo "  • Profanity filter (better-profanity, unidecode) — drop/censor offensive messages"
-echo "  • Geocoding extras (pycountry, us) — improved country/state name resolution"
-echo ""
+if [[ "$VENV_UPDATED_IN_PLACE" != true ]]; then
+    # Build dependencies in a fresh environment.  The legacy venv was writable by
+    # the service account; reusing it could preserve a malicious .pth/module and
+    # turn that persistence into root-owned executable code during hardening.
+    VENV_BUILD="$INSTALL_DIR/.venv-build-$$"
+    VENV_OLD="$INSTALL_DIR/.venv-old-$$"
+    rm -rf "$VENV_BUILD" "$VENV_OLD"
+    print_info "Creating a fresh isolated Python environment"
+    python3 -m venv "$VENV_BUILD"
+    VENV_BUILD_PYTHON="$VENV_BUILD/bin/python"
 
-if ask_yes_no "Install profanity filter packages? (recommended if using the profanity filter feature)" "n"; then
-    print_info "Installing profanity filter packages..."
-    "$INSTALL_DIR/venv/bin/pip" install --quiet "better-profanity>=0.7.0" "unidecode>=1.3.0" || {
-        print_warning "Failed to install profanity filter packages (non-fatal)"
+    # Ensure pip is available and up to date inside the venv
+    print_info "Ensuring pip is available and up to date in the virtual environment"
+    $VENV_BUILD_PYTHON -m ensurepip --upgrade >/dev/null 2>&1 || true
+    $VENV_BUILD_PYTHON -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+
+    # Install dependencies in venv using python -m pip (more portable than calling pip directly)
+    print_info "Installing Python dependencies from requirements.txt"
+    print_info "This may take a few minutes depending on your internet connection..."
+    if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
+        print_error "requirements.txt not found in installation directory"
+        exit 1
+    fi
+    $VENV_BUILD_PYTHON -m pip install --quiet -r "$INSTALL_DIR/requirements.txt" || {
+        print_error "Failed to install Python dependencies"
+        print_info "You may need to check your internet connection or Python version"
+        rm -rf "$VENV_BUILD"
+        exit 1
     }
-    print_success "Installed profanity filter packages"
-else
-    print_info "Skipping profanity filter packages"
+    if [ -d "$INSTALL_DIR/venv" ]; then
+        mv "$INSTALL_DIR/venv" "$VENV_OLD"
+    fi
+    if ! mv "$VENV_BUILD" "$INSTALL_DIR/venv"; then
+        [ -d "$VENV_OLD" ] && mv "$VENV_OLD" "$INSTALL_DIR/venv"
+        print_error "Failed to activate the newly built virtual environment"
+        exit 1
+    fi
+    rm -rf "$VENV_OLD"
+    print_success "Installed all Python dependencies into a fresh virtual environment"
 fi
 
-if ask_yes_no "Install geocoding extras? (recommended if using location/path commands)" "n"; then
-    print_info "Installing geocoding extras..."
-    "$INSTALL_DIR/venv/bin/pip" install --quiet "pycountry>=23.12.0" "us>=2.0.0" || {
-        print_warning "Failed to install geocoding extras (non-fatal)"
-    }
-    print_success "Installed geocoding extras"
+# Optional extras.  A rebuild starts empty so these have to be re-chosen; an
+# in-place update keeps whatever was installed before, so don't re-prompt.
+if [[ "$VENV_UPDATED_IN_PLACE" == true ]]; then
+    print_info "Kept any optional packages already installed in the virtualenv"
 else
-    print_info "Skipping geocoding extras"
+    echo ""
+    print_info "Optional feature packages are available:"
+    echo "  • Profanity filter (better-profanity, unidecode) — drop/censor offensive messages"
+    echo "  • Geocoding extras (pycountry, us) — improved country/state name resolution"
+    echo ""
+
+    if ask_yes_no "Install profanity filter packages? (recommended if using the profanity filter feature)" "n"; then
+        print_info "Installing profanity filter packages..."
+        "$INSTALL_DIR/venv/bin/pip" install --quiet "better-profanity>=0.7.0" "unidecode>=1.3.0" || {
+            print_warning "Failed to install profanity filter packages (non-fatal)"
+        }
+        print_success "Installed profanity filter packages"
+    else
+        print_info "Skipping profanity filter packages"
+    fi
+
+    if ask_yes_no "Install geocoding extras? (recommended if using location/path commands)" "n"; then
+        print_info "Installing geocoding extras..."
+        "$INSTALL_DIR/venv/bin/pip" install --quiet "pycountry>=23.12.0" "us>=2.0.0" || {
+            print_warning "Failed to install geocoding extras (non-fatal)"
+        }
+        print_success "Installed geocoding extras"
+    else
+        print_info "Skipping geocoding extras"
+    fi
 fi
 
 print_section "Step 5: Setting File Permissions"
@@ -524,6 +804,12 @@ find "$INSTALL_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
 find "$INSTALL_DIR" -type f -name "*.ini" -exec chmod 600 {} \; 2>/dev/null || true
 find "$INSTALL_DIR" -type f \( -name ".env" -o -name "*.key" -o -name "*.pem" -o -name "*.p12" -o -name "*.pfx" \) -exec chmod 640 {} \; 2>/dev/null || true
 find "$INSTALL_DIR" -type f \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "*.log" -o -name "*.log.*" \) -exec chmod 600 {} \; 2>/dev/null || true
+
+# The pattern rules above only restore read on *.py/*.txt/*.json, and `chmod go-w`
+# removes write without ever granting read, so the virtualenv is still full of
+# root-only files created under `umask 077`.  Normalize it last so that *.ini
+# files bundled inside site-packages stay readable to their own package.
+harden_venv_permissions "$INSTALL_DIR/venv"
 
 # Credentials, databases, backups, and local-plugin settings are private to the
 # service user.  Directories must be writable for SQLite sidecars and atomic
@@ -594,10 +880,17 @@ with open('$LAUNCHD_DIR/$SERVICE_FILE', 'w') as f:
         fi
     else
         print_info "Loading service into launchd"
-        launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || {
-            print_error "Failed to load service. Check plist syntax and permissions."
-            exit 1
-        }
+        if [[ "$SERVICE_RESTART_PENDING" == true ]]; then
+            restart_previously_active_service || {
+                print_error "Failed to restore the previously active launchd service"
+                exit 1
+            }
+        else
+            launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || {
+                print_error "Failed to load service. Check plist syntax and permissions."
+                exit 1
+            }
+        fi
         print_success "Service '$PLIST_NAME' loaded into launchd"
     fi
     print_info "Note: The service is loaded but not started yet. You'll start it after configuration."
@@ -635,14 +928,14 @@ else
     print_info "Note: The service is enabled but not started yet. You'll start it after configuration."
 fi
 
-if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
+if [[ "$SERVICE_RESTART_PENDING" == true ]]; then
     print_info "Restarting the service because it was running before the upgrade"
-    if [[ "$IS_MACOS" == true ]]; then
-        launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || true
-    else
-        systemctl start "$SERVICE_NAME"
+    if ! restart_previously_active_service; then
+        print_error "Failed to restart the previously active service"
+        exit 1
     fi
 fi
+trap - EXIT
 
 if [[ "$UPGRADE_MODE" == true ]]; then
     print_section "Upgrade Complete!"

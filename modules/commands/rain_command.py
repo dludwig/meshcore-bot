@@ -6,6 +6,7 @@ Open-Meteo's 15-minutely precipitation forecast. Works worldwide, no API key.
 
 import asyncio
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -87,15 +88,20 @@ SNOW_FAMILY = frozenset({"snow"})
 # queried for many distinct locations can't grow them without limit.
 _GEOCODE_CACHE_CAP = 256
 
+_CACHE_PUT_LOCK = threading.Lock()
+
 
 def _cache_put(cache: dict, key: Any, value: Any) -> None:
     """Insert into a size-capped cache, evicting the oldest entry when full.
 
-    Relies on dicts preserving insertion order (Python 3.7+).
+    Relies on dicts preserving insertion order (Python 3.7+). Locked because
+    location resolution runs on worker threads: two concurrent evictions would
+    otherwise raise out of the command and leave the user without a reply.
     """
-    if key not in cache and len(cache) >= _GEOCODE_CACHE_CAP:
-        cache.pop(next(iter(cache)))
-    cache[key] = value
+    with _CACHE_PUT_LOCK:
+        if key not in cache and len(cache) >= _GEOCODE_CACHE_CAP:
+            cache.pop(next(iter(cache)))
+        cache[key] = value
 
 
 def precip_bucket_for_code(code: Optional[int]) -> Optional[str]:
@@ -1104,7 +1110,12 @@ class RainCommand(BaseCommand):
             location = cap_query
             region_note = REGION_DEFAULT_NOTE
 
-        lat, lon, location_label, err_key = self._resolve_location(message, location)
+        # Offloaded: _resolve_location geocodes and reverse-geocodes over blocking
+        # HTTP, so running it inline would stall the event loop before we ever
+        # reach the already-offloaded forecast fetch below.
+        lat, lon, location_label, err_key = await asyncio.to_thread(
+            self._resolve_location, message, location
+        )
         if lat is None or lon is None:
             region = self.default_state or self.default_country
             if err_key == "commands.rain.no_location":

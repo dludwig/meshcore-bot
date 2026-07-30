@@ -713,3 +713,58 @@ class TestPollFeedPosting:
         await fm.poll_feed(self._feed())
 
         assert sent.call_count == 10
+
+
+class TestFeedLimitClamping:
+    """Nonsensical numeric limits must not reach the slice/loop arithmetic.
+
+    Every one of these is a list slice or an aiohttp timeout where 0 or a
+    negative silently does something other than "no limit": a negative slice
+    drops the newest items, and ClientTimeout(total=0) arms no timer at all.
+    """
+
+    @staticmethod
+    def _manager(mock_logger, tmp_path, **overrides):
+        bot = _feed_manager_bot(mock_logger, str(tmp_path / "clamp.db"))
+        for key, value in overrides.items():
+            bot.config.set("Feed_Manager", key, value)
+        return FeedManager(bot)
+
+    @pytest.mark.parametrize("raw,expected", [("-5", 1), ("0", 1), ("1", 1), ("7", 7)])
+    def test_scan_and_post_windows_clamped(self, mock_logger, tmp_path, raw, expected):
+        fm = self._manager(
+            mock_logger, tmp_path,
+            max_items_per_check=raw, max_posts_per_check=raw,
+        )
+        assert fm.max_items_per_check == expected
+        assert fm.max_posts_per_check == expected
+
+    @pytest.mark.parametrize("raw,expected", [("-1", 1), ("0", 1), ("45", 45)])
+    def test_request_timeout_clamped(self, mock_logger, tmp_path, raw, expected):
+        """aiohttp only arms a timer for total > 0; 0 means *no* timeout."""
+        fm = self._manager(mock_logger, tmp_path, feed_request_timeout=raw)
+        assert fm.request_timeout == expected
+
+    @pytest.mark.parametrize("raw,expected", [("0", 10), ("2", 10), ("200", 200)])
+    def test_message_length_clamped(self, mock_logger, tmp_path, raw, expected):
+        """`message[:max_message_length - 3]` goes negative below 4."""
+        fm = self._manager(mock_logger, tmp_path, max_message_length=raw)
+        assert fm.max_message_length == expected
+
+    def test_post_budget_of_zero_sends_nothing(self, mock_logger, tmp_path):
+        """The cap is checked before the send, so 0 posts none even when set
+        directly on the instance (bypassing __init__'s clamp)."""
+        fm = self._manager(mock_logger, tmp_path)
+        fm.max_posts_per_check = 0
+        fm._should_send_item = Mock(return_value=True)
+        fm._send_feed_item = AsyncMock()
+        fm.process_rss_feed = AsyncMock(return_value=[{"title": f"i{i}"} for i in range(5)])
+        fm._update_feed_last_check = Mock()
+
+        feed = {
+            "id": 1, "feed_type": "rss", "feed_url": "http://x/f",
+            "channel_name": "general",
+        }
+        asyncio.run(fm.poll_feed(feed))
+
+        assert fm._send_feed_item.await_count == 0

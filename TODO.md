@@ -168,6 +168,7 @@ by running `python scripts/update_todos.py` (see [Auto-Update](#auto-update)).
 
 ## Backlog
 
+- [ ] **TheSportsDB request fan-out** — `fetch_league_scores()` (`modules/clients/thesportsdb_client.py:305–314`) gathers ~8 calls (next events + past events + one per day for 6 days). `_rate_limit()` is now correctly serialized by an `asyncio.Lock`, so those 8 calls take ~17 s wall clock at `min_request_interval = 2.1`, and the client is a single shared instance (`sports_command.py:92`) — one `sports nfl` blocks every other TheSportsDB-backed command for that whole window. The lock is not the bug: without it the calls burst past the documented free-tier limit and risk 429s. Fix the fan-out instead — collapse the 6 per-day calls into a single range query if the API supports it, cache per-league results for the poll interval, or drop the day-by-day lookahead. Consider a user-visible "working…" ack if latency stays high.
 - [ ] Evaluate moving web viewer to a separate installable package
 - [ ] Repeater auto-purge dry-run mode — log what would be purged without acting
 - [ ] Feed manager: add support for JSON API feeds (not just RSS/Atom)

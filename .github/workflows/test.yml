@@ -130,6 +130,7 @@ jobs:
           /tmp/meshcore-wheel-smoke/bin/pip install dist/*.whl
           cd /tmp
           /tmp/meshcore-wheel-smoke/bin/python "$GITHUB_WORKSPACE/scripts/smoke_test_wheel.py"
+          /tmp/meshcore-wheel-smoke/bin/python "$GITHUB_WORKSPACE/scripts/smoke_test_no_geo.py"
           /tmp/meshcore-wheel-smoke/bin/meshcore-bot --help >/dev/null
           /tmp/meshcore-wheel-smoke/bin/meshcore-viewer --help >/dev/null
 

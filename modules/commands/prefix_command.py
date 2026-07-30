@@ -1090,11 +1090,22 @@ class PrefixCommand(BaseCommand):
     async def get_prefix_data_from_db(self, prefix: str, include_all: bool = False) -> Optional[dict[str, Any]]:
         """Get prefix data from the bot's SQLite database as fallback.
 
+        Offloaded whole: the body is a SQLite query followed by a reverse geocode
+        *per matching repeater* — each up to a 1.1s rate-limit wait plus a 10s
+        socket timeout. Run inline, a `!prefix ab` matching a dozen repeaters on a
+        cold cache froze the event loop for the sum of all of them.
+
         Args:
             prefix: The prefix to look up (2, 4, or 6 hex chars = 1–3 bytes).
             include_all: If True, show all repeaters regardless of last_heard time.
                         If False (default), only show repeaters heard within prefix_heard_days.
         """
+        return await asyncio.to_thread(self._get_prefix_data_from_db_sync, prefix, include_all)
+
+    def _get_prefix_data_from_db_sync(
+        self, prefix: str, include_all: bool = False
+    ) -> Optional[dict[str, Any]]:
+        """Blocking body of :meth:`get_prefix_data_from_db` (runs off the event loop)."""
         try:
             if include_all:
                 self.logger.info(f"Looking up prefix '{prefix}' in local database (all entries)")

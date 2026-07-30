@@ -38,6 +38,9 @@ class MqttWeatherService(BaseServicePlugin):
         {"key": "websocket_path", "label": "WebSocket path", "type": "str", "default": "",
          "help": "Path when transport is websockets (e.g. /mqtt)."},
         {"key": "use_tls", "label": "Use TLS", "type": "bool", "default": False, "help": "Enable TLS for the connection."},
+        {"key": "tls_insecure", "label": "Skip TLS verification", "type": "bool", "default": False,
+         "help": "INSECURE — accept any broker certificate. Only for self-signed brokers on a trusted network; "
+                 "leave off so the broker's certificate and hostname are verified."},
         {"key": "username", "label": "Username", "type": "str", "default": "", "help": "Broker username (optional)."},
         {"key": "password", "label": "Password", "type": "str", "default": "", "help": "Broker password (optional)."},
         {"key": "client_id", "label": "Client ID", "type": "str", "default": "", "help": "Optional MQTT client id."},
@@ -81,6 +84,7 @@ class MqttWeatherService(BaseServicePlugin):
         transport = cfg.get(sec, "transport", fallback="tcp").strip().lower()
         ws_path = cfg.get(sec, "websocket_path", fallback="/mqtt").strip() or "/mqtt"
         use_tls = cfg.getboolean(sec, "use_tls", fallback=False)
+        tls_insecure = cfg.getboolean(sec, "tls_insecure", fallback=False)
         username = cfg.get(sec, "username", fallback="").strip() or None
         password = cfg.get(sec, "password", fallback="").strip() or None
         client_id = cfg.get(sec, "client_id", fallback="").strip() or None
@@ -93,6 +97,7 @@ class MqttWeatherService(BaseServicePlugin):
             "transport": transport,
             "websocket_path": ws_path,
             "use_tls": use_tls,
+            "tls_insecure": tls_insecure,
             "username": username,
             "password": password,
             "client_id": client_id,
@@ -186,7 +191,20 @@ class MqttWeatherService(BaseServicePlugin):
             if broker["use_tls"]:
                 import ssl
 
-                self._client.tls_set(cert_reqs=ssl.CERT_NONE)
+                if broker.get("tls_insecure"):
+                    # Explicitly opted out of verification.
+                    self._client.tls_set(cert_reqs=ssl.CERT_NONE)
+                    self._client.tls_insecure_set(True)
+                    self.logger.warning(
+                        "MqttWeather: TLS certificate verification is DISABLED for %s "
+                        "(tls_insecure = true) — credentials are exposed to a MITM",
+                        broker["host"],
+                    )
+                else:
+                    # Verify the broker certificate and hostname against the
+                    # system trust store; the username/password below would
+                    # otherwise go to anyone who can intercept the connection.
+                    self._client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
 
             if broker["username"]:
                 self._client.username_pw_set(broker["username"], broker["password"])

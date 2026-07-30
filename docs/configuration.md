@@ -15,6 +15,7 @@ The main sections include:
 | `[Bot]` | Bot name, database path, response toggles, command prefix |
 | `[Connection]` | Serial, BLE, or TCP connection to the MeshCore device |
 | `[Channels]` | Channels to monitor, DM behavior, optional channel keyword whitelist |
+| `[Localization]` | Default response language and optional sender-language detection |
 | `[Admin_ACL]` | Admin public keys and admin-only commands |
 | `[Keywords]` | Keyword → response pairs |
 | `[Weather]` | Units and settings shared by `wx` / `gwx` and Weather Service |
@@ -50,6 +51,24 @@ See `config.ini.example` for defaults and `radio_probe_*` / `radio_offline_*` al
 - **Live changes (web viewer):** The Config tab can store **`maint.log_max_bytes`** and **`maint.log_backup_count`** in the database (`bot_metadata`). The scheduler’s maintenance loop applies those values to the existing rotating file handler **without restarting** the bot—**but only after** you save rotation settings from the web UI (which writes the metadata keys). Editing `config.ini` alone does not update `bot_metadata`, so hot-apply will not see a change until you save from the viewer (or set the keys another way).
 
 If you rely on config-file-only workflows, restart the bot after changing `[Logging]` rotation options.
+
+### Localization
+
+`[Localization] language` selects the bot's default translation catalog.
+Set `auto_detect_language = true` to let greeting-style commands reply in the
+sender's detected language when that translation is installed. Detection is
+keyword-first so short mesh greetings such as `hola`, `bonjour`, and `hallo`
+work without another dependency.
+
+For statistical detection of longer messages, install the optional extra:
+
+```bash
+pip install "meshcore-bot[lang]"
+```
+
+Detection is opt-in and falls back to the configured default language whenever
+the message is ambiguous, the detector is unavailable, or the corresponding
+translation catalog is absent.
 
 ## Channels section
 

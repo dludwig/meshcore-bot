@@ -34,7 +34,9 @@ def mock_bot():
     bot.logger = Mock()
     rl = Mock()
     rl.wait_for_request = AsyncMock()
+    rl.wait_and_request = AsyncMock()
     rl.wait_for_request_sync = Mock()
+    rl.wait_and_request_sync = Mock()
     rl.record_request = Mock()
     bot.nominatim_rate_limiter = rl
     return bot
@@ -320,15 +322,15 @@ class TestRateLimitedNominatimGeocode:
             result = await rate_limited_nominatim_geocode(bot, "Seattle")
         assert result is mock_loc
 
-    async def test_with_rate_limiter_waits_and_records(self, mock_bot):
+    async def test_with_rate_limiter_reserves_before_request(self, mock_bot):
         from modules.utils import rate_limited_nominatim_geocode
         mock_loc = _make_location()
         mock_geocoder = Mock()
         mock_geocoder.geocode = Mock(return_value=mock_loc)
         with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
             result = await rate_limited_nominatim_geocode(mock_bot, "Tokyo")
-        mock_bot.nominatim_rate_limiter.wait_for_request.assert_called_once()
-        mock_bot.nominatim_rate_limiter.record_request.assert_called_once()
+        mock_bot.nominatim_rate_limiter.wait_and_request.assert_awaited_once()
+        mock_bot.nominatim_rate_limiter.record_request.assert_not_called()
         assert result is mock_loc
 
     async def test_returns_none_when_not_found(self, mock_bot):
@@ -339,7 +341,7 @@ class TestRateLimitedNominatimGeocode:
             result = await rate_limited_nominatim_geocode(mock_bot, "nowhere")
         assert result is None
 
-    async def test_geocoder_exception_propagates_without_recording(self, mock_bot):
+    async def test_geocoder_exception_propagates_after_reserving(self, mock_bot):
         from modules.utils import rate_limited_nominatim_geocode
         mock_geocoder = Mock()
         mock_geocoder.geocode = Mock(side_effect=RuntimeError("geocoder failed"))
@@ -348,7 +350,7 @@ class TestRateLimitedNominatimGeocode:
             with pytest.raises(RuntimeError, match="geocoder failed"):
                 await rate_limited_nominatim_geocode(mock_bot, "Seattle")
 
-        mock_bot.nominatim_rate_limiter.wait_for_request.assert_awaited_once()
+        mock_bot.nominatim_rate_limiter.wait_and_request.assert_awaited_once()
         mock_bot.nominatim_rate_limiter.record_request.assert_not_called()
 
     async def test_blocking_geocoder_does_not_stall_event_loop(self, mock_bot):
@@ -358,8 +360,8 @@ class TestRateLimitedNominatimGeocode:
         release = threading.Event()
         mock_loc = _make_location()
 
-        async def wait_for_request():
-            events.append("wait")
+        async def wait_and_request():
+            events.append("reserve")
 
         def geocode(query, *, timeout):
             events.append("geocode")
@@ -368,11 +370,7 @@ class TestRateLimitedNominatimGeocode:
                 raise AssertionError("event loop did not run while geocoder was blocked")
             return mock_loc
 
-        def record_request():
-            events.append("record")
-
-        mock_bot.nominatim_rate_limiter.wait_for_request = wait_for_request
-        mock_bot.nominatim_rate_limiter.record_request = record_request
+        mock_bot.nominatim_rate_limiter.wait_and_request = wait_and_request
         mock_geocoder = Mock()
         mock_geocoder.geocode = geocode
 
@@ -388,7 +386,7 @@ class TestRateLimitedNominatimGeocode:
             )
 
         assert result is mock_loc
-        assert events == ["wait", "geocode", "record"]
+        assert events == ["reserve", "geocode"]
 
 
 # ---------------------------------------------------------------------------
@@ -407,14 +405,15 @@ class TestRateLimitedNominatimReverse:
             result = await rate_limited_nominatim_reverse(bot, "47.6, -122.3")
         assert result is mock_loc
 
-    async def test_with_rate_limiter_waits_and_records(self, mock_bot):
+    async def test_with_rate_limiter_reserves_before_request(self, mock_bot):
         from modules.utils import rate_limited_nominatim_reverse
         mock_loc = _make_location()
         mock_geocoder = Mock()
         mock_geocoder.reverse = Mock(return_value=mock_loc)
         with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
             result = await rate_limited_nominatim_reverse(mock_bot, "47.6, -122.3")
-        mock_bot.nominatim_rate_limiter.wait_for_request.assert_called_once()
+        mock_bot.nominatim_rate_limiter.wait_and_request.assert_awaited_once()
+        mock_bot.nominatim_rate_limiter.record_request.assert_not_called()
         assert result is mock_loc
 
     async def test_blocking_geocoder_without_limiter_does_not_stall_event_loop(self):
@@ -470,8 +469,10 @@ class TestRateLimitedNominatimGeocodeSync:
         mock_geocoder.geocode = Mock(return_value=mock_loc)
         with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
             result = rate_limited_nominatim_geocode_sync(mock_bot, "Portland")
-        mock_bot.nominatim_rate_limiter.wait_for_request_sync.assert_called_once()
-        mock_bot.nominatim_rate_limiter.record_request.assert_called_once()
+        # One atomic reserve-then-go, not wait-then-record-after: the old pair let
+        # concurrent worker threads clear the gate together.
+        mock_bot.nominatim_rate_limiter.wait_and_request_sync.assert_called_once()
+        mock_bot.nominatim_rate_limiter.record_request.assert_not_called()
         assert result is mock_loc
 
     def test_returns_none_when_not_found(self, mock_bot):
@@ -506,7 +507,7 @@ class TestRateLimitedNominatimReverseSync:
         mock_geocoder.reverse = Mock(return_value=mock_loc)
         with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
             result = rate_limited_nominatim_reverse_sync(mock_bot, "47.6, -122.3")
-        mock_bot.nominatim_rate_limiter.wait_for_request_sync.assert_called_once()
+        mock_bot.nominatim_rate_limiter.wait_and_request_sync.assert_called_once()
         assert result is mock_loc
 
 

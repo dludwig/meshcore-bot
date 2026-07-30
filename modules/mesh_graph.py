@@ -27,6 +27,21 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 
+def _merge_avg_hop_position(
+    current_avg: Optional[float], prior_count: int, hop_position: Optional[float]
+) -> Optional[float]:
+    """Fold one new hop-position observation into a running average.
+
+    ``prior_count`` is the observation count *before* this observation. Returns
+    the existing average unchanged when there is nothing new to fold in.
+    """
+    if hop_position is None:
+        return current_avg
+    if current_avg is None or prior_count <= 0:
+        return hop_position
+    return ((current_avg * prior_count) + hop_position) / (prior_count + 1)
+
+
 class MeshGraph:
     """Graph structure tracking observed connections between mesh nodes."""
 
@@ -435,7 +450,15 @@ class MeshGraph:
                     "observation_count": merged_count,
                     "first_seen": first_seen,
                     "last_seen": now,
-                    "avg_hop_position": hop_position if hop_position is not None else best_edge.get("avg_hop_position"),
+                    # Weighted merge, matching the in-place update path below:
+                    # the promoted edge carries merged_count observations, so
+                    # overwriting the average with this single observation would
+                    # throw away every earlier one and skew path scoring.
+                    "avg_hop_position": _merge_avg_hop_position(
+                        best_edge.get("avg_hop_position"),
+                        best_edge["observation_count"],
+                        hop_position,
+                    ),
                     "geographic_distance": geographic_distance if geographic_distance is not None else best_edge.get("geographic_distance"),
                     "confirmed_2byte": True if prefix_bytes == 2 else best_edge.get("confirmed_2byte", False),
                 }

@@ -95,15 +95,36 @@ class FeedManager:
         else:
             self.enabled = bot.config.getboolean('Feed_Manager', 'feed_manager_enabled', fallback=False)
             self.default_check_interval = bot.config.getint('Feed_Manager', 'default_check_interval_seconds', fallback=300)
-            self.max_items_per_check = bot.config.getint('Feed_Manager', 'max_items_per_check', fallback=10)
+            # Clamped to >= 1: the scan window feeds a list slice, where 0 disables
+            # posting entirely and negatives take Python's negative-slice meaning
+            # (drop the newest N items) — neither is what a config typo intends.
+            self.max_items_per_check = max(
+                1, bot.config.getint('Feed_Manager', 'max_items_per_check', fallback=10)
+            )
             # Max items actually posted per check. Defaults to max_items_per_check so existing
             # installs behave identically; raise max_items_per_check (the scan window) to reach
-            # older passing items while this caps how many post per poll.
-            self.max_posts_per_check = bot.config.getint('Feed_Manager', 'max_posts_per_check', fallback=self.max_items_per_check)
-            self.request_timeout = bot.config.getint('Feed_Manager', 'feed_request_timeout', fallback=30)
+            # older passing items while this caps how many post per poll. Also clamped to >= 1,
+            # since the post loop only checks the cap after sending an item.
+            self.max_posts_per_check = max(
+                1,
+                bot.config.getint(
+                    'Feed_Manager', 'max_posts_per_check', fallback=self.max_items_per_check
+                ),
+            )
+            # Clamped to >= 1: aiohttp.ClientTimeout only arms a timer for
+            # total > 0, so 0 or negative disables the timeout entirely and a
+            # hung feed server holds its poll lock and semaphore slot forever.
+            self.request_timeout = max(
+                1, bot.config.getint('Feed_Manager', 'feed_request_timeout', fallback=30)
+            )
             self.user_agent = bot.config.get('Feed_Manager', 'feed_user_agent', fallback='MeshCoreBot/1.0 FeedManager')
             self.rate_limit_seconds = bot.config.getfloat('Feed_Manager', 'feed_rate_limit_seconds', fallback=5.0)
-            self.max_message_length = bot.config.getint('Feed_Manager', 'max_message_length', fallback=130)
+            # Clamped: the final truncation is `message[:max_message_length - 3]`,
+            # so anything under 4 becomes a negative slice that lengthens the
+            # message instead of capping it.
+            self.max_message_length = max(
+                10, bot.config.getint('Feed_Manager', 'max_message_length', fallback=130)
+            )
             self.default_output_format = bot.config.get('Feed_Manager', 'default_output_format', fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
             self.default_send_interval = bot.config.getfloat('Feed_Manager', 'default_message_send_interval_seconds', fallback=2.0)
             self.max_response_bytes = max(
@@ -231,7 +252,12 @@ class FeedManager:
                 else:
                     last_check_ts = 0
 
-                interval = feed.get('check_interval_seconds', self.default_check_interval)
+                # Fall back for rows that predate interval validation: NULL would
+                # raise a TypeError below and abort the poll cycle for *every*
+                # feed, and <= 0 marks the feed permanently due.
+                interval = feed.get('check_interval_seconds')
+                if not isinstance(interval, (int, float)) or interval <= 0:
+                    interval = self.default_check_interval
 
                 if current_time - last_check_ts >= interval:
                     feeds_to_check.append(feed)
@@ -345,12 +371,16 @@ class FeedManager:
                 filtered_count = 0
                 posted_count = 0
                 for item in new_items[:self.max_items_per_check]:
+                    # Budget checked before sending, not after: checking after meant
+                    # a cap of 0 still sent one item. __init__ clamps the config
+                    # value, but the attribute is public and set directly in tests
+                    # and by callers, so guard the loop itself.
+                    if posted_count >= self.max_posts_per_check:
+                        break
                     # Check if item passes filter conditions
                     if self._should_send_item(feed, item):
                         await self._send_feed_item(feed, item)
                         posted_count += 1
-                        if posted_count >= self.max_posts_per_check:
-                            break
                     else:
                         filtered_count += 1
                         self.logger.debug(f"Filtered out item: {item.get('title', 'Untitled')[:50]}")
