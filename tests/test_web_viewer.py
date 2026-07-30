@@ -3565,14 +3565,22 @@ class TestDbPathResolutionFromConfigDir:
 class TestWebViewerLoggingRespectsLogFile:
     """Web viewer file logging follows [Logging] log_file like the main bot."""
 
-    def _write_config(self, config_dir: Path, log_file: str | None) -> str:
+    def _write_config(
+        self,
+        config_dir: Path,
+        log_file: str | None,
+        log_level: str = "INFO",
+    ) -> str:
         cfg = configparser.ConfigParser()
         cfg["Connection"] = {"connection_type": "serial", "serial_port": "/dev/ttyUSB0"}
         cfg["Bot"] = {"bot_name": "TestBot", "db_path": "bot.db", "prefix_bytes": "1"}
         cfg["Channels"] = {"monitor_channels": "general"}
         cfg["Path_Command"] = {"max_hops": "5", "timeout": "30"}
         if log_file is not None:
-            cfg["Logging"] = {"log_file": log_file}
+            cfg["Logging"] = {
+                "log_file": log_file,
+                "log_level": log_level,
+            }
         config_path = str(config_dir / "config.ini")
         with open(config_path, "w") as fh:
             cfg.write(fh)
@@ -3613,6 +3621,60 @@ class TestWebViewerLoggingRespectsLogFile:
         assert (log_dir / "web_viewer.log").exists()
         assert not (config_dir / "logs").exists()
         assert not (tmp_path / "logs").exists()
+
+    def test_handlers_respect_configured_log_level(self, tmp_path: Path) -> None:
+        import logging
+
+        config_dir = tmp_path / "cfg"
+        log_dir = tmp_path / "varlog"
+        config_dir.mkdir()
+        log_dir.mkdir()
+        config_path = self._write_config(
+            config_dir,
+            log_file=str(log_dir / "meshcore_bot.log"),
+            log_level="WARNING",
+        )
+
+        viewer = self._make_viewer(config_path)
+
+        assert viewer.logger.level == logging.WARNING
+        assert viewer.logger.handlers
+        assert all(
+            handler.level == logging.WARNING
+            for handler in viewer.logger.handlers
+        )
+
+    def test_debug_file_logging_keeps_info_floor_for_journal(
+        self, tmp_path: Path
+    ) -> None:
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        config_dir = tmp_path / "cfg"
+        log_dir = tmp_path / "varlog"
+        config_dir.mkdir()
+        log_dir.mkdir()
+        config_path = self._write_config(
+            config_dir,
+            log_file=str(log_dir / "meshcore_bot.log"),
+            log_level="DEBUG",
+        )
+
+        viewer = self._make_viewer(config_path)
+        file_handlers = [
+            handler
+            for handler in viewer.logger.handlers
+            if isinstance(handler, RotatingFileHandler)
+        ]
+        console_handlers = [
+            handler
+            for handler in viewer.logger.handlers
+            if not isinstance(handler, RotatingFileHandler)
+        ]
+
+        assert viewer.logger.level == logging.DEBUG
+        assert [handler.level for handler in file_handlers] == [logging.DEBUG]
+        assert [handler.level for handler in console_handlers] == [logging.INFO]
 
 
 class TestRadioDebugConfig:

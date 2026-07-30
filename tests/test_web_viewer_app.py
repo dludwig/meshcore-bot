@@ -1,10 +1,14 @@
 """Tests for modules.web_viewer.app — BotDataViewer Flask app."""
 
 import json
+import shutil
 import sqlite3
+import subprocess
+import threading
 import time
 from configparser import ConfigParser
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -623,6 +627,641 @@ class TestApiMeshEdgesEvidence:
             stats = json.loads(response.data)
             assert stats['total_edges'] == 3
             assert stats['multibyte_edges'] == 2
+
+
+class TestMultibyteMeshAggregateCache:
+    def test_reuses_lifetime_aggregate_across_filtered_requests(
+        self, viewer_with_db
+    ):
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'aaaa11bbbb22',
+            3,
+            observation_count=5,
+        )
+
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            wraps=viewer_with_db._compute_multibyte_evidence_edges,
+        ) as compute:
+            with viewer_with_db.app.test_client() as client:
+                first = client.get('/api/mesh/edges?evidence=multibyte')
+                second = client.get(
+                    '/api/mesh/edges?evidence=multibyte&min_observations=4&days=7'
+                )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert compute.call_count == 1
+
+    def test_recomputes_after_cache_window(self, viewer_with_db):
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            return_value=[],
+        ) as compute:
+            viewer_with_db._aggregate_multibyte_evidence_edges()
+            viewer_with_db._multibyte_graph_cache_created_at -= (
+                viewer_with_db._mesh_graph_cache_seconds + 1
+            )
+            viewer_with_db._aggregate_multibyte_evidence_edges()
+
+        assert compute.call_count == 2
+
+    def test_forced_refresh_bypasses_warm_cache(self, viewer_with_db):
+        _seed_observed_path(
+            viewer_with_db.db_path,
+            'aaaa11bbbb22',
+            3,
+        )
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            wraps=viewer_with_db._compute_multibyte_evidence_edges,
+        ) as compute:
+            with viewer_with_db.app.test_client() as client:
+                first = client.get('/api/mesh/edges?evidence=multibyte')
+                _seed_observed_path(
+                    viewer_with_db.db_path,
+                    'cccc55dddd66',
+                    3,
+                )
+                cached = client.get('/api/mesh/edges?evidence=multibyte')
+                refreshed = client.get(
+                    '/api/mesh/edges?evidence=multibyte&refresh=1'
+                )
+
+        assert {
+            edge['from_prefix'] for edge in first.get_json()['edges']
+        } == {'aaaa11'}
+        assert {
+            edge['from_prefix'] for edge in cached.get_json()['edges']
+        } == {'aaaa11'}
+        assert {
+            edge['from_prefix'] for edge in refreshed.get_json()['edges']
+        } == {'aaaa11', 'cccc55'}
+        assert compute.call_count == 2
+
+    def test_concurrent_cold_requests_share_one_computation(
+        self, viewer_with_db
+    ):
+        started = threading.Event()
+        release = threading.Event()
+        computed = [{'from_prefix': 'aaaa', 'to_prefix': 'bbbb'}]
+
+        def slow_compute():
+            started.set()
+            assert release.wait(timeout=2)
+            return computed
+
+        results = []
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            side_effect=slow_compute,
+        ) as compute:
+            first = threading.Thread(
+                target=lambda: results.append(
+                    viewer_with_db._aggregate_multibyte_evidence_edges()
+                )
+            )
+            second = threading.Thread(
+                target=lambda: results.append(
+                    viewer_with_db._aggregate_multibyte_evidence_edges()
+                )
+            )
+            first.start()
+            assert started.wait(timeout=2)
+            second.start()
+            release.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert compute.call_count == 1
+        assert results == [computed, computed]
+
+    def test_concurrent_refresh_serves_stale_cache(self, viewer_with_db):
+        stale = [{'from_prefix': 'old', 'to_prefix': 'edge'}]
+        fresh = [{'from_prefix': 'new', 'to_prefix': 'edge'}]
+        viewer_with_db._multibyte_graph_cache_edges = stale
+        viewer_with_db._multibyte_graph_cache_created_at = 0
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_compute():
+            started.set()
+            assert release.wait(timeout=2)
+            return fresh
+
+        refreshed = []
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            side_effect=slow_compute,
+        ) as compute:
+            worker = threading.Thread(
+                target=lambda: refreshed.append(
+                    viewer_with_db._aggregate_multibyte_evidence_edges()
+                )
+            )
+            worker.start()
+            assert started.wait(timeout=2)
+            concurrent = viewer_with_db._aggregate_multibyte_evidence_edges()
+            release.set()
+            worker.join(timeout=2)
+
+        assert not worker.is_alive()
+        assert concurrent is stale
+        assert refreshed == [fresh]
+        assert compute.call_count == 1
+
+    def test_concurrent_cold_failure_is_shared(self, viewer_with_db):
+        started = threading.Event()
+        release = threading.Event()
+        errors = []
+
+        def failing_compute():
+            started.set()
+            assert release.wait(timeout=2)
+            raise sqlite3.OperationalError('temporary failure')
+
+        def aggregate():
+            try:
+                viewer_with_db._aggregate_multibyte_evidence_edges()
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            side_effect=failing_compute,
+        ) as compute:
+            first = threading.Thread(target=aggregate)
+            second = threading.Thread(target=aggregate)
+            first.start()
+            assert started.wait(timeout=2)
+            second.start()
+            release.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert compute.call_count == 1
+        assert len(errors) == 2
+        assert any(isinstance(exc, sqlite3.OperationalError) for exc in errors)
+        assert any(isinstance(exc, RuntimeError) for exc in errors)
+
+    def test_stale_failure_uses_retry_backoff(self, viewer_with_db):
+        stale = [{'from_prefix': 'old', 'to_prefix': 'edge'}]
+        viewer_with_db._multibyte_graph_cache_edges = stale
+        viewer_with_db._multibyte_graph_cache_created_at = 0
+
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            side_effect=sqlite3.OperationalError('temporary failure'),
+        ) as compute:
+            first = viewer_with_db._aggregate_multibyte_evidence_edges()
+            with pytest.raises(RuntimeError, match='retry suppressed'):
+                viewer_with_db._aggregate_multibyte_evidence_edges(
+                    force_refresh=True
+                )
+            viewer_with_db._multibyte_graph_cache_failure_at -= (
+                viewer_with_db._multibyte_graph_cache_retry_seconds + 1
+            )
+            third = viewer_with_db._aggregate_multibyte_evidence_edges()
+
+        assert first is stale
+        assert third is stale
+        assert compute.call_count == 2
+        assert viewer_with_db._multibyte_graph_cache_failure == (
+            'OperationalError',
+            'temporary failure',
+        )
+
+    def test_forced_failure_returns_500_while_normal_request_serves_stale(
+        self, viewer_with_db
+    ):
+        viewer_with_db._multibyte_graph_cache_edges = []
+        viewer_with_db._multibyte_graph_cache_created_at = 0
+
+        with patch.object(
+            viewer_with_db,
+            '_compute_multibyte_evidence_edges',
+            side_effect=sqlite3.OperationalError('temporary failure'),
+        ) as compute:
+            with viewer_with_db.app.test_client() as client:
+                forced = client.get(
+                    '/api/mesh/edges?evidence=multibyte&refresh=1'
+                )
+                normal = client.get('/api/mesh/edges?evidence=multibyte')
+
+        assert forced.status_code == 500
+        assert forced.get_json()['error'] == 'An internal error occurred'
+        assert normal.status_code == 200
+        assert normal.get_json()['edges'] == []
+        assert compute.call_count == 1
+
+
+def test_mesh_template_coalesces_live_refreshes():
+    source = (
+        Path(__file__).parents[1]
+        / 'modules'
+        / 'web_viewer'
+        / 'templates'
+        / 'mesh.html'
+    ).read_text(encoding='utf-8')
+
+    assert 'const MESH_LIVE_REFRESH_MS = 30000;' in source
+    assert 'const MESH_LIVE_REFRESH_RETRY_MS = 6000;' in source
+    assert "document.addEventListener('visibilitychange'" in source
+    assert 'scheduleMeshLiveRefresh(reloadNodes);' in source
+    assert "socket.on('mesh_edge_updated', () => onMeshUpdate(false));" in source
+    assert 'while (pendingMeshLoad)' in source
+    assert "fetchMeshJson(edgesUrl, 'edges')" in source
+    assert "loadData({ skipRender: true }).then" not in source
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node.js not installed')
+def test_mesh_refresh_coordinator_handles_bursts_visibility_and_failures():
+    source = (
+        Path(__file__).parents[1]
+        / 'modules'
+        / 'web_viewer'
+        / 'templates'
+        / 'mesh.html'
+    ).read_text(encoding='utf-8')
+
+    def extract(start, end):
+        return source[source.index(start):source.index(end)]
+
+    coordinator = '\n'.join([
+        extract(
+            '    function normalizeMeshLoadOptions',
+            '    function mergeMeshLoadOptions',
+        ),
+        extract(
+            '    function mergeMeshLoadOptions',
+            '    // Load nodes and edges.',
+        ),
+        extract('    function loadData', '    async function drainMeshLoads'),
+        extract(
+            '    async function drainMeshLoads',
+            '    async function performMeshLoad',
+        ),
+        extract(
+            '    async function refreshData',
+            '    function scheduleMeshLiveRefresh',
+        ),
+        extract(
+            '    function scheduleMeshLiveRefresh',
+            '    async function runScheduledMeshRefresh',
+        ),
+        extract(
+            '    async function runScheduledMeshRefresh',
+            '    function exportView',
+        ),
+    ])
+
+    script = f"""
+    let meshLoadInFlight = null;
+    let pendingMeshLoad = null;
+    let meshLiveRefreshTimer = null;
+    let meshLiveRefreshPending = false;
+    let meshLiveRefreshNeedsNodes = false;
+    let meshLiveRefreshRunning = false;
+    let meshLiveRefreshRetryCount = 0;
+    let meshLiveRefreshActiveReloadsNodes = false;
+    const MESH_LIVE_REFRESH_MS = 10;
+    const MESH_LIVE_REFRESH_RETRY_MS = 10;
+    const MESH_LIVE_REFRESH_MAX_RETRIES = 2;
+    let currentView = 'graph';
+    let document = {{hidden: false}};
+    let loadCount = 0;
+    let statsCount = 0;
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    let forcedLoads = 0;
+    let blockFirst = false;
+    let failBlockedFirst = false;
+    let firstStartedResolve;
+    let firstReleaseResolve;
+    let firstStarted = new Promise(resolve => firstStartedResolve = resolve);
+    let firstRelease = new Promise(resolve => firstReleaseResolve = resolve);
+
+    async function performMeshLoad(options) {{
+        loadCount++;
+        if (options.forceRefresh) forcedLoads++;
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        if (blockFirst && loadCount === 1) {{
+            firstStartedResolve();
+            await firstRelease;
+            concurrent--;
+            if (failBlockedFirst) {{
+                throw new Error('expected first-load failure');
+            }}
+            return;
+        }}
+        await new Promise(resolve => setTimeout(resolve, 2));
+        concurrent--;
+    }}
+    async function loadStats() {{ statsCount++; }}
+    function applyFilters() {{}}
+
+    {coordinator}
+
+    (async () => {{
+        for (let i = 0; i < 100; i++) scheduleMeshLiveRefresh(false);
+        await new Promise(resolve => setTimeout(resolve, 40));
+        const burst = {{loadCount, statsCount, maxConcurrent}};
+
+        loadCount = 0;
+        statsCount = 0;
+        maxConcurrent = 0;
+        document.hidden = true;
+        scheduleMeshLiveRefresh(false);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        const hiddenLoads = loadCount;
+        document.hidden = false;
+        await runScheduledMeshRefresh();
+        const visibleLoads = loadCount;
+
+        loadCount = 0;
+        maxConcurrent = 0;
+        blockFirst = true;
+        failBlockedFirst = true;
+        firstStarted = new Promise(resolve => firstStartedResolve = resolve);
+        firstRelease = new Promise(resolve => firstReleaseResolve = resolve);
+        const first = loadData({{reloadNodes: true}});
+        await firstStarted;
+        const trailing = loadData({{reloadNodes: false}});
+        firstReleaseResolve();
+        await Promise.all([first, trailing]);
+        const failureQueue = {{
+            loadCount,
+            maxConcurrent,
+            pending: pendingMeshLoad !== null
+        }};
+
+        loadCount = 0;
+        statsCount = 0;
+        forcedLoads = 0;
+        blockFirst = true;
+        failBlockedFirst = true;
+        firstStarted = new Promise(resolve => firstStartedResolve = resolve);
+        firstRelease = new Promise(resolve => firstReleaseResolve = resolve);
+        scheduleMeshLiveRefresh(true, 10);
+        await firstStarted;
+        firstReleaseResolve();
+        await new Promise(resolve => setTimeout(resolve, 35));
+        const scheduledRetry = {{
+            loadCount,
+            statsCount,
+            forcedLoads,
+            pending: meshLiveRefreshPending,
+            retries: meshLiveRefreshRetryCount
+        }};
+
+        loadCount = 0;
+        statsCount = 0;
+        forcedLoads = 0;
+        blockFirst = false;
+        failBlockedFirst = false;
+        scheduleMeshLiveRefresh(false, 20);
+        await refreshData();
+        await new Promise(resolve => setTimeout(resolve, 30));
+        const manualAbsorbsTimer = {{
+            loadCount,
+            statsCount,
+            forcedLoads,
+            pending: meshLiveRefreshPending
+        }};
+
+        loadCount = 0;
+        statsCount = 0;
+        forcedLoads = 0;
+        blockFirst = true;
+        failBlockedFirst = true;
+        firstStarted = new Promise(resolve => firstStartedResolve = resolve);
+        firstRelease = new Promise(resolve => firstReleaseResolve = resolve);
+        scheduleMeshLiveRefresh(false, 20);
+        const failedManualPromise = refreshData().catch(() => {{}});
+        await firstStarted;
+        firstReleaseResolve();
+        await failedManualPromise;
+        await new Promise(resolve => setTimeout(resolve, 35));
+        const failedManualRetries = {{
+            loadCount,
+            forcedLoads,
+            pending: meshLiveRefreshPending,
+            retries: meshLiveRefreshRetryCount
+        }};
+
+        loadCount = 0;
+        statsCount = 0;
+        forcedLoads = 0;
+        blockFirst = true;
+        failBlockedFirst = false;
+        firstStarted = new Promise(resolve => firstStartedResolve = resolve);
+        firstRelease = new Promise(resolve => firstReleaseResolve = resolve);
+        scheduleMeshLiveRefresh(true, 0);
+        await firstStarted;
+        const activeManualPromise = refreshData();
+        firstReleaseResolve();
+        await activeManualPromise;
+        await new Promise(resolve => setTimeout(resolve, 10));
+        const manualReusesActiveRefresh = {{
+            loadCount,
+            forcedLoads,
+            pending: meshLiveRefreshPending
+        }};
+
+        console.log(JSON.stringify({{
+            burst,
+            hiddenLoads,
+            visibleLoads,
+            failureQueue,
+            scheduledRetry,
+            manualAbsorbsTimer,
+            failedManualRetries,
+            manualReusesActiveRefresh
+        }}));
+    }})().catch(error => {{
+        console.error(error);
+        process.exitCode = 1;
+    }});
+    """
+
+    completed = subprocess.run(
+        [shutil.which('node'), '-'],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=5,
+    )
+    result = json.loads(completed.stdout.strip())
+
+    assert result['burst'] == {
+        'loadCount': 1,
+        'statsCount': 1,
+        'maxConcurrent': 1,
+    }
+    assert result['hiddenLoads'] == 0
+    assert result['visibleLoads'] == 1
+    assert result['failureQueue'] == {
+        'loadCount': 2,
+        'maxConcurrent': 1,
+        'pending': False,
+    }
+    assert result['scheduledRetry'] == {
+        'loadCount': 2,
+        'statsCount': 2,
+        'forcedLoads': 2,
+        'pending': False,
+        'retries': 0,
+    }
+    assert result['manualAbsorbsTimer'] == {
+        'loadCount': 1,
+        'statsCount': 1,
+        'forcedLoads': 1,
+        'pending': False,
+    }
+    assert result['failedManualRetries'] == {
+        'loadCount': 2,
+        'forcedLoads': 2,
+        'pending': False,
+        'retries': 0,
+    }
+    assert result['manualReusesActiveRefresh'] == {
+        'loadCount': 1,
+        'forcedLoads': 1,
+        'pending': False,
+    }
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node.js not installed')
+def test_mesh_fetch_rejects_http_errors_and_invalid_payloads():
+    source = (
+        Path(__file__).parents[1]
+        / 'modules'
+        / 'web_viewer'
+        / 'templates'
+        / 'mesh.html'
+    ).read_text(encoding='utf-8')
+    helper = source[
+        source.index('    function isValidMeshNode'):
+        source.index('    // Load statistics')
+    ]
+    script = f"""
+    {helper}
+    (async () => {{
+        global.fetch = async () => ({{
+            ok: false,
+            status: 500,
+            json: async () => ({{error: 'temporary failure'}})
+        }});
+        let httpError = '';
+        try {{
+            await fetchMeshJson('/api/mesh/edges', 'edges');
+        }} catch (error) {{
+            httpError = error.message;
+        }}
+
+        global.fetch = async () => ({{
+            ok: true,
+            status: 200,
+            json: async () => ({{edges: null}})
+        }});
+        let shapeError = '';
+        try {{
+            await fetchMeshJson('/api/mesh/edges', 'edges');
+        }} catch (error) {{
+            shapeError = error.message;
+        }}
+
+        global.fetch = async () => ({{
+            ok: true,
+            status: 200,
+            json: async () => ({{edges: [null]}})
+        }});
+        let nestedShapeError = '';
+        try {{
+            await fetchMeshJson('/api/mesh/edges', 'edges');
+        }} catch (error) {{
+            nestedShapeError = error.message;
+        }}
+
+        global.fetch = async () => ({{
+            ok: true,
+            status: 200,
+            json: async () => ({{nodes: [{{}}]}})
+        }});
+        let emptyNodeError = '';
+        try {{
+            await fetchMeshJson('/api/mesh/nodes', 'nodes');
+        }} catch (error) {{
+            emptyNodeError = error.message;
+        }}
+
+        global.fetch = async () => ({{
+            ok: true,
+            status: 200,
+            json: async () => ({{nodes: [{{
+                public_key: 'aabb',
+                prefix: 'aa',
+                name: 'Node',
+                latitude: '1.0',
+                longitude: 2.0
+            }}]}})
+        }});
+        let typedNodeError = '';
+        try {{
+            await fetchMeshJson('/api/mesh/nodes', 'nodes');
+        }} catch (error) {{
+            typedNodeError = error.message;
+        }}
+        console.log(JSON.stringify({{
+            httpError,
+            shapeError,
+            nestedShapeError,
+            emptyNodeError,
+            typedNodeError
+        }}));
+    }})().catch(error => {{
+        console.error(error);
+        process.exitCode = 1;
+    }});
+    """
+    completed = subprocess.run(
+        [shutil.which('node'), '-'],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=5,
+    )
+    result = json.loads(completed.stdout.strip())
+    assert result['httpError'] == (
+        'Mesh request failed (500): temporary failure'
+    )
+    assert result['shapeError'] == (
+        'Mesh response from /api/mesh/edges is missing edges'
+    )
+    assert result['nestedShapeError'] == (
+        'Mesh response from /api/mesh/edges contains invalid edges'
+    )
+    assert result['emptyNodeError'] == (
+        'Mesh response from /api/mesh/nodes contains invalid nodes'
+    )
+    assert result['typedNodeError'] == (
+        'Mesh response from /api/mesh/nodes contains invalid nodes'
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -117,6 +117,12 @@ semantic versioning.
   lock on SD-card installations.
 - Linux service installers now use 1GB memory and 200% CPU ceilings, providing
   Raspberry Pi graph and web-viewer workloads with practical headroom.
+- The mesh map now coalesces live edge events, serializes graph reloads, pauses
+  hidden-tab refreshes, and caches concurrent multi-byte aggregation requests,
+  preventing an open graph page from creating a CPU and SQLite I/O request
+  storm on busy meshes.
+- The web-viewer rotating-file handler now honors `[Logging] log_level`, while
+  its journal handler retains an INFO floor to avoid duplicate debug writes.
 
 ### Removed
 

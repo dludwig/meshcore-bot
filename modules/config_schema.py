@@ -201,6 +201,7 @@ SECTIONS: dict[str, SectionMeta] = {
         "sqlite_busy_timeout_ms": KeyMeta(type="int", default="60000"),
         "sqlite_foreign_keys": KeyMeta(type="bool", default="true"),
         "sqlite_journal_mode": KeyMeta(default="WAL"),
+        "mesh_graph_cache_seconds": KeyMeta(type="int", default="30"),
         # Dashboard snapshot refresher — moves the landing page's aggregate
         # queries off the request path and accumulates trends that outlive the
         # raw tables' retention.

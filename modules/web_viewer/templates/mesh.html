@@ -648,8 +648,20 @@
     let isInitialMapLoad = true; // Track if this is the first time rendering the map with nodes
     let highlightedPath = null; // Currently highlighted path data
     let pathHighlightTimeout = null; // Debounce timer for path resolution
+    let meshLoadInFlight = null;
+    let pendingMeshLoad = null;
+    let statsLoadInFlight = null;
+    let meshLiveRefreshTimer = null;
+    let meshLiveRefreshPending = false;
+    let meshLiveRefreshNeedsNodes = false;
+    let meshLiveRefreshRunning = false;
+    let meshLiveRefreshRetryCount = 0;
+    let meshLiveRefreshActiveReloadsNodes = false;
 
     const PREFIX_HEX_CHARS = parseInt('{{ prefix_hex_chars|default(2) }}', 10);
+    const MESH_LIVE_REFRESH_MS = 30000;
+    const MESH_LIVE_REFRESH_RETRY_MS = 6000;
+    const MESH_LIVE_REFRESH_MAX_RETRIES = 2;
     // Graph prefix length from edges API (2, 4, or 6 hex chars); used for node prefix display and node fetch.
     let graphPrefixHexChars = PREFIX_HEX_CHARS;
     // Format prefix for display: add byte count when multi-byte (2 or 3 bytes)
@@ -1437,26 +1449,82 @@
         });
     });
     
-    // Load statistics
-    async function loadStats() {
+    function isValidMeshNode(node) {
+        return Boolean(
+            node
+            && typeof node === 'object'
+            && typeof node.public_key === 'string'
+            && node.public_key.length > 0
+            && typeof node.prefix === 'string'
+            && node.prefix.length > 0
+            && typeof node.name === 'string'
+            && Number.isFinite(node.latitude)
+            && Number.isFinite(node.longitude)
+        );
+    }
+
+    async function fetchMeshJson(url, requiredArrayKey = null) {
+        const response = await fetch(url);
+        let data;
         try {
-            const response = await fetch('/api/mesh/stats');
-            const stats = await response.json();
-            
-            document.getElementById('stat-node-count').textContent = stats.node_count || 0;
-            document.getElementById('stat-edge-count').textContent = stats.total_edges || 0;
-            if (stats.multibyte_edges !== undefined) {
-                document.getElementById('stat-edge-detail').textContent =
-                    `${stats.multibyte_edges} multi-byte confirmed`;
-            }
-            document.getElementById('stat-avg-obs').textContent = stats.avg_observations || 0;
-            document.getElementById('stat-avg-dist').textContent = stats.avg_distance ? stats.avg_distance + ' km' : 'N/A';
-            if (stats.bot_location) {
-                botLocation = stats.bot_location; // used to frame the initial map view
-            }
+            data = await response.json();
         } catch (error) {
-            console.error('Error loading stats:', error);
+            throw new Error(`Invalid JSON response from ${url}`);
         }
+        if (!response.ok || !data || typeof data !== 'object' || data.error) {
+            const detail = data && data.error ? `: ${data.error}` : '';
+            throw new Error(`Mesh request failed (${response.status})${detail}`);
+        }
+        if (requiredArrayKey && !Array.isArray(data[requiredArrayKey])) {
+            throw new Error(
+                `Mesh response from ${url} is missing ${requiredArrayKey}`
+            );
+        }
+        if (
+            requiredArrayKey === 'edges'
+            && !data.edges.every(edge =>
+                edge
+                && typeof edge === 'object'
+                && typeof edge.from_prefix === 'string'
+                && typeof edge.to_prefix === 'string'
+            )
+        ) {
+            throw new Error(`Mesh response from ${url} contains invalid edges`);
+        }
+        if (
+            requiredArrayKey === 'nodes'
+            && !data.nodes.every(isValidMeshNode)
+        ) {
+            throw new Error(`Mesh response from ${url} contains invalid nodes`);
+        }
+        return data;
+    }
+
+    // Load statistics
+    function loadStats() {
+        if (statsLoadInFlight) return statsLoadInFlight;
+        statsLoadInFlight = (async () => {
+            try {
+                const stats = await fetchMeshJson('/api/mesh/stats');
+
+                document.getElementById('stat-node-count').textContent = stats.node_count || 0;
+                document.getElementById('stat-edge-count').textContent = stats.total_edges || 0;
+                if (stats.multibyte_edges !== undefined) {
+                    document.getElementById('stat-edge-detail').textContent =
+                        `${stats.multibyte_edges} multi-byte confirmed`;
+                }
+                document.getElementById('stat-avg-obs').textContent = stats.avg_observations || 0;
+                document.getElementById('stat-avg-dist').textContent = stats.avg_distance ? stats.avg_distance + ' km' : 'N/A';
+                if (stats.bot_location) {
+                    botLocation = stats.bot_location; // used to frame the initial map view
+                }
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        })().finally(() => {
+            statsLoadInFlight = null;
+        });
+        return statsLoadInFlight;
     }
 
     // --- Min Observations slider ---
@@ -1504,13 +1572,64 @@
         saveFilters();
     }
     
-    // Load nodes and edges
-    // Options may skip rendering or retain either already-loaded dataset.
-    // Used by socket handlers so graph view is not re-rendered on live updates (avoids chaotic re-stabilization).
-    async function loadData(options) {
-        const skipRender = options && options.skipRender === true;
-        const reloadEdges = !options || options.reloadEdges !== false;
-        const reloadNodes = !options || options.reloadNodes !== false;
+    function normalizeMeshLoadOptions(options) {
+        return {
+            skipRender: Boolean(options && options.skipRender === true),
+            reloadEdges: !options || options.reloadEdges !== false,
+            reloadNodes: !options || options.reloadNodes !== false,
+            forceRefresh: Boolean(options && options.forceRefresh === true)
+        };
+    }
+
+    function mergeMeshLoadOptions(existing, incoming) {
+        if (!existing) return incoming;
+        return {
+            // Render when any queued caller needs a render.
+            skipRender: existing.skipRender && incoming.skipRender,
+            reloadEdges: existing.reloadEdges || incoming.reloadEdges,
+            reloadNodes: existing.reloadNodes || incoming.reloadNodes,
+            forceRefresh: existing.forceRefresh || incoming.forceRefresh
+        };
+    }
+
+    // Load nodes and edges. Calls are serialized and requests that arrive while
+    // one is active are merged into one trailing load.
+    function loadData(options) {
+        pendingMeshLoad = mergeMeshLoadOptions(
+            pendingMeshLoad,
+            normalizeMeshLoadOptions(options)
+        );
+        if (!meshLoadInFlight) {
+            meshLoadInFlight = drainMeshLoads().finally(() => {
+                meshLoadInFlight = null;
+            });
+        }
+        return meshLoadInFlight;
+    }
+
+    async function drainMeshLoads() {
+        let lastError = null;
+        while (pendingMeshLoad) {
+            const options = pendingMeshLoad;
+            pendingMeshLoad = null;
+            try {
+                await performMeshLoad(options);
+                lastError = null;
+            } catch (error) {
+                // Continue with work queued while the failed request was active.
+                lastError = error;
+            }
+        }
+        if (lastError) {
+            throw lastError;
+        }
+    }
+
+    async function performMeshLoad(options) {
+        const skipRender = options.skipRender;
+        const reloadEdges = options.reloadEdges;
+        const reloadNodes = options.reloadNodes;
+        const forceRefresh = options.forceRefresh;
         
         try {
             const evidence = document.getElementById('filter-evidence').value;
@@ -1519,6 +1638,7 @@
             const edgeParams = new URLSearchParams();
             if (evidence === 'multibyte') edgeParams.set('evidence', 'multibyte');
             if (edgeDays) edgeParams.set('days', edgeDays);
+            if (forceRefresh) edgeParams.set('refresh', '1');
             const nodeParams = new URLSearchParams();
             if (nodeDays) nodeParams.set('days', nodeDays);
             const edgeQuery = edgeParams.toString();
@@ -1533,42 +1653,59 @@
             // below once the edge prefix length is known, so the nodes request does
             // not have to wait for the edges response
             const [edgesData, nodesData] = await Promise.all([
-                reloadEdges ? fetch(edgesUrl).then(r => r.json()) : Promise.resolve(null),
-                reloadNodes ? fetch(nodesUrl).then(r => r.json()) : Promise.resolve(null)
+                reloadEdges ? fetchMeshJson(edgesUrl, 'edges') : Promise.resolve(null),
+                reloadNodes ? fetchMeshJson(nodesUrl, 'nodes') : Promise.resolve(null)
             ]);
-            if (edgesData) {
-                allEdges = edgesData.edges || [];
-                graphPrefixHexChars = (edgesData.prefix_hex_chars && [2, 4, 6].includes(edgesData.prefix_hex_chars))
+            const nextEdges = edgesData ? edgesData.edges : allEdges;
+            const nextPrefixHexChars = edgesData
+                ? ((edgesData.prefix_hex_chars && [2, 4, 6].includes(edgesData.prefix_hex_chars))
                     ? edgesData.prefix_hex_chars
-                    : PREFIX_HEX_CHARS;
+                    : PREFIX_HEX_CHARS)
+                : graphPrefixHexChars;
+            const sourceNodes = nodesData ? nodesData.nodes : allNodes;
+            if (!nextEdges.every(edge =>
+                edge
+                && typeof edge === 'object'
+                && typeof edge.from_prefix === 'string'
+                && typeof edge.to_prefix === 'string'
+            )) {
+                throw new Error(`Mesh response from ${edgesUrl} contains invalid edges`);
+            }
+            if (!sourceNodes.every(isValidMeshNode)) {
+                throw new Error(`Mesh response from ${nodesUrl} contains invalid nodes`);
             }
 
-            if (nodesData) {
-                allNodes = nodesData.nodes || [];
-            }
-            // Keep node.prefix in sync with edge prefixes (e.g. 2-byte graphs)
-            allNodes.forEach(node => {
+            // Prepare a complete candidate graph before replacing any current
+            // state, so malformed responses cannot blank a working display.
+            const nextNodes = sourceNodes.map(node => {
+                const nextNode = { ...node };
+                if (nextNode.public_key) {
+                    nextNode.prefix = nextNode.public_key
+                        .substring(0, nextPrefixHexChars)
+                        .toLowerCase();
+                }
+                return nextNode;
+            });
+            const nextNodeMap = {};
+            const nextNodeMapByKey = {};
+            nextNodes.forEach(node => {
+                nextNodeMap[node.prefix] = node;
                 if (node.public_key) {
-                    node.prefix = node.public_key.substring(0, graphPrefixHexChars).toLowerCase();
+                    nextNodeMapByKey[node.public_key] = node;
                 }
             });
-            
-            // Build node maps
-            nodeMap = {};
-            nodeMapByKey = {};
-            allNodes.forEach(node => {
-                nodeMap[node.prefix] = node; // Last node with this prefix wins (for backward compatibility)
-                if (node.public_key) {
-                    nodeMapByKey[node.public_key] = node; // Map by public key for accurate lookups
-                }
-            });
-            
-            // Build edge map
-            edgeMap = {};
-            allEdges.forEach(edge => {
+            const nextEdgeMap = {};
+            nextEdges.forEach(edge => {
                 const key = `${edge.from_prefix}-${edge.to_prefix}`;
-                edgeMap[key] = edge;
+                nextEdgeMap[key] = edge;
             });
+
+            allEdges = nextEdges;
+            allNodes = nextNodes;
+            graphPrefixHexChars = nextPrefixHexChars;
+            nodeMap = nextNodeMap;
+            nodeMapByKey = nextNodeMapByKey;
+            edgeMap = nextEdgeMap;
 
             // Rescale the min-observations slider to the new edge distribution
             if (reloadEdges) {
@@ -3164,9 +3301,111 @@
         return `${first8Bytes}...${last8Bytes}`;
     }
     
-    function refreshData() {
-        loadStats();
-        loadData();
+    async function refreshData() {
+        const absorbedPending = meshLiveRefreshPending
+            || meshLiveRefreshTimer !== null;
+        const absorbedNeedsNodes = meshLiveRefreshNeedsNodes;
+        if (meshLiveRefreshTimer) {
+            clearTimeout(meshLiveRefreshTimer);
+            meshLiveRefreshTimer = null;
+        }
+        meshLiveRefreshPending = false;
+        meshLiveRefreshNeedsNodes = false;
+        meshLiveRefreshRetryCount = 0;
+        const activeScheduledRefresh = meshLiveRefreshRunning;
+        const activeReloadsNodes = meshLiveRefreshActiveReloadsNodes;
+        try {
+            if (activeScheduledRefresh && meshLoadInFlight) {
+                await Promise.all([loadStats(), meshLoadInFlight]);
+                if (activeReloadsNodes) {
+                    applyFilters();
+                } else {
+                    // The active forced edge refresh is sufficient; fetch only
+                    // the nodes it omitted and render from the combined state.
+                    await loadData({
+                        reloadEdges: false,
+                        reloadNodes: true
+                    });
+                }
+            } else {
+                await Promise.all([
+                    loadStats(),
+                    loadData({ forceRefresh: true })
+                ]);
+            }
+        } catch (error) {
+            // A manual refresh may have absorbed a pending live update. Restore
+            // it and let the bounded scheduled-retry policy recover.
+            scheduleMeshLiveRefresh(true, MESH_LIVE_REFRESH_RETRY_MS);
+            throw error;
+        }
+        if (absorbedPending && activeScheduledRefresh) {
+            // Events arriving during an active database snapshot may not be
+            // represented by it, so retain that trailing refresh.
+            scheduleMeshLiveRefresh(absorbedNeedsNodes);
+        }
+    }
+
+    function scheduleMeshLiveRefresh(
+        reloadNodes,
+        delayMs = MESH_LIVE_REFRESH_MS
+    ) {
+        meshLiveRefreshPending = true;
+        meshLiveRefreshNeedsNodes = meshLiveRefreshNeedsNodes || Boolean(reloadNodes);
+        if (document.hidden || meshLiveRefreshTimer || meshLiveRefreshRunning) return;
+
+        meshLiveRefreshTimer = setTimeout(() => {
+            meshLiveRefreshTimer = null;
+            runScheduledMeshRefresh();
+        }, delayMs);
+    }
+
+    async function runScheduledMeshRefresh() {
+        if (
+            document.hidden
+            || meshLiveRefreshRunning
+            || !meshLiveRefreshPending
+        ) {
+            return;
+        }
+
+        const reloadNodes = meshLiveRefreshNeedsNodes;
+        meshLiveRefreshPending = false;
+        meshLiveRefreshNeedsNodes = false;
+        meshLiveRefreshRunning = true;
+        meshLiveRefreshActiveReloadsNodes = reloadNodes;
+        let retryDelayMs = MESH_LIVE_REFRESH_MS;
+        try {
+            await Promise.all([
+                loadStats(),
+                loadData({
+                    reloadNodes,
+                    skipRender: true,
+                    forceRefresh: true
+                })
+            ]);
+            if (currentView === 'map') {
+                applyFilters();
+            }
+            meshLiveRefreshRetryCount = 0;
+        } catch (error) {
+            console.error('Error refreshing live mesh data:', error);
+            if (meshLiveRefreshRetryCount < MESH_LIVE_REFRESH_MAX_RETRIES) {
+                meshLiveRefreshRetryCount++;
+                meshLiveRefreshPending = true;
+                meshLiveRefreshNeedsNodes =
+                    meshLiveRefreshNeedsNodes || reloadNodes;
+                retryDelayMs = MESH_LIVE_REFRESH_RETRY_MS;
+            } else {
+                meshLiveRefreshRetryCount = 0;
+            }
+        } finally {
+            meshLiveRefreshRunning = false;
+            meshLiveRefreshActiveReloadsNodes = false;
+            if (meshLiveRefreshPending) {
+                scheduleMeshLiveRefresh(false, retryDelayMs);
+            }
+        }
     }
     
     function exportView() {
@@ -3267,27 +3506,30 @@
     
     // Socket.IO setup for real-time updates
     // Live updates are applied only when the map view is active. When the graph view is active,
-    // we refresh data in the background but do not re-render the graph, to avoid the chaotic
-    // re-stabilization layout (nodes clumping, edges tangling) that occurs when vis-network
-    // runs physics again. User can refresh or switch to map and back to see updated graph.
+    // events are coalesced into a bounded background refresh and do not re-render
+    // the graph, avoiding both request storms and chaotic physics re-stabilization.
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && meshLiveRefreshPending) {
+            if (meshLiveRefreshTimer) {
+                clearTimeout(meshLiveRefreshTimer);
+                meshLiveRefreshTimer = null;
+            }
+            runScheduledMeshRefresh();
+        }
+    });
+
     function setupSocketIO() {
         const socket = window.connectionManager.socket;
         
         socket.emit('subscribe_mesh');
         
-        function onMeshUpdate(data, label) {
-            console.log(label, data);
-            loadStats();
-            loadData({ skipRender: true }).then(() => {
-                if (currentView === 'map') {
-                    applyFilters();
-                }
-            });
+        function onMeshUpdate(reloadNodes) {
+            scheduleMeshLiveRefresh(reloadNodes);
         }
         
-        socket.on('mesh_edge_added', (data) => onMeshUpdate(data, 'New edge added:'));
-        socket.on('mesh_edge_updated', (data) => onMeshUpdate(data, 'Edge updated:'));
-        socket.on('mesh_node_added', (data) => onMeshUpdate(data, 'New node added:'));
+        socket.on('mesh_edge_added', () => onMeshUpdate(false));
+        socket.on('mesh_edge_updated', () => onMeshUpdate(false));
+        socket.on('mesh_node_added', () => onMeshUpdate(true));
     }
 </script>
 

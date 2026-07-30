@@ -296,6 +296,12 @@ The installed systemd service allows up to 1GB of memory and 200% CPU (two
 cores). These are upper limits rather than reserved resources. A USB SSD is
 still the most effective way to reduce SD-card wear on high-volume nodes.
 
+The web viewer caches the lifetime multi-byte edge aggregate for 30 seconds and
+coalesces live mesh events into one refresh per 30 seconds. On unusually large
+meshes, increase `[Web_Viewer] mesh_graph_cache_seconds` to 60. Keep
+`[Logging] log_level = INFO` during normal operation; `DEBUG` emits multiple
+records per observed edge and can create substantial SD-card write traffic.
+
 ## Preset Configurations
 
 ### `balanced` (Default)

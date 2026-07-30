@@ -307,6 +307,28 @@ class BotDataViewer:
         self._contacts_badge_cache_lock = threading.Lock()
         self._contacts_badge_cache: dict[int | None, tuple[tuple, set[str]]] = {}
 
+        # The multi-byte mesh endpoint derives lifetime edge identity from every
+        # retained multi-byte observed path.  Cache that expensive aggregate and
+        # ensure concurrent requests share one computation.  View-specific day
+        # and observation filters remain cheap and are applied to the cached
+        # lifetime result.
+        try:
+            mesh_cache_seconds = self.config.getint(
+                'Web_Viewer',
+                'mesh_graph_cache_seconds',
+                fallback=30,
+            )
+        except (configparser.Error, ValueError, TypeError):
+            mesh_cache_seconds = 30
+        self._mesh_graph_cache_seconds = max(5, min(mesh_cache_seconds, 300))
+        self._multibyte_graph_cache_condition = threading.Condition()
+        self._multibyte_graph_cache_edges: list[dict[str, Any]] | None = None
+        self._multibyte_graph_cache_created_at = 0.0
+        self._multibyte_graph_cache_computing = False
+        self._multibyte_graph_cache_failure_at = 0.0
+        self._multibyte_graph_cache_failure: tuple[str, str] | None = None
+        self._multibyte_graph_cache_retry_seconds = 5.0
+
         # Use [Bot] db_path when [Web_Viewer] db_path is unset
         bot_db = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
         if (self.config.has_section('Web_Viewer') and self.config.has_option('Web_Viewer', 'db_path')
@@ -396,9 +418,20 @@ class BotDataViewer:
             except (configparser.Error, ValueError, TypeError):
                 pass
 
+        log_level_name = 'INFO'
+        if getattr(self, 'config', None) is not None and self.config.has_section('Logging'):
+            log_level_name = self.config.get(
+                'Logging',
+                'log_level',
+                fallback='INFO',
+            ).strip().upper()
+        log_level = getattr(logging, log_level_name, logging.INFO)
+        if not isinstance(log_level, int):
+            log_level = logging.INFO
+
         # Get or create logger (don't use basicConfig as it may conflict with existing logging)
         self.logger = logging.getLogger('modern_web_viewer')
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(log_level)
 
         # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()
@@ -407,7 +440,9 @@ class BotDataViewer:
 
         # Console handler (captured by journald under systemd)
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
+        # Keep DEBUG out of journald even when explicitly enabled for the
+        # rotating diagnostic file, avoiding duplicate high-volume SD writes.
+        console_handler.setLevel(max(log_level, logging.INFO))
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
@@ -429,7 +464,7 @@ class BotDataViewer:
                 backupCount=log_backup_count,
                 encoding='utf-8',
             )
-            file_handler.setLevel(logging.DEBUG)
+            file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)
             self.logger.info(
@@ -609,10 +644,16 @@ class BotDataViewer:
             conn.close()
 
     def _derive_multibyte_evidence_edges(
-        self, days: int | None = None, min_observations: int | None = None
+        self,
+        days: int | None = None,
+        min_observations: int | None = None,
+        *,
+        force_refresh: bool = False,
     ) -> list[dict[str, Any]]:
         """Return lifetime-derived multi-byte edges filtered for the API view."""
-        all_edges = self._aggregate_multibyte_evidence_edges()
+        all_edges = self._aggregate_multibyte_evidence_edges(
+            force_refresh=force_refresh
+        )
         return self._filter_multibyte_evidence_edges(
             all_edges,
             days=days,
@@ -620,10 +661,16 @@ class BotDataViewer:
         )
 
     def _derive_multibyte_evidence_graph(
-        self, days: int | None = None, min_observations: int | None = None
+        self,
+        days: int | None = None,
+        min_observations: int | None = None,
+        *,
+        force_refresh: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """Return filtered edges plus the lifetime graph's prefix resolution."""
-        all_edges = self._aggregate_multibyte_evidence_edges()
+        all_edges = self._aggregate_multibyte_evidence_edges(
+            force_refresh=force_refresh
+        )
         prefix_hex_chars = max(
             (len(edge['from_prefix']) for edge in all_edges),
             default=2,
@@ -675,7 +722,101 @@ class BotDataViewer:
             result.append(edge)
         return result
 
-    def _aggregate_multibyte_evidence_edges(self) -> list[dict[str, Any]]:
+    def _aggregate_multibyte_evidence_edges(
+        self, *, force_refresh: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return a bounded-age, single-flight lifetime multi-byte aggregate."""
+        def previous_failure(message: str) -> RuntimeError:
+            failure = self._multibyte_graph_cache_failure
+            if failure is None:
+                return RuntimeError(message)
+            failure_type, failure_message = failure
+            return RuntimeError(
+                f"{message}: {failure_type}: {failure_message}"
+            )
+
+        now = time.monotonic()
+        with self._multibyte_graph_cache_condition:
+            cached = self._multibyte_graph_cache_edges
+            cache_age = now - self._multibyte_graph_cache_created_at
+            failure_age = now - self._multibyte_graph_cache_failure_at
+            retry_suppressed = (
+                self._multibyte_graph_cache_failure is not None
+                and failure_age < self._multibyte_graph_cache_retry_seconds
+            )
+            if retry_suppressed:
+                if cached is not None and not force_refresh:
+                    return cached
+                raise previous_failure(
+                    "Multi-byte mesh aggregation retry suppressed after failure"
+                )
+            if (
+                not force_refresh
+                and cached is not None
+                and cache_age < self._mesh_graph_cache_seconds
+            ):
+                return cached
+
+            if self._multibyte_graph_cache_computing:
+                # Prefer a slightly stale result to making concurrent clients
+                # duplicate the same expensive SQLite aggregation.
+                if cached is not None and not force_refresh:
+                    return cached
+                while self._multibyte_graph_cache_computing:
+                    self._multibyte_graph_cache_condition.wait()
+                cached = self._multibyte_graph_cache_edges
+                if self._multibyte_graph_cache_failure is not None:
+                    if cached is not None and not force_refresh:
+                        return cached
+                    raise previous_failure(
+                        "Concurrent multi-byte mesh aggregation failed"
+                    )
+                if cached is not None:
+                    return cached
+
+            self._multibyte_graph_cache_computing = True
+            stale = cached
+
+        started_at = time.monotonic()
+        try:
+            computed = self._compute_multibyte_evidence_edges()
+        except Exception as exc:
+            self.logger.warning(
+                "Multi-byte mesh aggregation failed%s",
+                "; serving cached data"
+                if stale is not None and not force_refresh
+                else "",
+                exc_info=True,
+            )
+            with self._multibyte_graph_cache_condition:
+                self._multibyte_graph_cache_failure = (
+                    type(exc).__name__,
+                    str(exc),
+                )
+                self._multibyte_graph_cache_failure_at = time.monotonic()
+                self._multibyte_graph_cache_computing = False
+                self._multibyte_graph_cache_condition.notify_all()
+            if stale is not None and not force_refresh:
+                return stale
+            raise
+
+        elapsed = time.monotonic() - started_at
+        with self._multibyte_graph_cache_condition:
+            self._multibyte_graph_cache_edges = computed
+            self._multibyte_graph_cache_created_at = time.monotonic()
+            self._multibyte_graph_cache_failure = None
+            self._multibyte_graph_cache_failure_at = 0.0
+            self._multibyte_graph_cache_computing = False
+            self._multibyte_graph_cache_condition.notify_all()
+
+        self.logger.debug(
+            "Computed %d multi-byte mesh edges in %.3fs",
+            len(computed),
+            elapsed,
+        )
+        return computed
+
+    def _compute_multibyte_evidence_edges(self) -> list[dict[str, Any]]:
         """Derive mesh edges purely from multi-byte path evidence.
 
         Splits each observed_paths row with bytes_per_hop >= 2 into consecutive
@@ -2573,10 +2714,13 @@ class BotDataViewer:
                 min_distance = request.args.get('min_distance', type=float)
                 max_distance = request.args.get('max_distance', type=float)
                 evidence = request.args.get('evidence', 'all')
+                force_refresh = request.args.get('refresh') == '1'
 
                 if evidence == 'multibyte':
                     edges, prefix_hex_chars = self._derive_multibyte_evidence_graph(
-                        days=days, min_observations=min_observations
+                        days=days,
+                        min_observations=min_observations,
+                        force_refresh=force_refresh,
                     )
                     return jsonify({
                         'edges': edges,
