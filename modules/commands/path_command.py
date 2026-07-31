@@ -454,6 +454,9 @@ class PathCommand(BaseCommand):
             path_input = " ".join(parts[1:])
             response = await self._decode_path(path_input)
 
+        if message.sender_id:
+            response = f"@[{message.sender_id}]\n" + response
+
         # Send the response (may be split into multiple messages if long)
         await self._send_path_response(message, response)
         return True
