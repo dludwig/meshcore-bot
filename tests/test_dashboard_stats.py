@@ -569,6 +569,189 @@ class TestPacketDimensions:
         assert coverage["packets_with_dims"] == 2
 
 
+class TestPacketEncodingTrend:
+    """The per-payload-type multibyte share charted on the dashboard.
+
+    packet_stream is pruned within days while the chart spans thirty, so each
+    day's split is written as that day is rolled up and can never be recovered
+    afterwards — every case here is about what gets frozen into the row.
+    """
+
+    @staticmethod
+    def _insert(conn, payload_type, bytes_per_hop, count, *, age_seconds=60.0):
+        conn.executemany(
+            "INSERT INTO packet_stream (timestamp, data, type, route_type_name, "
+            "payload_type_name, bytes_per_hop) VALUES (?, '{}', 'packet', 'FLOOD', ?, ?)",
+            [(time.time() - age_seconds, payload_type, bytes_per_hop)] * count,
+        )
+
+    @staticmethod
+    def _stored_split(viewer) -> dict:
+        row = _rollup(viewer, local_date_str())
+        return json.loads(row["packet_type_encoding"])
+
+    def test_split_is_recorded_per_payload_type(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "GRP_TXT", 3, 3)
+            self._insert(conn, "GRP_TXT", 1, 1)
+            self._insert(conn, "TXT_MSG", 2, 1)
+            self._insert(conn, "TXT_MSG", 1, 3)
+        _refresh(viewer)
+
+        assert self._stored_split(viewer) == {
+            "GRP_TXT": {"mb": 3, "total": 4},
+            "TXT_MSG": {"mb": 1, "total": 4},
+        }
+
+    def test_series_reports_one_share_per_type(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "REQ", 2, 1)
+            self._insert(conn, "REQ", 1, 3)
+        _refresh(viewer)
+
+        with viewer.app.test_client() as client:
+            payload = client.get(
+                "/api/dashboard/series?metric=multibyte_share_req&days=30"
+            ).get_json()
+        assert payload["is_ratio"] is True
+        assert payload["points"][-1] == {
+            "date": local_date_str(),
+            "value": 25.0,
+            "complete": False,
+        }
+
+    def test_undimensioned_packets_leave_the_ratio_alone(self, viewer):
+        """They are not evidence of single-byte routing, only of pending work.
+
+        Counting them on the denominator invents a dip in whichever type the
+        backfill has not reached yet, which reads as a change in the mesh.
+        """
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "PATH", 2, 1)
+            self._insert(conn, "PATH", 1, 1)
+            conn.execute(
+                "INSERT INTO packet_stream (timestamp, data, type, payload_type_name) "
+                "VALUES (?, '{}', 'packet', 'PATH')",
+                (time.time(),),
+            )
+        _refresh(viewer)
+
+        assert self._stored_split(viewer)["PATH"] == {"mb": 1, "total": 2}
+
+    def test_untracked_types_roll_into_other(self, viewer):
+        """The tail is summed, not dropped: it is part of the denominator.
+
+        The chart has eight colour slots and ACK, TRACE and unmapped ordinals
+        like 'Type11' are not among them — but bar heights are a share of the
+        day's whole traffic, so discarding those packets would inflate every
+        bar rather than simply omitting a category.
+        """
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "ACK", 2, 3)
+            self._insert(conn, "Type11", 1, 4)
+            self._insert(conn, "ANON_REQ", 2, 1)
+        _refresh(viewer)
+
+        assert self._stored_split(viewer) == {
+            "ANON_REQ": {"mb": 1, "total": 1},
+            "OTHER": {"mb": 3, "total": 7},
+        }
+
+    def test_bar_height_matches_the_days_multibyte_share(self, viewer):
+        """Segments over the day-wide denominator must sum to the real share."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "GRP_TXT", 2, 2)   # multibyte
+            self._insert(conn, "GRP_TXT", 1, 6)   # single-byte
+            self._insert(conn, "ACK", 3, 1)       # multibyte, rolls into OTHER
+            self._insert(conn, "ACK", 1, 1)
+        _refresh(viewer)
+
+        split = self._stored_split(viewer)
+        packets = sum(entry["total"] for entry in split.values())
+        multibyte = sum(entry["mb"] for entry in split.values())
+        assert (packets, multibyte) == (10, 3)
+        # What the client draws: each segment over the day's whole traffic.
+        assert multibyte / packets * 100 == 30.0
+
+    def test_a_type_with_no_traffic_reads_as_a_gap(self, viewer):
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "GRP_DATA", 2, 1)
+        _refresh(viewer)
+
+        with viewer.app.test_client() as client:
+            payload = client.get(
+                "/api/dashboard/series?metric=multibyte_share_response&days=30"
+            ).get_json()
+        assert payload["points"], "the rollup rows exist; only the value is absent"
+        assert all(point["value"] is None for point in payload["points"])
+
+    def test_an_early_prune_does_not_erase_a_recorded_day(self, viewer):
+        """A day still inside the retention window can lose its rows anyway.
+
+        Recomputing it as an empty split would overwrite the only copy of that
+        day's share, so an empty result has to mean "cannot say" instead.
+        """
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "GRP_TXT", 2, 2)
+        _refresh(viewer)
+        recorded = self._stored_split(viewer)
+
+        with sqlite3.connect(viewer.db_path) as conn:
+            conn.execute("DELETE FROM packet_stream")
+        _refresh(viewer)
+
+        assert self._stored_split(viewer) == recorded
+
+    def test_summary_carries_raw_counts_for_the_stack(self, viewer):
+        """The stacked bars need a shared denominator, so counts are sent.
+
+        Eight percentages each taken over their own type's traffic cannot be
+        restacked into a composition — the day's multibyte total is not
+        recoverable from them.
+        """
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "GRP_TXT", 3, 3)
+            self._insert(conn, "GRP_TXT", 1, 1)
+            self._insert(conn, "TXT_MSG", 2, 1)
+        _refresh(viewer)
+
+        with viewer.app.test_client() as client:
+            payload = client.get("/api/dashboard/summary").get_json()
+        today = [day for day in payload["packet_encoding"] if day["date"] == local_date_str()]
+        assert len(today) == 1
+        assert today[0]["types"] == {
+            "GRP_TXT": {"mb": 3, "total": 4},
+            "TXT_MSG": {"mb": 1, "total": 1},
+        }
+
+    def test_summary_omits_the_per_type_share_series(self, viewer):
+        """Shipping both forms would send the same thirty days twice."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "REQ", 2, 1)
+        _refresh(viewer)
+
+        with viewer.app.test_client() as client:
+            payload = client.get("/api/dashboard/summary").get_json()
+        assert not [name for name in payload["series"] if name.startswith("multibyte_share_")]
+        assert "multibyte_share" in payload["series"], "the advert share still sparklines"
+        # Still addressable one at a time for anything plotting a single type.
+        with viewer.app.test_client() as client:
+            single = client.get("/api/dashboard/series?metric=multibyte_share_req").get_json()
+        assert single["is_ratio"] is True
+
+    def test_days_with_no_split_survive_as_empty_slots(self, viewer):
+        """The x-axis is every rollup day; a blank one must not shift the rest."""
+        with sqlite3.connect(viewer.db_path) as conn:
+            self._insert(conn, "PATH", 2, 1)
+        _refresh(viewer)
+
+        with viewer.app.test_client() as client:
+            payload = client.get("/api/dashboard/summary").get_json()
+        dates = [day["date"] for day in payload["packet_encoding"]]
+        assert dates == sorted(dates), "oldest first, so bars read left to right"
+        assert any(day["types"] == {} for day in payload["packet_encoding"])
+
+
 class TestDerivedWindows:
 
     @pytest.mark.parametrize(

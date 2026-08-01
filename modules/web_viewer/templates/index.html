@@ -199,7 +199,7 @@
     <div class="col-12 col-lg-5">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="fas fa-chart-line"></i> Multibyte share of adverts</span>
+                <span><i class="fas fa-chart-line"></i> Multibyte Share of Packets</span>
                 <button type="button" class="dashboard-info-btn" id="multibyte-trend-info"
                         aria-label="How the multibyte trend is computed"
                         data-bs-toggle="tooltip" data-bs-placement="top">
@@ -207,11 +207,14 @@
                 </button>
             </div>
             <div class="card-body">
+                <p class="dashboard-note mb-2">
+                    Share of each day's packets that took a multibyte path, by payload type
+                </p>
                 <div class="chart-box chart-box--tall">
                     <canvas id="multibyteTrendChart"
-                        aria-label="Multibyte share of daily adverts, last 30 days"></canvas>
+                        aria-label="Daily multibyte packets by payload type, last 30 days"></canvas>
                     <div class="dashboard-empty" id="multibyte-trend-empty" style="display:none">
-                        No classified advert days yet — the trend starts accumulating from today.
+                        No classified packet days yet — the chart starts accumulating from today.
                     </div>
                 </div>
             </div>

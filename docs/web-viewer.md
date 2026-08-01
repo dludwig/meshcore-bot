@@ -143,7 +143,11 @@ proxy_set_header X-Forwarded-Proto $scheme;
   coverage — the count tiles carry a 30-day sparkline and a change chip
 - Routing mix (flood vs direct), a hop-distance chart, and the role mix
 - Path encoding: multibyte share among contacts and among incoming packets,
-  plus a 30-day multibyte adoption trend
+  plus a 30-day stacked bar whose height is the share of each day's packets that
+  took a multibyte path, split by the payload type carrying them (`GRP_TXT`,
+  `RESPONSE`, `REQ`, `PATH`, `TXT_MSG`, `ANON_REQ`, `GRP_DATA`, `ADVERT`, and
+  `Other` for the rest). Its y-axis is the tallest bar rounded up to the next
+  5%, so it rescales as the mesh changes
 - Busiest repeaters, and **one-hop neighbours** (24-hour or 7-day window)
 
 The live packet feed lives on the **Real-time** page rather than here; the
@@ -206,8 +210,42 @@ Two consequences worth knowing:
   from each source's configured retention, so the list cannot offer "30 days"
   against a table pruned at 7.
 
-The **multibyte share** trend is accumulated forward, not derived. `observed_paths`
-is deduplicated with a lifetime `observation_count` and a `last_seen` that is
+The **multibyte share** trends are accumulated forward, not derived.
+
+The per-payload-type figures come from `packet_stream`, which is pruned within
+days while the chart spans thirty, so each day's split is written into
+`daily_rollup.packet_type_encoding` as that day is rolled up and cannot be
+recomputed afterwards. Enabling the feature therefore starts an empty chart that
+fills in over the following month. Packets whose denormalized dimensions have
+not been backfilled yet are excluded from both sides of the ratio rather than
+counted as single-byte — counting them would invent a dip in whichever type the
+backfill has not reached.
+
+**The chart measures the day, and the API serves per-type adoption.** A bar's
+height is the share of that day's packets that went multibyte, and its segments
+are each type's multibyte packets over that same day-wide denominator — so the
+segments sum to the bar and the bar equals the figure the packet doughnut
+reports for its own window. Every payload type is counted, with the uncharted
+tail (`ACK`, `TRACE`, unmapped ordinals — about 0.8% of live traffic) summed into
+`Other`; omitting it would leave bar heights a share of the charted types rather
+than of the day.
+
+The `multibyte_share_*` metrics answer the different question "how much of *this
+type* went multibyte?", each a ratio over its own denominator. Eight such ratios
+share no denominator and cannot be stacked, which is why the dashboard payload
+carries the raw counts in `packet_encoding` rather than the eight percentage
+series; the tooltip quotes both readings per segment.
+
+**Two different advert shares exist, and they do not agree.** The charted
+`multibyte_share_advert` counts advert *packets* off the packet stream, the same
+way as every other line. The older `multibyte_share` counts a day's adverts
+against a classification of the *node* that sent them — one multibyte path ever
+observed marks that node multibyte for every advert it sends. Neither is wrong;
+they answer different questions, and the gap between them is roughly the set of
+nodes that can do multibyte but mostly do not.
+
+That older share is also frozen for a different reason. `observed_paths` is
+deduplicated with a lifetime `observation_count` and a `last_seen` that is
 bumped on every re-observation, so historical per-day shares cannot be
 reconstructed from it — nearly half the observation volume would be attributed
 to the wrong day. Each refresh recomputes today plus a three-day trailing
@@ -265,11 +303,17 @@ window; older days stay frozen at the value recorded then.
 The viewer also provides JSON API endpoints:
 
 - `GET /api/dashboard/summary` - Snapshot-backed dashboard payload, including
-  30-day sparkline series and change figures. Sends a strong `ETag`; poll with
-  `If-None-Match` to get a bodyless `304` while the snapshot is unchanged.
+  30-day sparkline series and change figures, plus `packet_encoding`: 30 days of
+  raw per-payload-type multibyte/total counts for the stacked encoding chart.
+  Sends a strong `ETag`; poll with `If-None-Match` to get a bodyless `304` while
+  the snapshot is unchanged.
 - `GET /api/dashboard/series?metric=<m>&days=<n>` - Full-history points for one
   metric. `metric` is one of `messages`, `commands`, `adverts`, `nodes`,
-  `new_nodes`, `packets`, `multibyte_share`.
+  `new_nodes`, `packets`, `multibyte_share` (adverts), or the per-payload-type
+  packet shares `multibyte_share_grp_txt`, `multibyte_share_response`,
+  `multibyte_share_req`, `multibyte_share_path`, `multibyte_share_txt_msg`,
+  `multibyte_share_anon_req`, `multibyte_share_grp_data`,
+  `multibyte_share_advert`.
 - `GET /api/dashboard/top?kind=<k>&window=<w>&limit=<n>` - One leaderboard.
   `kind` is one of `users`, `commands`, `channels`, `paths`, `repeaters`. The
   response carries `window_label`, `retention_days`, and

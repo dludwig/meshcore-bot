@@ -33,6 +33,41 @@
         '#d63384', '#198754', '#0dcaf0', '#adb5bd',
     ];
 
+    // Payload buckets on the encoding chart.  Must stay in the same order as
+    // PACKET_ENCODING_BUCKETS server-side: the slot index picks the colour, so a
+    // type keeps its colour even on a day when it has no traffic and drops out
+    // of the chart.  Colour by rank instead and one quiet day repaints the lot.
+    // Append new types; inserting one would recolour everything after it.
+    const PACKET_ENCODING_TYPES = [
+        'GRP_TXT', 'RESPONSE', 'REQ', 'PATH', 'TXT_MSG', 'ANON_REQ', 'GRP_DATA', 'ADVERT',
+        // The uncharted tail (ACK, TRACE, unmapped ordinals). Present so the
+        // bars measure the whole day's traffic, not just the named types.
+        'OTHER',
+    ];
+
+    // Eight categorical slots, each mode stepped for its own card surface
+    // (#ffffff light, #2d2d2d dark) rather than flipped from the other.  Both
+    // columns are validated for lightness band, chroma floor, colour-vision
+    // separation (worst adjacent pair ΔE 9.1 light / 8.4 dark) and
+    // normal-vision separation (19.6 / 19.3).  Several sit under 3:1 against
+    // the surface, which is why the legend is not optional here — identity has
+    // to survive without the colour.  Eight is the ceiling for hues: the ninth
+    // slot is deliberately a neutral, because "everything else" is not a
+    // category and must not compete with the ones that are.
+    const SERIES_PALETTE = {
+        light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948', '#a8a29e'],
+        dark: ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767', '#87817c'],
+    };
+
+    // Segments thinner than this fraction of the y-axis range are drawn without
+    // the hairline that separates stacked bands — below it the border is
+    // thicker than the band and erases the colour instead of framing it.
+    const MIN_SEGMENT_FRACTION_FOR_GAP = 0.01;
+
+    // The y-axis tops out at the tallest bar rounded up to the next multiple of
+    // this, so a 24% peak gets a 25% axis and a 26% peak gets 30%.
+    const AXIS_STEP_PCT = 5;
+
     function readBoot() {
         const el = document.getElementById('dashboard-boot');
         if (!el) return {};
@@ -129,6 +164,10 @@
             muted: (cs.getPropertyValue('--text-muted') || '#6c757d').trim(),
             grid: isDark() ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
             empty: (cs.getPropertyValue('--bg-tertiary') || '#dee2e6').trim(),
+            // The card the chart sits on. Stacked segments are separated by a
+            // hairline of the surface itself rather than a drawn border, so the
+            // gap reads as space instead of as an extra category.
+            surface: (cs.getPropertyValue('--card-bg') || '#ffffff').trim(),
         };
     }
 
@@ -373,7 +412,7 @@
             this.renderDoughnut('packetsEncodingChart', 'packets-encoding-summary',
                 (mesh.encoding || {}).packets, 'packets');
             setText('packets-window-label', coverage.packets_window_label || 'no data');
-            this.renderMultibyteTrend(series.multibyte_share);
+            this.renderPacketEncodingTrend(data.packet_encoding);
             this.renderMix('role-mix', mesh.role_mix);
 
             this.renderSourceNotes(coverage);
@@ -697,58 +736,185 @@
             });
         }
 
-        renderMultibyteTrend(points) {
+        /**
+         * One bar per day.  The bar's full height is the share of that day's
+         * packets that took a multibyte path, and it is divided by the payload
+         * type that carried them — so a day where 24% of traffic went multibyte
+         * draws a bar 24% tall, split eight ways.
+         *
+         * Every segment is a fraction of the same denominator, the day's whole
+         * traffic.  That is what makes the stack legitimate: each type's *own*
+         * multibyte share is a ratio over its own packet count, and eight such
+         * ratios share no denominator, so stacking those would sum to whatever
+         * it happened to sum to.  The per-type adoption figure is not lost —
+         * the tooltip quotes both readings.
+         */
+        renderPacketEncodingTrend(days) {
             const canvasId = 'multibyteTrendChart';
             const canvas = el(canvasId);
             if (!canvas || typeof Chart === 'undefined') return;
-            const list = Array.isArray(points) ? points : [];
+            const list = Array.isArray(days) ? days : [];
             const colors = themeColors();
+            const palette = SERIES_PALETTE[isDark() ? 'dark' : 'light'];
 
             if (this.charts[canvasId]) {
                 this.charts[canvasId].destroy();
                 delete this.charts[canvasId];
             }
+
+            const counts = (day, name) => (day.types || {})[name] || null;
+            // The denominator is every packet the day classified, including the
+            // OTHER bucket and every single-byte packet — not just the
+            // multibyte ones, which is what makes bar height a share of traffic.
+            const dayPackets = list.map((day) => Object.values(day.types || {}).reduce(
+                (sum, entry) => sum + ((entry && entry.total) || 0), 0
+            ));
+            const dayMultibyte = list.map((day) => Object.values(day.types || {}).reduce(
+                (sum, entry) => sum + ((entry && entry.mb) || 0), 0
+            ));
+            const segment = (day, name, i) => {
+                const entry = counts(day, name);
+                if (!entry || !dayPackets[i]) return null;
+                return (entry.mb / dayPackets[i]) * 100;
+            };
+            const barHeights = list.map((day, i) => PACKET_ENCODING_TYPES.reduce(
+                (sum, name) => sum + (segment(day, name, i) || 0), 0
+            ));
+
+            // Round the tallest bar up to the next step so the bars fill the
+            // plot: a 24% peak against a 0-100 axis wastes three quarters of the
+            // card and flattens every difference worth seeing.
+            const peak = barHeights.length ? Math.max(...barHeights) : 0;
+            const axisMax = Math.min(100, Math.max(
+                AXIS_STEP_PCT,
+                // Nudge down before rounding so a peak landing exactly on a step
+                // keeps that step rather than jumping to the next one.
+                Math.ceil((peak - 1e-9) / AXIS_STEP_PCT) * AXIS_STEP_PCT
+            ));
+
+            const datasets = [];
+            PACKET_ENCODING_TYPES.forEach((name, index) => {
+                // A type that carried no multibyte traffic all window would take
+                // a legend slot to describe an invisible segment.
+                if (!list.some((day, i) => segment(day, name, i) > 0)) return;
+                const color = palette[index % palette.length];
+                datasets.push({
+                    label: name === 'OTHER' ? 'Other' : name,
+                    data: list.map((day, i) => segment(day, name, i)),
+                    // Raw figures ride along so the tooltip can quote packet
+                    // counts and each type's own adoption without a second fetch.
+                    rawCounts: list.map((day) => counts(day, name)),
+                    backgroundColor: color,
+                    // A hairline of the card colour between segments; without it
+                    // two adjacent hues read as one band.  Dropped on segments
+                    // too thin to separate — GRP_DATA runs well under 1% of a
+                    // day, and a border on a 1px band erases the colour
+                    // entirely, turning a real category into a surface-coloured
+                    // gap.  Measured against the axis, not the value, because
+                    // the axis is what decides how many pixels a percent buys.
+                    borderColor: colors.surface,
+                    borderWidth: (ctx) => (
+                        (ctx.raw ?? 0) / axisMax >= MIN_SEGMENT_FRACTION_FOR_GAP
+                            ? { top: 1, bottom: 1 }
+                            : 0
+                    ),
+                    borderSkipped: false,
+                    // Now that the tooltip describes one segment, something has
+                    // to say which.  Chart.js would answer by saturating the
+                    // fill to a hue outside the validated palette; outline it
+                    // instead, so identity keeps its colour and the cue reads as
+                    // a pointer.  It also gives the sub-pixel slices a mark big
+                    // enough to see once they are the ones being described.
+                    hoverBackgroundColor: color,
+                    hoverBorderColor: colors.text,
+                    hoverBorderWidth: 1,
+                });
+            });
+
             const empty = el('multibyte-trend-empty');
-            const hasData = list.some((p) => p.value !== null && p.value !== undefined);
+            const hasData = datasets.length > 0 && barHeights.some((height) => height > 0);
             if (empty) empty.style.display = hasData ? 'none' : '';
             canvas.style.display = hasData ? '' : 'none';
             if (!hasData) return;
 
             this.charts[canvasId] = new Chart(canvas.getContext('2d'), {
-                type: 'line',
-                data: {
-                    labels: list.map((p) => p.date),
-                    datasets: [{
-                        label: 'Multibyte share',
-                        data: list.map((p) => p.value),
-                        borderColor: COLOR.multibyte,
-                        backgroundColor: COLOR.multibyte + '33',
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 0,
-                        pointHoverRadius: 4,
-                        spanGaps: false,
-                    }],
-                },
+                type: 'bar',
+                data: { labels: list.map((day) => day.date), datasets },
                 options: noAnimation({
                     responsive: true,
                     maintainAspectRatio: false,
+                    // One segment at a time.  'nearest' rather than 'point'
+                    // because intersect would make the thin slices unhittable —
+                    // GRP_DATA is under a pixel tall on most days, so requiring
+                    // the cursor to land inside it hides the very rows a reader
+                    // most needs the tooltip for.  This way the column picks the
+                    // segment whose band the cursor is closest to.
+                    interaction: { mode: 'nearest', intersect: false, axis: 'xy' },
                     plugins: {
-                        legend: { display: false },
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                color: colors.muted,
+                                boxWidth: 10,
+                                boxHeight: 10,
+                                padding: 8,
+                                font: { size: 10 },
+                                usePointStyle: true,
+                                pointStyle: 'rect',
+                            },
+                        },
                         tooltip: {
+                            filter: (ctx) => ctx.parsed.y !== null && ctx.parsed.y > 0,
                             callbacks: {
-                                label: (ctx) => (ctx.parsed.y === null
-                                    ? 'no data for this day'
-                                    : ctx.parsed.y.toFixed(1) + '% of adverts'),
+                                // Room to spell both readings out now that only
+                                // the hovered type is described.
+                                label: (ctx) => {
+                                    const entry = (ctx.dataset.rawCounts || [])[ctx.dataIndex];
+                                    const name = ctx.dataset.label;
+                                    const slice = ctx.parsed.y.toFixed(1) + '% of the day\'s packets';
+                                    if (!entry) return [' ' + name, ' ' + slice];
+                                    const adoption = entry.total
+                                        ? (entry.mb / entry.total * 100).toFixed(1) +
+                                          '% of all ' + name
+                                        : 'no ' + name + ' traffic';
+                                    return [
+                                        ' ' + name + ' — ' + slice,
+                                        ' ' + formatNumber(entry.mb) + ' of ' +
+                                            formatNumber(entry.total) + ' packets · ' + adoption,
+                                    ];
+                                },
+                                // The bar's own height, so the segment reads
+                                // against the whole it is part of.
+                                footer: (items) => {
+                                    if (!items.length) return '';
+                                    const i = items[0].dataIndex;
+                                    return 'Whole bar: ' + barHeights[i].toFixed(1) +
+                                        '% multibyte (' + formatNumber(dayMultibyte[i]) +
+                                        ' of ' + formatNumber(dayPackets[i]) + ')';
+                                },
                             },
                         },
                     },
                     scales: {
-                        x: { ticks: { color: colors.muted, font: { size: 10 }, maxTicksLimit: 8 }, grid: { display: false } },
+                        x: {
+                            stacked: true,
+                            ticks: { color: colors.muted, font: { size: 10 }, maxTicksLimit: 8 },
+                            grid: { display: false },
+                        },
                         y: {
+                            stacked: true,
                             min: 0,
-                            max: 100,
-                            ticks: { color: colors.muted, font: { size: 10 }, callback: (v) => v + '%' },
+                            max: axisMax,
+                            ticks: {
+                                // Gridlines on the same step the ceiling is
+                                // rounded to, so every label is a round number
+                                // and the top one is the ceiling itself.
+                                stepSize: axisMax <= 40 ? AXIS_STEP_PCT : undefined,
+                                maxTicksLimit: 8,
+                                color: colors.muted,
+                                font: { size: 10 },
+                                callback: (v) => v + '%',
+                            },
                             grid: { color: colors.grid },
                         },
                     },
@@ -1062,10 +1228,15 @@
             'them in that window on a path with multibyte hops; or, for repeaters and room ' +
             'servers, their public key prefix matches a hop prefix from a multibyte advert path.',
         'multibyte-trend-info':
-            'Share of daily adverts from nodes classified as multibyte capable. ' +
-            'Classification is only knowable as of now, so only the last few days are ' +
-            'recomputed and older days are frozen at the value recorded then. Days before ' +
-            'the rollup existed have no value and render as a gap, not as zero.',
+            'Each bar\'s height is the share of that day\'s packets that arrived on a path ' +
+            'with 2- or 3-byte hop hashes, divided by the payload type that carried them. A ' +
+            'segment is that type\'s share of the whole day\'s traffic, not of its own ' +
+            'packets — hover for both figures. The axis tops out at the tallest bar rounded ' +
+            'up to the next 5%, so it is not comparable between screenshots taken on ' +
+            'different days. Counted from the packet stream as each day is rolled up: the ' +
+            'stream itself is pruned within days, so the chart accumulates forward and days ' +
+            'before it existed are blank rather than zero. Packets whose encoding has not ' +
+            'been classified yet are left out rather than counted as single-byte.',
         'delta-info':
             'Change compares the last complete calendar day against the day before it — ' +
             'not a rolling 24 hours. The headline number above it is a rolling 24-hour count.',

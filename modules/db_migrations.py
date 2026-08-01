@@ -698,6 +698,23 @@ def _m0020_mesh_connections_last_seen_index(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def _m0021_daily_rollup_packet_type_encoding(cursor: sqlite3.Cursor) -> None:
+    """Record the per-payload-type multibyte split on each rollup day.
+
+    ``packet_stream`` is pruned at three days, so the dashboard's 30-day
+    encoding trend cannot be recomputed from it after the fact — the split has
+    to be written as each day is rolled up, the same accumulate-forward shape
+    the advert share already uses.
+
+    One JSON column rather than a count pair per type: the payload-type
+    vocabulary belongs to the firmware, not to us, so a type appearing on the
+    mesh should not need a schema migration to be charted.
+    """
+    if not _table_exists(cursor, "daily_rollup"):
+        return
+    _add_column(cursor, "daily_rollup", "packet_type_encoding", "TEXT")
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -725,6 +742,7 @@ MIGRATIONS: list[MigrationEntry] = [
     (18, "dashboard rollup and snapshot tables", _m0018_dashboard_rollup_tables),
     (19, "packet_stream: denormalized packet dimensions", _m0019_packet_stream_denorm_dims),
     (20, "mesh_connections: table-specific last_seen index", _m0020_mesh_connections_last_seen_index),
+    (21, "daily_rollup: per-payload-type multibyte split", _m0021_daily_rollup_packet_type_encoding),
 ]
 
 

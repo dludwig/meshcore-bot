@@ -66,8 +66,50 @@ SOURCE_NAMES = {
     SOURCE_OBSERVED_PATHS: "observed_paths",
 }
 
+# Payload types charted on the packet encoding trend, in the fixed order the
+# chart assigns its categorical colours in.  A colour belongs to a type and not
+# to its current rank, so a quiet day for one type must never repaint the other
+# seven lines — which means this order is part of the contract with the client,
+# not a display detail, and new types are appended rather than inserted.
+PACKET_ENCODING_TYPES = (
+    "GRP_TXT", "RESPONSE", "REQ", "PATH", "TXT_MSG", "ANON_REQ", "GRP_DATA", "ADVERT",
+)
+
+# Everything else the firmware emits — ACK, TRACE, MULTIPART, unmapped ordinals
+# like 'Type11' — folded into one bucket rather than dropped.  On the live mesh
+# that is 0.8% of traffic, and dropping it would leave the chart's bar heights a
+# share of the charted types instead of a share of the day, disagreeing with the
+# multibyte doughnut sitting on the same card.  Charting each separately instead
+# would spend the palette's remaining separation on traffic nobody watches.
+OTHER_PAYLOAD_TYPE = "OTHER"
+
+# Storage/chart order.  The named types keep their colour slots and the residual
+# bucket sits last, drawn in a neutral so it does not read as a ninth category.
+PACKET_ENCODING_BUCKETS = (*PACKET_ENCODING_TYPES, OTHER_PAYLOAD_TYPE)
+
+
+def packet_share_metric(payload_type: str) -> str:
+    """Series-metric name carrying one payload type's multibyte share."""
+    return f"multibyte_share_{payload_type.lower()}"
+
+
+def _packet_share_sql(payload_type: str) -> str:
+    """Percent of that type's classified packets that used 2- or 3-byte hops.
+
+    Reads the JSON written by ``_packet_encoding_by_type``.  A day with no
+    stored split, or none for this type, yields NULL — a gap, not a zero.
+    """
+    multibyte = f"""json_extract(packet_type_encoding, '$."{payload_type}".mb')"""
+    total = f"""json_extract(packet_type_encoding, '$."{payload_type}".total')"""
+    return (
+        f"CASE WHEN COALESCE({total}, 0) > 0 "
+        f"THEN ROUND(COALESCE({multibyte}, 0) * 100.0 / {total}, 1) END"
+    )
+
+
 # Series exposed by /api/dashboard/series and folded into the summary payload.
-# multibyte_share is a ratio the UI plots on a 0-100 axis; the rest are counts.
+# The multibyte shares are ratios the UI plots on a 0-100 axis; the rest are
+# counts.
 SERIES_METRICS: dict[str, str] = {
     "messages": "messages_total",
     "commands": "commands_total",
@@ -80,7 +122,24 @@ SERIES_METRICS: dict[str, str] = {
         "THEN ROUND(adverts_from_multibyte * 100.0 / "
         "(adverts_from_multibyte + adverts_from_singlebyte), 1) END"
     ),
+    **{
+        packet_share_metric(payload_type): _packet_share_sql(payload_type)
+        for payload_type in PACKET_ENCODING_TYPES
+    },
 }
+
+PACKET_SHARE_METRICS = frozenset(
+    packet_share_metric(payload_type) for payload_type in PACKET_ENCODING_TYPES
+)
+
+# Metrics folded into the summary payload's sparkline block.  The per-payload-
+# type shares stay out of it: the dashboard chart stacks raw counts from
+# ``packet_encoding`` instead, and eight independent percentages cannot be
+# restacked into a composition — the shared denominator is gone.  They remain on
+# /api/dashboard/series for anyone plotting one type on its own.
+SUMMARY_METRICS = tuple(
+    name for name in SERIES_METRICS if name not in PACKET_SHARE_METRICS
+)
 
 SUMMARY_SERIES_POINTS = 30
 
@@ -107,7 +166,12 @@ FLOOD_MIN_SHARE_PCT = 0.1
 
 # Metrics that are already a ratio: a period "total" has to be the mean of the
 # daily values, not their sum — adding percentages together means nothing.
-RATIO_METRICS = frozenset({"multibyte_share"})
+RATIO_METRICS = frozenset(
+    {
+        "multibyte_share",
+        *(packet_share_metric(payload_type) for payload_type in PACKET_ENCODING_TYPES),
+    }
+)
 
 TOP_KINDS = ("users", "commands", "channels", "paths", "repeaters", "neighbors")
 
@@ -440,7 +504,51 @@ class DashboardStatsService:
             "packets_flood": row[1] or 0,
             "packets_direct": row[2] or 0,
             "packets_multibyte": row[3] or 0,
+            "packet_type_encoding": self._packet_encoding_by_type(conn, start, end),
         }
+
+    def _packet_encoding_by_type(
+        self, conn: sqlite3.Connection, start: float, end: float
+    ) -> str | None:
+        """One day's multibyte split per payload type, as JSON.
+
+        Written now because it cannot be recovered later: packet_stream is
+        pruned at three days while the chart shows thirty.
+
+        Covers *every* payload type, with the uncharted tail summed into
+        ``OTHER``, because the totals here are the chart's denominator: bar
+        heights are each type's multibyte packets over the day's whole traffic,
+        so leaving a type out of the file would quietly inflate every bar.
+
+        Packets whose dimensions the refresher has not backfilled yet are
+        excluded from both sides rather than counted as single-byte.  On a
+        count that would merely undershoot; on a ratio it invents a dip in
+        whichever type the backfill has not reached, which reads as a real
+        change in the mesh.
+        """
+        counts: dict[str, dict[str, int]] = {}
+        for name, total, multibyte in conn.execute(
+            """
+            SELECT payload_type_name, COUNT(*),
+                   SUM(CASE WHEN bytes_per_hop IN (2, 3) THEN 1 ELSE 0 END)
+            FROM packet_stream
+            WHERE type = 'packet' AND timestamp >= ? AND timestamp < ?
+              AND bytes_per_hop IS NOT NULL
+            GROUP BY payload_type_name
+            """,
+            (start, end),
+        ):
+            # A NULL type is dimensioned but unnamed, which is still a packet
+            # the day's traffic contains — it belongs in the residual bucket,
+            # not thrown away.
+            key = name if name in PACKET_ENCODING_TYPES else OTHER_PAYLOAD_TYPE
+            bucket = counts.setdefault(key, {"mb": 0, "total": 0})
+            bucket["mb"] += multibyte or 0
+            bucket["total"] += total or 0
+        # Nothing found means "cannot say", not "the mesh was silent": a day
+        # whose rows were pruned ahead of the retention window would otherwise
+        # overwrite the split recorded for it while the rows still existed.
+        return json.dumps(counts, separators=(",", ":")) if counts else None
 
     def _advert_metrics(
         self,
@@ -578,6 +686,7 @@ class DashboardStatsService:
         "snr_sum", "snr_count", "rssi_sum", "rssi_count",
         "hops_sum", "hops_count",
         "packets_total", "packets_flood", "packets_direct", "packets_multibyte",
+        "packet_type_encoding",
         "adverts_total", "nodes_active", "nodes_new",
         "adverts_from_multibyte", "adverts_from_singlebyte",
         "contacts_known", "contacts_tracked",
@@ -1020,7 +1129,7 @@ class DashboardStatsService:
     def _series_from_rollup(
         self, conn: sqlite3.Connection, points: int = SUMMARY_SERIES_POINTS
     ) -> dict[str, list[dict[str, Any]]]:
-        expressions = ", ".join(f"{sql} AS {name}" for name, sql in SERIES_METRICS.items())
+        expressions = ", ".join(f"{SERIES_METRICS[name]} AS {name}" for name in SUMMARY_METRICS)
         rows = conn.execute(
             f"""
             SELECT date, is_final, {expressions}
@@ -1028,9 +1137,9 @@ class DashboardStatsService:
             """,
             (points,),
         ).fetchall()
-        series: dict[str, list[dict[str, Any]]] = {name: [] for name in SERIES_METRICS}
+        series: dict[str, list[dict[str, Any]]] = {name: [] for name in SUMMARY_METRICS}
         for row in reversed(rows):
-            for name in SERIES_METRICS:
+            for name in SUMMARY_METRICS:
                 series[name].append(
                     {
                         "date": row["date"],
@@ -1046,7 +1155,7 @@ class DashboardStatsService:
         Explicitly calendar days, not a rolling 24 hours: quoting one against
         the other is the classic dashboard lie, so the UI says which it is.
         """
-        expressions = ", ".join(f"{sql} AS {name}" for name, sql in SERIES_METRICS.items())
+        expressions = ", ".join(f"{SERIES_METRICS[name]} AS {name}" for name in SUMMARY_METRICS)
         rows = conn.execute(
             f"""
             SELECT date, {expressions} FROM daily_rollup
@@ -1056,7 +1165,48 @@ class DashboardStatsService:
         if len(rows) < 2:
             return {}
         current, previous = rows[0], rows[1]
-        return {name: _change_pct(current[name], previous[name]) for name in SERIES_METRICS}
+        return {name: _change_pct(current[name], previous[name]) for name in SUMMARY_METRICS}
+
+    def _packet_encoding_from_rollup(
+        self, conn: sqlite3.Connection, points: int = SUMMARY_SERIES_POINTS
+    ) -> list[dict[str, Any]]:
+        """Per-day multibyte/total counts per payload type, oldest first.
+
+        The chart stacks raw counts rather than the ratio series because a
+        composition needs one shared denominator — each day's multibyte total —
+        and that cannot be rebuilt from eight percentages taken over eight
+        different denominators.  Sending the counts also lets the tooltip quote
+        both readings: a type's slice of the day's multibyte traffic, and how
+        much of that type's own traffic was multibyte.
+        """
+        rows = conn.execute(
+            "SELECT date, is_final, packet_type_encoding FROM daily_rollup "
+            "ORDER BY date DESC LIMIT ?",
+            (points,),
+        ).fetchall()
+        series: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            try:
+                stored = json.loads(row["packet_type_encoding"] or "{}")
+            except (TypeError, ValueError):
+                self.logger.debug(f"Unreadable packet encoding split for {row['date']}")
+                stored = {}
+            series.append(
+                {
+                    "date": row["date"],
+                    "complete": bool(row["is_final"]),
+                    # Keyed by name: Flask sorts JSON object keys, so the client
+                    # cannot read a colour slot off position and looks each
+                    # bucket up instead.  OTHER is included — it is part of the
+                    # denominator the client divides by.
+                    "types": {
+                        name: stored[name]
+                        for name in PACKET_ENCODING_BUCKETS
+                        if isinstance(stored.get(name), dict)
+                    },
+                }
+            )
+        return series
 
     def build_snapshot(self, conn: sqlite3.Connection) -> dict[str, Any]:
         """Assemble the whole current-state payload. Read-only."""
@@ -1076,6 +1226,7 @@ class DashboardStatsService:
         }
         payload["series"] = self._series_from_rollup(conn)
         payload["deltas"] = self._deltas_from_rollup(conn)
+        payload["packet_encoding"] = self._packet_encoding_from_rollup(conn)
         return payload
 
     # -- refresh orchestration ----------------------------------------------
