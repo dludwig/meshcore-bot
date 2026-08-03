@@ -90,6 +90,21 @@ def _read_pyproject_version(repo_root: Path) -> str | None:
     return None
 
 
+def get_application_root() -> Path:
+    """Return the installed/source directory containing the bot application.
+
+    Runtime configuration may live elsewhere (for example, ``/etc/meshcore-bot``
+    or ``/data/config``), so version metadata must be resolved relative to this
+    module rather than relative to the config file.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+def resolve_application_version() -> dict[str, str | None]:
+    """Resolve version metadata for the running bot application."""
+    return resolve_runtime_version(get_application_root())
+
+
 def resolve_runtime_version(repo_root: Path | str) -> dict[str, str | None]:
     """Resolve version metadata and a single runtime display value.
 
@@ -161,4 +176,3 @@ def resolve_runtime_version(repo_root: Path | str) -> dict[str, str | None]:
         "date": date,
         "display": display,
     }
-

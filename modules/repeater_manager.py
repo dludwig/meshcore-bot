@@ -64,6 +64,46 @@ def collect_protected_pubkeys_for_device_mode(config: Any, logger: Any) -> set[s
     return set(keys)
 
 
+REQUIRED_REPEATER_TABLES = (
+    "repeater_contacts",
+    "complete_contact_tracking",
+    "daily_stats",
+    "unique_advert_packets",
+    "purging_log",
+    "mesh_connections",
+    "observed_paths",
+)
+
+
+def validate_repeater_tables(db_manager: Any, logger: Any) -> None:
+    """Raise RuntimeError if the repeater/graph tables migrations create are missing.
+
+    Split out of RepeaterManager.__init__ so callers that build the manager
+    lazily (the web viewer) can still fail fast at startup with an actionable
+    message, instead of surfacing a migration problem from inside whichever
+    request first happens to need the manager.
+    """
+    with db_manager.connection() as conn:
+        missing = [
+            table
+            for table in REQUIRED_REPEATER_TABLES
+            if conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            is None
+        ]
+
+    if missing:
+        msg = (
+            "Missing repeater/graph database tables: "
+            + ", ".join(missing)
+            + ". Run the bot once to apply migrations."
+        )
+        logger.error(msg)
+        raise RuntimeError(msg)
+
+
 class RepeaterManager:
     """Manages repeater contacts database and purging operations"""
 
@@ -156,34 +196,7 @@ class RepeaterManager:
     def _init_repeater_tables(self):
         """Ensure repeater-specific tables exist (created by migrations)."""
         try:
-            with self.db_manager.connection() as conn:
-                required_tables = [
-                    "repeater_contacts",
-                    "complete_contact_tracking",
-                    "daily_stats",
-                    "unique_advert_packets",
-                    "purging_log",
-                    "mesh_connections",
-                    "observed_paths",
-                ]
-                missing = []
-                for t in required_tables:
-                    cur = conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                        (t,),
-                    )
-                    if cur.fetchone() is None:
-                        missing.append(t)
-
-                if missing:
-                    msg = (
-                        "Missing repeater/graph database tables: "
-                        + ", ".join(missing)
-                        + ". Run the bot once to apply migrations."
-                    )
-                    self.logger.error(msg)
-                    raise RuntimeError(msg)
-
+            validate_repeater_tables(self.db_manager, self.logger)
             self.logger.info("Repeater contacts database initialized successfully")
 
         except Exception as e:

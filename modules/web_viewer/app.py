@@ -55,7 +55,6 @@ from modules.db_retention import (
 )
 from modules.ini_writer import IniValueError, update_ini_values
 from modules.security_utils import (
-    VALID_JOURNAL_MODES,
     SafeUrlPolicy,
     create_safe_requests_session,
     safe_requests_request,
@@ -68,7 +67,7 @@ from modules.settings_schema import (
     validate_field,
 )
 from modules.settings_store import get_settings_store
-from modules.version_info import resolve_runtime_version
+from modules.version_info import resolve_application_version
 from modules.web_viewer.dashboard_stats import (
     SERIES_METRICS,
     TOP_KINDS,
@@ -86,9 +85,9 @@ def _validate_dynamic_key(key: str) -> "str | None":
     Keys become INI option names, so they must not contain the separators or
     comment markers that would corrupt the file on the next read.
     """
-    if any(ch in key for ch in ('=', ':', '\n', '\r', '[', ']')):
+    if any(ch in key for ch in ("=", ":", "\n", "\r", "[", "]")):
         return f'Invalid key "{key}": cannot contain = : [ ] or newlines'
-    if key[:1] in ('#', ';'):
+    if key[:1] in ("#", ";"):
         return f'Invalid key "{key}": cannot start with # or ;'
     return None
 
@@ -125,12 +124,13 @@ def _apply_werkzeug_websocket_fix() -> None:
     """
     try:
         from engineio.async_drivers import _websocket_wsgi  # noqa: PLC0415
+
         _orig_call = _websocket_wsgi.SimpleWebSocketWSGI.__call__
 
         def _patched_call(self, environ, start_response):  # noqa: ANN001
             result = _orig_call(self, environ, start_response)
             try:
-                start_response('200 OK', [('Content-Length', '0')])
+                start_response("200 OK", [("Content-Length", "0")])
             except Exception:  # noqa: BLE001
                 pass
             return result
@@ -158,7 +158,7 @@ from modules.feed_manager import (
     FeedManager,
     _useful_feed_content_type,
 )
-from modules.repeater_manager import RepeaterManager
+from modules.repeater_manager import RepeaterManager, validate_repeater_tables
 from modules.url_shortener import _coerce_url_string
 from modules.utils import resolve_path
 from modules.web_viewer.config_panels import CONFIG_PANELS, PANEL_CATEGORIES
@@ -173,11 +173,11 @@ def _read_limited_requests_response(
 ) -> bytes:
     """Read a streamed, decompressed requests response under a hard byte cap."""
     response.raise_for_status()
-    content_type = response.headers.get('Content-Type', '')
+    content_type = response.headers.get("Content-Type", "")
     if not _useful_feed_content_type(content_type, feed_type):
         raise ValueError(f"Unexpected {feed_type.upper()} content type: {content_type}")
 
-    declared_length = response.headers.get('Content-Length')
+    declared_length = response.headers.get("Content-Length")
     if declared_length:
         try:
             content_length = int(declared_length)
@@ -195,7 +195,7 @@ def _read_limited_requests_response(
         if total > max_bytes:
             raise ValueError(f"Feed response exceeds {max_bytes} byte limit")
         chunks.append(chunk)
-    return b''.join(chunks)
+    return b"".join(chunks)
 
 
 class BotDataViewer:
@@ -203,37 +203,41 @@ class BotDataViewer:
 
     # Whitelist of allowed tables for security
     ALLOWED_TABLES = {
-        'geocoding_cache',
-        'generic_cache',
-        'bot_metadata',
-        'packet_stream',
-        'message_stats',
-        'command_stats',
-        'greeted_users',
-        'repeater_contacts',
-        'complete_contact_tracking',
-        'daily_stats',
-        'unique_advert_packets',
-        'purging_log',
-        'mesh_connections',
-        'observed_paths',
-        'feed_subscriptions',
-        'feed_activity',
-        'feed_errors',
-        'feed_message_queue',
-        'channel_operations',
-        'channels',
-        'path_stats',
-        'schema_version',
-        'greeter_rollout',
-        'daily_rollup',
-        'dashboard_snapshot',
+        "geocoding_cache",
+        "generic_cache",
+        "bot_metadata",
+        "packet_stream",
+        "message_stats",
+        "command_stats",
+        "greeted_users",
+        "repeater_contacts",
+        "complete_contact_tracking",
+        "daily_stats",
+        "unique_advert_packets",
+        "purging_log",
+        "mesh_connections",
+        "observed_paths",
+        "feed_subscriptions",
+        "feed_activity",
+        "feed_errors",
+        "feed_message_queue",
+        "channel_operations",
+        "channels",
+        "path_stats",
+        "schema_version",
+        "greeter_rollout",
+        "daily_rollup",
+        "dashboard_snapshot",
     }
 
-    def __init__(self, db_path="meshcore_bot.db", repeater_db_path=None, config_path="config.ini"):
+    def __init__(
+        self, db_path="meshcore_bot.db", repeater_db_path=None, config_path="config.ini"
+    ):
         # Set bot root directory (project root) for path validation
         # This is the directory containing the modules folder
-        self.bot_root = Path(os.path.join(os.path.dirname(__file__), '..', '..')).resolve()
+        self.bot_root = Path(
+            os.path.join(os.path.dirname(__file__), "..", "..")
+        ).resolve()
         # Resolve relative config path so viewer finds config when started as subprocess (cwd may differ)
         if not os.path.isabs(config_path):
             config_path = str(self.bot_root / config_path)
@@ -248,26 +252,32 @@ class BotDataViewer:
         # code root, 2 dirs above app.py) as the base caused a mismatch when config.ini lived
         # elsewhere (e.g. a separate deployment directory), resulting in a blank realtime monitor
         # because the web viewer and bot opened different database files.
-        self._config_base = Path(config_path).parent.resolve() if os.path.exists(config_path) else self.bot_root
+        self._config_base = (
+            Path(config_path).parent.resolve()
+            if os.path.exists(config_path)
+            else self.bot_root
+        )
 
         self._setup_logging()
 
         self.app = Flask(
             __name__,
-            template_folder=os.path.join(os.path.dirname(__file__), 'templates'),
-            static_folder=os.path.join(os.path.dirname(__file__), 'static'),
-            static_url_path='/static'
+            template_folder=os.path.join(os.path.dirname(__file__), "templates"),
+            static_folder=os.path.join(os.path.dirname(__file__), "static"),
+            static_url_path="/static",
         )
         import secrets as _secrets
-        self.app.config['SECRET_KEY'] = _secrets.token_hex(32)
-        self.app.config['SESSION_COOKIE_HTTPONLY'] = True
-        self.app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-        self.app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
+
+        self.app.config["SECRET_KEY"] = _secrets.token_hex(32)
+        self.app.config["SESSION_COOKIE_HTTPONLY"] = True
+        self.app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+        self.app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24 hours
 
         # Compress responses when the client supports it — /api/mesh/edges alone
         # is ~16 MB of JSON uncompressed (~4 MB gzipped) on a large mesh
         try:
             from flask_compress import Compress
+
             Compress(self.app)
         except ImportError:
             self.logger.warning(
@@ -278,11 +288,11 @@ class BotDataViewer:
         # CORS origins are configured after config is loaded; create without app for now
         self._socketio_kwargs = dict(
             max_http_buffer_size=1000000,  # 1MB buffer limit
-            ping_timeout=20,               # 20 second ping timeout — 5s was too short when subscribe handlers replay DB history
-            ping_interval=25,             # 25 second ping interval (Flask-SocketIO 5.x default)
-            logger=False,                  # Disable verbose logging
-            engineio_logger=False,        # Disable EngineIO logging
-            async_mode='threading',       # Use threading for better stability
+            ping_timeout=20,  # 20 second ping timeout — 5s was too short when subscribe handlers replay DB history
+            ping_interval=25,  # 25 second ping interval (Flask-SocketIO 5.x default)
+            logger=False,  # Disable verbose logging
+            engineio_logger=False,  # Disable EngineIO logging
+            async_mode="threading",  # Use threading for better stability
         )
         self.socketio = SocketIO()
 
@@ -298,6 +308,8 @@ class BotDataViewer:
         self._db_lock = threading.Lock()
         self._db_last_used = 0
         self._db_timeout = 300  # 5 minutes connection timeout
+        # SQLite pragma handling (including the once-per-section WAL setup)
+        # lives in DBManager; see _configure_db_connection.
 
         # The contacts list needs all-time multibyte hop-prefix evidence for its
         # capability badge.  Cache that derived set between requests and invalidate
@@ -314,8 +326,8 @@ class BotDataViewer:
         # lifetime result.
         try:
             mesh_cache_seconds = self.config.getint(
-                'Web_Viewer',
-                'mesh_graph_cache_seconds',
+                "Web_Viewer",
+                "mesh_graph_cache_seconds",
                 fallback=30,
             )
         except (configparser.Error, ValueError, TypeError):
@@ -330,10 +342,13 @@ class BotDataViewer:
         self._multibyte_graph_cache_retry_seconds = 5.0
 
         # Use [Bot] db_path when [Web_Viewer] db_path is unset
-        bot_db = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
-        if (self.config.has_section('Web_Viewer') and self.config.has_option('Web_Viewer', 'db_path')
-                and self.config.get('Web_Viewer', 'db_path', fallback='').strip()):
-            use_db = self.config.get('Web_Viewer', 'db_path').strip()
+        bot_db = self.config.get("Bot", "db_path", fallback="meshcore_bot.db")
+        if (
+            self.config.has_section("Web_Viewer")
+            and self.config.has_option("Web_Viewer", "db_path")
+            and self.config.get("Web_Viewer", "db_path", fallback="").strip()
+        ):
+            use_db = self.config.get("Web_Viewer", "db_path").strip()
         else:
             use_db = bot_db
         self.db_path = str(resolve_path(use_db, self._config_base))
@@ -352,18 +367,29 @@ class BotDataViewer:
         # Optional feature page toggle (off by default)
         try:
             self.multibyte_monitor_enabled = self.config.getboolean(
-                'Web_Viewer', 'multibyte_monitor_enabled', fallback=False
+                "Web_Viewer", "multibyte_monitor_enabled", fallback=False
             )
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError, TypeError):
+        except (
+            configparser.NoSectionError,
+            configparser.NoOptionError,
+            ValueError,
+            TypeError,
+        ):
             self.multibyte_monitor_enabled = False
 
         self._init_dashboard_service()
 
         # Configure CORS for SocketIO — default to same-origin (no cross-origin)
-        cors_raw = self.config.get('Web_Viewer', 'cors_allowed_origins', fallback='').strip()
+        cors_raw = self.config.get(
+            "Web_Viewer", "cors_allowed_origins", fallback=""
+        ).strip()
         if cors_raw:
-            cors_origins = cors_raw if cors_raw == '*' else [o.strip() for o in cors_raw.split(',') if o.strip()]
-            self._socketio_kwargs['cors_allowed_origins'] = cors_origins
+            cors_origins = (
+                cors_raw
+                if cors_raw == "*"
+                else [o.strip() for o in cors_raw.split(",") if o.strip()]
+            )
+            self._socketio_kwargs["cors_allowed_origins"] = cors_origins
         # Initialize SocketIO with Flask app now that config is loaded
         self.socketio.init_app(self.app, **self._socketio_kwargs)
 
@@ -393,7 +419,9 @@ class BotDataViewer:
         # aggregate queries off the request path)
         self._start_dashboard_refresher()
 
-        self.logger.info("BotDataViewer initialized with Flask-SocketIO 5.x best practices")
+        self.logger.info(
+            "BotDataViewer initialized with Flask-SocketIO 5.x best practices"
+        )
 
     def _setup_logging(self):
         """Setup logging; file handler only when [Logging] log_file is set.
@@ -404,39 +432,53 @@ class BotDataViewer:
         """
         from logging.handlers import RotatingFileHandler
 
-        log_file = ''
+        log_file = ""
         log_max_bytes = 5 * 1024 * 1024
         log_backup_count = 3
-        if getattr(self, 'config', None) is not None and self.config.has_section('Logging'):
-            log_file = self.config.get('Logging', 'log_file', fallback='').strip()
+        if getattr(self, "config", None) is not None and self.config.has_section(
+            "Logging"
+        ):
+            log_file = self.config.get("Logging", "log_file", fallback="").strip()
             try:
-                log_max_bytes = self.config.getint('Logging', 'log_max_bytes', fallback=log_max_bytes)
+                log_max_bytes = self.config.getint(
+                    "Logging", "log_max_bytes", fallback=log_max_bytes
+                )
             except (configparser.Error, ValueError, TypeError):
                 pass
             try:
-                log_backup_count = self.config.getint('Logging', 'log_backup_count', fallback=log_backup_count)
+                log_backup_count = self.config.getint(
+                    "Logging", "log_backup_count", fallback=log_backup_count
+                )
             except (configparser.Error, ValueError, TypeError):
                 pass
 
-        log_level_name = 'INFO'
-        if getattr(self, 'config', None) is not None and self.config.has_section('Logging'):
-            log_level_name = self.config.get(
-                'Logging',
-                'log_level',
-                fallback='INFO',
-            ).strip().upper()
+        log_level_name = "INFO"
+        if getattr(self, "config", None) is not None and self.config.has_section(
+            "Logging"
+        ):
+            log_level_name = (
+                self.config.get(
+                    "Logging",
+                    "log_level",
+                    fallback="INFO",
+                )
+                .strip()
+                .upper()
+            )
         log_level = getattr(logging, log_level_name, logging.INFO)
         if not isinstance(log_level, int):
             log_level = logging.INFO
 
         # Get or create logger (don't use basicConfig as it may conflict with existing logging)
-        self.logger = logging.getLogger('modern_web_viewer')
+        self.logger = logging.getLogger("modern_web_viewer")
         self.logger.setLevel(log_level)
 
         # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()
 
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
 
         # Console handler (captured by journald under systemd)
         console_handler = logging.StreamHandler()
@@ -450,19 +492,21 @@ class BotDataViewer:
         self.logger.propagate = False
 
         if not log_file:
-            self.logger.info("No log file specified, using console/journal logging only")
+            self.logger.info(
+                "No log file specified, using console/journal logging only"
+            )
             return
 
         # Place viewer log beside the bot log (same directory as log_file)
         bot_log_path = Path(resolve_path(log_file, self._config_base))
-        viewer_log_path = bot_log_path.parent / 'web_viewer.log'
+        viewer_log_path = bot_log_path.parent / "web_viewer.log"
         try:
             viewer_log_path.parent.mkdir(parents=True, exist_ok=True)
             file_handler = RotatingFileHandler(
                 str(viewer_log_path),
                 maxBytes=log_max_bytes,
                 backupCount=log_backup_count,
-                encoding='utf-8',
+                encoding="utf-8",
             )
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
@@ -489,7 +533,7 @@ class BotDataViewer:
 
     def _get_version_info(self) -> dict[str, str | None]:
         """Get version info for footer via centralized version resolver. Never raises."""
-        info = resolve_runtime_version(self.bot_root)
+        info = resolve_application_version()
         display = info.get("display")
         return {
             # 'display' is what the footer renders — same value !version reports,
@@ -512,23 +556,50 @@ class BotDataViewer:
             """Inject variables available to all templates. Never raises so templates always render."""
             try:
                 try:
-                    greeter_enabled = self.config.getboolean('Greeter_Command', 'enabled', fallback=False)
-                except (configparser.NoSectionError, configparser.NoOptionError, ValueError, TypeError):
+                    greeter_enabled = self.config.getboolean(
+                        "Greeter_Command", "enabled", fallback=False
+                    )
+                except (
+                    configparser.NoSectionError,
+                    configparser.NoOptionError,
+                    ValueError,
+                    TypeError,
+                ):
                     greeter_enabled = False
                 try:
-                    feed_manager_enabled = self.config.getboolean('Feed_Manager', 'feed_manager_enabled', fallback=False)
-                except (configparser.NoSectionError, configparser.NoOptionError, ValueError, TypeError):
+                    feed_manager_enabled = self.config.getboolean(
+                        "Feed_Manager", "feed_manager_enabled", fallback=False
+                    )
+                except (
+                    configparser.NoSectionError,
+                    configparser.NoOptionError,
+                    ValueError,
+                    TypeError,
+                ):
                     feed_manager_enabled = False
                 try:
-                    bot_name = (self.config.get('Bot', 'bot_name', fallback='MeshCore Bot') or '').strip() or 'MeshCore Bot'
+                    bot_name = (
+                        self.config.get("Bot", "bot_name", fallback="MeshCore Bot")
+                        or ""
+                    ).strip() or "MeshCore Bot"
                 except (configparser.NoSectionError, configparser.NoOptionError):
-                    bot_name = 'MeshCore Bot'
+                    bot_name = "MeshCore Bot"
                 try:
-                    radio_zombie = self.db_manager.get_metadata('bot.radio_zombie') == 'true'
-                    radio_zombie_since = self.db_manager.get_metadata('bot.radio_zombie_since') or None
-                    radio_offline = self.db_manager.get_metadata('bot.radio_offline') == 'true'
-                    radio_offline_since = self.db_manager.get_metadata('bot.radio_offline_since') or None
-                    bot_initializing = self.db_manager.get_metadata('bot.initializing') == 'true'
+                    radio_zombie = (
+                        self.db_manager.get_metadata("bot.radio_zombie") == "true"
+                    )
+                    radio_zombie_since = (
+                        self.db_manager.get_metadata("bot.radio_zombie_since") or None
+                    )
+                    radio_offline = (
+                        self.db_manager.get_metadata("bot.radio_offline") == "true"
+                    )
+                    radio_offline_since = (
+                        self.db_manager.get_metadata("bot.radio_offline_since") or None
+                    )
+                    bot_initializing = (
+                        self.db_manager.get_metadata("bot.initializing") == "true"
+                    )
                 except Exception:
                     radio_zombie = False
                     radio_zombie_since = None
@@ -536,30 +607,30 @@ class BotDataViewer:
                     radio_offline_since = None
                     bot_initializing = False
                 return {
-                    'greeter_enabled': greeter_enabled,
-                    'feed_manager_enabled': feed_manager_enabled,
-                    'multibyte_monitor_enabled': self.multibyte_monitor_enabled,
-                    'bot_name': bot_name,
-                    'version_info': version_info,
-                    'radio_zombie': radio_zombie,
-                    'radio_zombie_since': radio_zombie_since,
-                    'radio_offline': radio_offline,
-                    'radio_offline_since': radio_offline_since,
-                    'bot_initializing': bot_initializing,
+                    "greeter_enabled": greeter_enabled,
+                    "feed_manager_enabled": feed_manager_enabled,
+                    "multibyte_monitor_enabled": self.multibyte_monitor_enabled,
+                    "bot_name": bot_name,
+                    "version_info": version_info,
+                    "radio_zombie": radio_zombie,
+                    "radio_zombie_since": radio_zombie_since,
+                    "radio_offline": radio_offline,
+                    "radio_offline_since": radio_offline_since,
+                    "bot_initializing": bot_initializing,
                 }
             except Exception as e:
                 self.logger.exception("Template context processor failed: %s", e)
                 return {
-                    'greeter_enabled': False,
-                    'feed_manager_enabled': False,
-                    'multibyte_monitor_enabled': False,
-                    'bot_name': 'MeshCore Bot',
-                    'bot_initializing': False,
-                    'version_info': version_info,
-                    'radio_zombie': False,
-                    'radio_zombie_since': None,
-                    'radio_offline': False,
-                    'radio_offline_since': None,
+                    "greeter_enabled": False,
+                    "feed_manager_enabled": False,
+                    "multibyte_monitor_enabled": False,
+                    "bot_name": "MeshCore Bot",
+                    "bot_initializing": False,
+                    "version_info": version_info,
+                    "radio_zombie": False,
+                    "radio_zombie_since": None,
+                    "radio_offline": False,
+                    "radio_offline_since": None,
                 }
 
     def _init_databases(self):
@@ -567,6 +638,7 @@ class BotDataViewer:
         try:
             # Initialize database manager for metadata access
             from modules.db_manager import DBManager
+
             # Create a minimal bot object for DBManager
             class MinimalBot:
                 def __init__(self, logger, config, db_manager=None):
@@ -581,13 +653,24 @@ class BotDataViewer:
             # Now set db_manager on the minimal bot for RepeaterManager
             minimal_bot.db_manager = self.db_manager
 
-            # Initialize repeater manager for geocoding functionality
-            self.repeater_manager = RepeaterManager(minimal_bot)
+            # The viewer only needs RepeaterManager for the manual geocode
+            # endpoint, so defer its setup until that endpoint is actually used.
+            self._repeater_manager_bot = minimal_bot
+            self._repeater_manager_lock = threading.Lock()
+            self.repeater_manager: RepeaterManager | None = None
 
-            # Initialize mesh graph for path resolution (uses same logic as path command)
-            from modules.mesh_graph import MeshGraph
-            minimal_bot.mesh_graph = MeshGraph(minimal_bot)
-            self.mesh_graph = minimal_bot.mesh_graph
+            # RepeaterManager's constructor is what used to validate these at
+            # startup. It is lazy now, so validate here: a missing migration is
+            # a startup failure, not a mystery 500 from the geocode endpoint.
+            validate_repeater_tables(self.db_manager, self.logger)
+
+            # MeshGraph is only read by the two path-decoding routes, so build it
+            # on first use rather than at startup. It is NOT optional for them:
+            # without it decode_path_nodes() falls back to geographic-only
+            # selection and disagrees with the bot's `path` command.
+            self._mesh_graph_bot = minimal_bot
+            self._mesh_graph_lock = threading.Lock()
+            self.mesh_graph = None
 
             # Store database paths for direct connection
             self.db_path = self.db_path
@@ -597,23 +680,57 @@ class BotDataViewer:
             self.logger.error(f"Failed to initialize databases: {e}")
             raise
 
+    def _get_repeater_manager(self) -> RepeaterManager:
+        """Lazily construct the manual-geocoding helper once."""
+        if self.repeater_manager is not None:
+            return self.repeater_manager
+        with self._repeater_manager_lock:
+            if self.repeater_manager is None:
+                self.repeater_manager = RepeaterManager(self._repeater_manager_bot)
+            return self.repeater_manager
+
+    def _get_mesh_graph(self):
+        """Lazily load the read-only mesh graph used to disambiguate path prefixes.
+
+        Returns None only if the graph cannot be loaded, in which case path
+        decoding degrades to geographic-only selection rather than failing the
+        request. Loaded with capture disabled: the bot process owns edge
+        capture, so the viewer must not write edges or run a batch writer.
+        """
+        if self.mesh_graph is not None:
+            return self.mesh_graph
+        with self._mesh_graph_lock:
+            if self.mesh_graph is None:
+                from modules.mesh_graph import MeshGraph
+
+                try:
+                    graph = MeshGraph(self._mesh_graph_bot, capture=False)
+                except Exception as e:
+                    self.logger.error(
+                        f"Mesh graph unavailable; path decoding will fall back to "
+                        f"geographic selection only: {e}"
+                    )
+                    return None
+                self._mesh_graph_bot.mesh_graph = graph
+                self.mesh_graph = graph
+            return self.mesh_graph
+
+    def _configure_db_connection(self, conn: sqlite3.Connection) -> None:
+        """Apply SQLite pragmas to a viewer connection.
+
+        Delegates to DBManager, which owns the single implementation and the
+        once-per-section WAL bookkeeping. Safe because this DBManager was built
+        for self.db_path, which is the file every viewer connection opens — the
+        journal-mode state it tracks belongs to that same database.
+        """
+        self.db_manager._apply_sqlite_pragmas(conn, for_web_viewer=True)
+
     def _get_db_connection(self):
         """Get database connection - create new connection for each request to avoid threading issues"""
         try:
             conn = sqlite3.connect(self.db_path, timeout=60)
             conn.row_factory = sqlite3.Row
-            try:
-                foreign_keys = self.config.getboolean("Web_Viewer", "sqlite_foreign_keys", fallback=True)
-                busy_timeout_ms = self.config.getint("Web_Viewer", "sqlite_busy_timeout_ms", fallback=60000)
-                journal_mode = self.config.get("Web_Viewer", "sqlite_journal_mode", fallback="WAL").strip() or "WAL"
-                if journal_mode.upper() not in VALID_JOURNAL_MODES:
-                    self.logger.warning(f"Invalid journal_mode {journal_mode!r}, falling back to WAL")
-                    journal_mode = "WAL"
-                conn.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
-                conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
-                conn.execute(f"PRAGMA journal_mode={journal_mode}")
-            except sqlite3.OperationalError:
-                pass
+            self._configure_db_connection(conn)
             return conn
         except Exception as e:
             self.logger.error(f"Failed to create database connection: {e}")
@@ -626,18 +743,7 @@ class BotDataViewer:
         """
         conn = sqlite3.connect(self.db_path, timeout=60)
         conn.row_factory = sqlite3.Row
-        try:
-            foreign_keys = self.config.getboolean("Web_Viewer", "sqlite_foreign_keys", fallback=True)
-            busy_timeout_ms = self.config.getint("Web_Viewer", "sqlite_busy_timeout_ms", fallback=60000)
-            journal_mode = self.config.get("Web_Viewer", "sqlite_journal_mode", fallback="WAL").strip() or "WAL"
-            if journal_mode.upper() not in VALID_JOURNAL_MODES:
-                self.logger.warning(f"Invalid journal_mode {journal_mode!r}, falling back to WAL")
-                journal_mode = "WAL"
-            conn.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
-            conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
-            conn.execute(f"PRAGMA journal_mode={journal_mode}")
-        except sqlite3.OperationalError:
-            pass
+        self._configure_db_connection(conn)
         try:
             yield conn
         finally:
@@ -672,7 +778,7 @@ class BotDataViewer:
             force_refresh=force_refresh
         )
         prefix_hex_chars = max(
-            (len(edge['from_prefix']) for edge in all_edges),
+            (len(edge["from_prefix"]) for edge in all_edges),
             default=2,
         )
         return (
@@ -691,7 +797,9 @@ class BotDataViewer:
         min_observations: int | None,
     ) -> list[dict[str, Any]]:
         """Apply view filters without changing lifetime edge identity or counts."""
-        cutoff_naive = datetime.now() - timedelta(days=days) if days is not None else None
+        cutoff_naive = (
+            datetime.now() - timedelta(days=days) if days is not None else None
+        )
         cutoff_utc = (
             datetime.now(timezone.utc) - timedelta(days=days)
             if days is not None
@@ -699,10 +807,10 @@ class BotDataViewer:
         )
         result = []
         for edge in edges:
-            if cutoff_naive is not None and edge['last_seen']:
+            if cutoff_naive is not None and edge["last_seen"]:
                 try:
                     last_seen = datetime.fromisoformat(
-                        str(edge['last_seen']).replace('Z', '+00:00')
+                        str(edge["last_seen"]).replace("Z", "+00:00")
                     )
                 except (TypeError, ValueError):
                     # Preserve the historical behavior for malformed timestamps:
@@ -712,11 +820,14 @@ class BotDataViewer:
                     if last_seen.tzinfo is None:
                         if last_seen < cutoff_naive:
                             continue
-                    elif cutoff_utc is not None and last_seen.astimezone(timezone.utc) < cutoff_utc:
+                    elif (
+                        cutoff_utc is not None
+                        and last_seen.astimezone(timezone.utc) < cutoff_utc
+                    ):
                         continue
             if (
                 min_observations is not None
-                and edge['observation_count'] < min_observations
+                and edge["observation_count"] < min_observations
             ):
                 continue
             result.append(edge)
@@ -726,14 +837,13 @@ class BotDataViewer:
         self, *, force_refresh: bool = False
     ) -> list[dict[str, Any]]:
         """Return a bounded-age, single-flight lifetime multi-byte aggregate."""
+
         def previous_failure(message: str) -> RuntimeError:
             failure = self._multibyte_graph_cache_failure
             if failure is None:
                 return RuntimeError(message)
             failure_type, failure_message = failure
-            return RuntimeError(
-                f"{message}: {failure_type}: {failure_message}"
-            )
+            return RuntimeError(f"{message}: {failure_type}: {failure_message}")
 
         now = time.monotonic()
         with self._multibyte_graph_cache_condition:
@@ -837,7 +947,7 @@ class BotDataViewer:
         # Python row/dict/list per observed path (hundreds of thousands on busy
         # meshes). The selected timeframe is applied only after coalescing,
         # matching the historical client-side filter semantics.
-        query = '''
+        query = """
             WITH RECURSIVE edge_parts(
                 path_hex, step, observation_count, first_seen, last_seen,
                 hop_position, from_prefix, to_prefix, next_offset
@@ -887,18 +997,18 @@ class BotDataViewer:
                 SUM(hop_position * observation_count) AS hop_position_sum
             FROM edge_parts
             GROUP BY from_prefix, to_prefix
-        '''
+        """
 
         with self._with_db_connection() as conn:
             rows = conn.execute(query).fetchall()
 
         edges: dict[tuple[str, str], dict[str, Any]] = {
-            (row['from_prefix'], row['to_prefix']): {
-                'observation_count': row['observation_count'],
-                'path_count': row['path_count'],
-                'first_seen': row['first_seen'],
-                'last_seen': row['last_seen'],
-                'hop_position_sum': row['hop_position_sum'],
+            (row["from_prefix"], row["to_prefix"]): {
+                "observation_count": row["observation_count"],
+                "path_count": row["path_count"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+                "hop_position_sum": row["hop_position_sum"],
             }
             for row in rows
         }
@@ -914,30 +1024,39 @@ class BotDataViewer:
             if len(candidates) == 1:
                 target = edges[candidates[0]]
                 source = edges.pop(key)
-                target['observation_count'] += source['observation_count']
-                target['path_count'] += source['path_count']
-                target['hop_position_sum'] += source['hop_position_sum']
-                if source['first_seen'] and (target['first_seen'] is None or source['first_seen'] < target['first_seen']):
-                    target['first_seen'] = source['first_seen']
-                if source['last_seen'] and (target['last_seen'] is None or source['last_seen'] > target['last_seen']):
-                    target['last_seen'] = source['last_seen']
+                target["observation_count"] += source["observation_count"]
+                target["path_count"] += source["path_count"]
+                target["hop_position_sum"] += source["hop_position_sum"]
+                if source["first_seen"] and (
+                    target["first_seen"] is None
+                    or source["first_seen"] < target["first_seen"]
+                ):
+                    target["first_seen"] = source["first_seen"]
+                if source["last_seen"] and (
+                    target["last_seen"] is None
+                    or source["last_seen"] > target["last_seen"]
+                ):
+                    target["last_seen"] = source["last_seen"]
 
         result = []
         for (from_prefix, to_prefix), agg in edges.items():
-            result.append({
-                'from_prefix': from_prefix,
-                'to_prefix': to_prefix,
-                'from_public_key': None,
-                'to_public_key': None,
-                'observation_count': agg['observation_count'],
-                'path_count': agg['path_count'],
-                'first_seen': agg['first_seen'],
-                'last_seen': agg['last_seen'],
-                'avg_hop_position': agg['hop_position_sum'] / agg['observation_count'],
-                'geographic_distance': None,
-                'evidence': 'multibyte',
-            })
-        result.sort(key=lambda e: e['last_seen'] or '', reverse=True)
+            result.append(
+                {
+                    "from_prefix": from_prefix,
+                    "to_prefix": to_prefix,
+                    "from_public_key": None,
+                    "to_public_key": None,
+                    "observation_count": agg["observation_count"],
+                    "path_count": agg["path_count"],
+                    "first_seen": agg["first_seen"],
+                    "last_seen": agg["last_seen"],
+                    "avg_hop_position": agg["hop_position_sum"]
+                    / agg["observation_count"],
+                    "geographic_distance": None,
+                    "evidence": "multibyte",
+                }
+            )
+        result.sort(key=lambda e: e["last_seen"] or "", reverse=True)
         return result
 
     def _resolve_path(self, path_input: str) -> dict[str, Any]:
@@ -948,44 +1067,70 @@ class BotDataViewer:
         repeaters without coordinates; the shared engine guards that.
         """
         if not hasattr(self, "db_manager") or not self.db_manager:
-            return {"node_ids": [], "repeaters": [], "valid": False,
-                    "error": "Database manager not initialized"}
+            return {
+                "node_ids": [],
+                "repeaters": [],
+                "valid": False,
+                "error": "Database manager not initialized",
+            }
         from modules.path_inference import decode_path_nodes
+
         nodes = decode_path_nodes(
             path_input,
             None,
             config=self.config,
             db_manager=self.db_manager,
             logger=self.logger,
-            mesh_graph=getattr(self, "mesh_graph", None),
+            mesh_graph=self._get_mesh_graph(),
             include_location=True,
         )
         node_ids = [n["node_id"] for n in nodes]
         if not node_ids:
-            return {"node_ids": [], "repeaters": [], "valid": False,
-                    "error": "No valid hex values found"}
+            return {
+                "node_ids": [],
+                "repeaters": [],
+                "valid": False,
+                "error": "No valid hex values found",
+            }
         return {"node_ids": node_ids, "repeaters": nodes, "valid": True}
 
     def _setup_routes(self):
         """Setup all Flask routes - complete feature parity"""
+
         # Log full traceback for 500 errors so service logs show the real cause
         @self.app.errorhandler(500)
         def internal_error(e):
             self.logger.exception("Unhandled exception (500): %s", e)
-            if request.path.startswith('/api/') or request.accept_mimetypes.best == 'application/json':
-                return make_response(jsonify({'error': 'An internal error occurred — see server logs'}), 500)
-            return make_response(render_template('error.html',
-                error_code=500,
-                error_title='Internal Server Error',
-                error_message='Something went wrong on our end. The error has been logged.',
-            ), 500)
+            if (
+                request.path.startswith("/api/")
+                or request.accept_mimetypes.best == "application/json"
+            ):
+                return make_response(
+                    jsonify({"error": "An internal error occurred — see server logs"}),
+                    500,
+                )
+            return make_response(
+                render_template(
+                    "error.html",
+                    error_code=500,
+                    error_title="Internal Server Error",
+                    error_message="Something went wrong on our end. The error has been logged.",
+                ),
+                500,
+            )
 
         # Authentication middleware (BUG-001)
-        _EXEMPT_PATHS = frozenset([
-            '/login', '/logout',
-            '/apple-touch-icon.png', '/favicon-32x32.png', '/favicon-16x16.png',
-            '/site.webmanifest', '/favicon.ico',
-        ])
+        _EXEMPT_PATHS = frozenset(
+            [
+                "/login",
+                "/logout",
+                "/apple-touch-icon.png",
+                "/favicon-32x32.png",
+                "/favicon-16x16.png",
+                "/site.webmanifest",
+                "/favicon.ico",
+            ]
+        )
 
         @self.app.before_request
         def create_csp_nonce():
@@ -996,14 +1141,14 @@ class BotDataViewer:
         def require_auth():
             if not self.web_viewer_password:
                 return  # Auth disabled — no password configured
-            if request.path in _EXEMPT_PATHS or request.path.startswith('/static/'):
+            if request.path in _EXEMPT_PATHS or request.path.startswith("/static/"):
                 return
-            if session.get('authenticated'):
+            if session.get("authenticated"):
                 return
-            if request.path.startswith('/api/'):
-                return make_response(jsonify({'error': 'Authentication required'}), 401)
+            if request.path.startswith("/api/"):
+                return make_response(jsonify({"error": "Authentication required"}), 401)
             next_url = request.path
-            return redirect(url_for('login', next=next_url))
+            return redirect(url_for("login", next=next_url))
 
         @self.app.before_request
         def csrf_protection():
@@ -1015,25 +1160,25 @@ class BotDataViewer:
             this header proves the request is same-origin or from an allowed origin.
             Form-based POST to /login is exempt (uses session cookie + redirect).
             """
-            if request.method not in ('POST', 'PUT', 'DELETE', 'PATCH'):
+            if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
                 return
-            if current_app.config.get('TESTING'):
+            if current_app.config.get("TESTING"):
                 return  # Skip CSRF in test mode
-            if request.path == '/login':
+            if request.path == "/login":
                 return  # Login form uses traditional POST
-            if request.headers.get('X-Requested-With'):
+            if request.headers.get("X-Requested-With"):
                 return  # Custom header present — same-origin or CORS-approved
-            if request.path.startswith('/api/'):
+            if request.path.startswith("/api/"):
                 return make_response(
-                    jsonify({'error': 'Missing X-Requested-With header'}), 403
+                    jsonify({"error": "Missing X-Requested-With header"}), 403
                 )
 
         @self.app.after_request
         def set_security_headers(response):
             # Security headers
-            response.headers['X-Content-Type-Options'] = 'nosniff'
-            response.headers['X-Frame-Options'] = 'SAMEORIGIN'
-            response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
             # Allow CDNs used by templates (base.html, login.html, mesh.html).
             # Without these hosts, browsers block external CSS/JS/fonts (not CSRF).
             # The highest-risk admin screens have migrated their inline handlers
@@ -1041,24 +1186,24 @@ class BotDataViewer:
             # nonce. Other legacy screens retain unsafe-inline until their inline
             # scripts/handlers are migrated, rather than silently breaking them.
             nonce_hardened_endpoints = {
-                'index',
-                'feeds',
-                'config_page',
-                'radio',
-                'realtime',
-                'contacts',
-                'plugins_page',
-                'greeter',
-                'logs',
-                'multibyte_rollout',
-                'mesh',
-                'api_explorer',
+                "index",
+                "feeds",
+                "config_page",
+                "radio",
+                "realtime",
+                "contacts",
+                "plugins_page",
+                "greeter",
+                "logs",
+                "multibyte_rollout",
+                "mesh",
+                "api_explorer",
             }
             if request.endpoint in nonce_hardened_endpoints:
                 script_source = f"script-src 'self' 'nonce-{g.csp_nonce}' "
             else:
                 script_source = "script-src 'self' 'unsafe-inline' "
-            response.headers['Content-Security-Policy'] = (
+            response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 + script_source
                 + "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
@@ -1076,42 +1221,46 @@ class BotDataViewer:
             # The full exception is already logged server-side; clients only need a
             # generic message.  Preserve 'error' key presence so callers can detect
             # failure, but strip internal details (file paths, DB errors, etc.).
-            if response.status_code >= 500 and response.content_type and 'json' in response.content_type:
+            if (
+                response.status_code >= 500
+                and response.content_type
+                and "json" in response.content_type
+            ):
                 try:
                     data = response.get_json(silent=True)
-                    if data and isinstance(data, dict) and 'error' in data:
-                        data['error'] = 'An internal error occurred'
-                        data.pop('traceback', None)
+                    if data and isinstance(data, dict) and "error" in data:
+                        data["error"] = "An internal error occurred"
+                        data.pop("traceback", None)
                         response.set_data(json.dumps(data))
                 except Exception:
                     pass  # Don't break the response if sanitization fails
 
             return response
 
-        @self.app.route('/login', methods=['GET', 'POST'])
+        @self.app.route("/login", methods=["GET", "POST"])
         def login():
             """Login page for web viewer authentication"""
             if not self.web_viewer_password:
-                return redirect(url_for('index'))
-            if request.method == 'POST':
-                password = request.form.get('password', '')
+                return redirect(url_for("index"))
+            if request.method == "POST":
+                password = request.form.get("password", "")
                 if password == self.web_viewer_password:
-                    session['authenticated'] = True
-                    next_url = request.args.get('next', '/')
+                    session["authenticated"] = True
+                    next_url = request.args.get("next", "/")
                     parsed = urlparse(next_url)
-                    if parsed.scheme or parsed.netloc or not next_url.startswith('/'):
-                        next_url = '/'
+                    if parsed.scheme or parsed.netloc or not next_url.startswith("/"):
+                        next_url = "/"
                     return redirect(next_url)
-                return render_template('login.html', error='Invalid password')
-            return render_template('login.html')
+                return render_template("login.html", error="Invalid password")
+            return render_template("login.html")
 
-        @self.app.route('/logout')
+        @self.app.route("/logout")
         def logout():
             """Logout and clear session"""
-            session.pop('authenticated', None)
-            return redirect(url_for('login'))
+            session.pop("authenticated", None)
+            return redirect(url_for("login"))
 
-        @self.app.route('/')
+        @self.app.route("/")
         def index():
             """Main dashboard.
 
@@ -1123,106 +1272,111 @@ class BotDataViewer:
             with suppress(OSError):
                 database_size = os.path.getsize(self.db_path)
             return render_template(
-                'index.html',
+                "index.html",
                 dashboard_boot={
-                    'database_size': database_size,
-                    'snapshot_interval_seconds': self.dashboard_snapshot_interval,
-                    'snapshot_enabled': self.dashboard_snapshot_enabled,
+                    "database_size": database_size,
+                    "snapshot_interval_seconds": self.dashboard_snapshot_interval,
+                    "snapshot_enabled": self.dashboard_snapshot_enabled,
                 },
             )
 
-        @self.app.route('/realtime')
+        @self.app.route("/realtime")
         def realtime():
             """Real-time monitoring dashboard"""
-            return render_template('realtime.html')
+            return render_template("realtime.html")
 
-        @self.app.route('/logs')
+        @self.app.route("/logs")
         def logs():
             """Live log viewer"""
-            return render_template('logs.html')
+            return render_template("logs.html")
 
-        @self.app.route('/contacts')
+        @self.app.route("/contacts")
         def contacts():
             """Contacts page - unified contact management and tracking"""
-            return render_template('contacts.html')
+            return render_template("contacts.html")
 
-        @self.app.route('/cache')
+        @self.app.route("/cache")
         def cache():
             """Legacy cache URL redirects to the database config panel."""
-            return redirect('/config#database')
+            return redirect("/config#database")
 
-
-        @self.app.route('/multibyte-rollout')
+        @self.app.route("/multibyte-rollout")
         def multibyte_rollout():
             """Multibyte hash rollout analytics page"""
             if not self.multibyte_monitor_enabled:
                 return abort(404)
-            return render_template('multibyte_rollout.html')
+            return render_template("multibyte_rollout.html")
 
-        @self.app.route('/greeter')
+        @self.app.route("/greeter")
         def greeter():
             """Greeter management page"""
-            return render_template('greeter.html')
+            return render_template("greeter.html")
 
-        @self.app.route('/feeds')
+        @self.app.route("/feeds")
         def feeds():
             """Feed management page"""
-            return render_template('feeds.html')
+            return render_template("feeds.html")
 
-        @self.app.route('/radio')
+        @self.app.route("/radio")
         def radio():
             """Radio settings page.
 
             Passes config-governance flags so the Node Settings card doesn't
             offer device settings the bot itself manages from config.ini.
             """
-            auto_manage = 'false'
-            bot_name = ''
+            auto_manage = "false"
+            bot_name = ""
             name_managed = False
             if self.config:
-                auto_manage = self.config.get('Bot', 'auto_manage_contacts', fallback='device').lower()
-                bot_name = (self.config.get('Bot', 'bot_name', fallback='') or '').strip()
+                auto_manage = self.config.get(
+                    "Bot", "auto_manage_contacts", fallback="device"
+                ).lower()
+                bot_name = (
+                    self.config.get("Bot", "bot_name", fallback="") or ""
+                ).strip()
                 try:
-                    auto_update_name = self.config.getboolean('Bot', 'auto_update_device_name', fallback=True)
+                    auto_update_name = self.config.getboolean(
+                        "Bot", "auto_update_device_name", fallback=True
+                    )
                 except ValueError:
                     auto_update_name = True
                 name_managed = bool(bot_name) and auto_update_name
             return render_template(
-                'radio.html',
+                "radio.html",
                 auto_manage_contacts=auto_manage,
                 device_name_managed=name_managed,
                 bot_name=bot_name,
             )
 
-        @self.app.route('/config')
+        @self.app.route("/config")
         def config_page():
             """Bot configuration page"""
             return render_template(
-                'config.html',
-                config_panels=sorted(CONFIG_PANELS, key=lambda panel: panel['order']),
+                "config.html",
+                config_panels=sorted(CONFIG_PANELS, key=lambda panel: panel["order"]),
                 panel_categories=PANEL_CATEGORIES,
             )
 
         # ── Plugins settings panel ───────────────────────────────────────────
 
-        @self.app.route('/plugins')
+        @self.app.route("/plugins")
         def plugins_page():
             """Plugin & command settings page."""
-            return render_template('plugins.html')
+            return render_template("plugins.html")
 
-        @self.app.route('/api/plugins')
+        @self.app.route("/api/plugins")
         def api_plugins_get():
             """Return the settings view for every discovered command/service."""
             try:
                 # Re-read config from disk so the UI reflects external edits.
                 self.config = self._load_config(self.config_path)
                 view = build_plugin_settings_view(self.config, logger=self.logger)
-                return jsonify({'plugins': view})
+                return jsonify({"plugins": view})
             except Exception:
                 self.logger.exception("Error building plugin settings view")
-                return jsonify({'error': 'Internal error — see server logs'}), 500
+                return jsonify({"error": "Internal error — see server logs"}), 500
 
-        @self.app.route('/api/plugins/<kind>/<name>', methods=['POST'])
+        @self.app.route("/api/plugins/<kind>/<name>", methods=["POST"])
         def api_plugins_save(kind: str, name: str):
             """Validate and persist one plugin's settings, then queue a reload.
 
@@ -1235,15 +1389,15 @@ class BotDataViewer:
                 self.config = self._load_config(self.config_path)
                 view = build_plugin_settings_view(self.config, logger=self.logger)
                 entry = next(
-                    (e for e in view if e['kind'] == kind and e['name'] == name),
+                    (e for e in view if e["kind"] == kind and e["name"] == name),
                     None,
                 )
                 if entry is None:
-                    return jsonify({'success': False, 'error': 'Unknown plugin'}), 404
+                    return jsonify({"success": False, "error": "Unknown plugin"}), 404
 
-                section = entry['section']
-                schema_by_key = {f['key']: f for f in entry['fields']}
-                raw_values = data.get('values', {}) or {}
+                section = entry["section"]
+                schema_by_key = {f["key"]: f for f in entry["fields"]}
+                raw_values = data.get("values", {}) or {}
 
                 errors: dict[str, str] = {}
                 # Schema-typed keys are validated and routed to their (possibly
@@ -1259,21 +1413,23 @@ class BotDataViewer:
                         if not ok:
                             errors[key] = err
                         else:
-                            tsec = field.get('section') or section
-                            updates.setdefault(tsec, {})[key] = to_config_string(field, coerced)
+                            tsec = field.get("section") or section
+                            updates.setdefault(tsec, {})[key] = to_config_string(
+                                field, coerced
+                            )
                     else:
-                        updates[section][str(key)] = '' if val is None else str(val)
+                        updates[section][str(key)] = "" if val is None else str(val)
 
                 if errors:
-                    return jsonify({'success': False, 'errors': errors}), 400
+                    return jsonify({"success": False, "errors": errors}), 400
 
                 # The enable toggle is always written to the plugin's own section.
-                enabled = bool(data.get('enabled', entry['enabled']))
-                updates[section]['enabled'] = 'true' if enabled else 'false'
-                submitted_dyn = data.get('dynamic_sections', {}) or {}
-                for ds in entry.get('dynamic_sections', []):
-                    dsec = ds['section']
-                    prefix = ds.get('key_prefix', '') or ''
+                enabled = bool(data.get("enabled", entry["enabled"]))
+                updates[section]["enabled"] = "true" if enabled else "false"
+                submitted_dyn = data.get("dynamic_sections", {}) or {}
+                for ds in entry.get("dynamic_sections", []):
+                    dsec = ds["section"]
+                    prefix = ds.get("key_prefix", "") or ""
                     if dsec not in submitted_dyn:
                         # Payload didn't include this editor's rows (partial or
                         # scripted save) — leave the managed keys untouched
@@ -1284,17 +1440,21 @@ class BotDataViewer:
                     seen_full: set[str] = set()
                     seen_disp: set[str] = set()
                     for row in rows:
-                        rkey = (str(row.get('key', '')) or '').strip()
-                        rval = row.get('value', '')
-                        rval = '' if rval is None else str(rval)
+                        rkey = (str(row.get("key", "")) or "").strip()
+                        rval = row.get("value", "")
+                        rval = "" if rval is None else str(rval)
                         if not rkey:
                             continue  # skip blank rows
                         key_err = _validate_dynamic_key(rkey)
                         if key_err:
-                            return jsonify({'success': False, 'error': key_err}), 400
+                            return jsonify({"success": False, "error": key_err}), 400
                         if rkey.lower() in seen_disp:
-                            return jsonify({'success': False,
-                                            'error': f'Duplicate key "{rkey}" in {ds["label"]}'}), 400
+                            return jsonify(
+                                {
+                                    "success": False,
+                                    "error": f'Duplicate key "{rkey}" in {ds["label"]}',
+                                }
+                            ), 400
                         seen_disp.add(rkey.lower())
                         full = f"{prefix}{rkey}"
                         new_full[full] = rval
@@ -1302,11 +1462,17 @@ class BotDataViewer:
                     # Merge into the target section (own section keeps schema fields).
                     updates.setdefault(dsec, {}).update(new_full)
                     # Delete existing managed keys that are no longer present.
-                    existing = self.config.items(dsec, raw=True) if self.config.has_section(dsec) else []
+                    existing = (
+                        self.config.items(dsec, raw=True)
+                        if self.config.has_section(dsec)
+                        else []
+                    )
                     pl = prefix.lower()
                     del_keys = [
-                        k for k, _ in existing
-                        if (not prefix or k.lower().startswith(pl)) and k.lower() not in seen_full
+                        k
+                        for k, _ in existing
+                        if (not prefix or k.lower().startswith(pl))
+                        and k.lower() not in seen_full
                     ]
                     deletes.setdefault(dsec, []).extend(del_keys)
 
@@ -1314,46 +1480,62 @@ class BotDataViewer:
                 # are renumbered contiguously from 1 (the service stops scanning at
                 # the first missing index), validated per sub-schema, and unknown
                 # sub-keys are passed through so they survive the save.
-                submitted_blocks = data.get('repeating_blocks', {}) or {}
-                for rb in entry.get('repeating_blocks', []):
-                    bid = rb['id']
+                submitted_blocks = data.get("repeating_blocks", {}) or {}
+                for rb in entry.get("repeating_blocks", []):
+                    bid = rb["id"]
                     if bid not in submitted_blocks:
                         # Same defensive rule as dynamic sections: absent from
                         # the payload means "don't touch", not "delete all".
                         continue
-                    enabled_field = rb['enabled_field']
-                    field_by_key = {f['key']: f for f in rb['fields']}
+                    enabled_field = rb["enabled_field"]
+                    field_by_key = {f["key"]: f for f in rb["fields"]}
                     written: set[str] = set()
                     for i, block in enumerate(submitted_blocks.get(bid) or [], start=1):
-                        bvals = block.get('values', {}) or {}
+                        bvals = block.get("values", {}) or {}
                         for k, val in bvals.items():
                             full = f"{bid}{i}_{k}"
                             field = field_by_key.get(k)
                             if field is not None:
                                 ok, coerced, err = validate_field(field, val)
                                 if not ok:
-                                    return jsonify({'success': False,
-                                                    'error': f'{rb["label"]} #{i}: {err}'}), 400
-                                updates[section][full] = to_config_string(field, coerced)
+                                    return jsonify(
+                                        {
+                                            "success": False,
+                                            "error": f"{rb['label']} #{i}: {err}",
+                                        }
+                                    ), 400
+                                updates[section][full] = to_config_string(
+                                    field, coerced
+                                )
                             else:
-                                updates[section][full] = '' if val is None else str(val)
+                                updates[section][full] = "" if val is None else str(val)
                             written.add(full.lower())
                         en = f"{bid}{i}_{enabled_field}"
-                        updates[section][en] = 'true' if block.get('enabled', True) else 'false'
+                        updates[section][en] = (
+                            "true" if block.get("enabled", True) else "false"
+                        )
                         written.add(en.lower())
                     # Delete any existing block keys (old higher indices / removed).
                     brx = re.compile(rf"^{re.escape(bid)}\d+_", re.IGNORECASE)
-                    existing = self.config.items(section, raw=True) if self.config.has_section(section) else []
+                    existing = (
+                        self.config.items(section, raw=True)
+                        if self.config.has_section(section)
+                        else []
+                    )
                     for k, _ in existing:
                         if brx.match(k) and k.lower() not in written:
                             deletes.setdefault(section, []).append(k)
 
-                store = get_settings_store(self.config, self.config_path, self.db_manager)
+                store = get_settings_store(
+                    self.config, self.config_path, self.db_manager
+                )
                 result = store.write_sections(updates, deletes)
-                backup_path = result.get('backup_path', '') if isinstance(result, dict) else ''
+                backup_path = (
+                    result.get("backup_path", "") if isinstance(result, dict) else ""
+                )
 
                 # A service's start/stop only takes effect on bot restart.
-                restart_required = (kind == 'service' and enabled != entry['enabled'])
+                restart_required = kind == "service" and enabled != entry["enabled"]
 
                 # Queue a hot reload via the channel_operations table (the bot's
                 # scheduler polls this — same pattern as radio reconnect).
@@ -1372,23 +1554,29 @@ class BotDataViewer:
 
                 self.logger.info(
                     "Plugin settings saved: %s [%s] (backup=%s)",
-                    name, section, os.path.basename(backup_path) if backup_path else 'none',
+                    name,
+                    section,
+                    os.path.basename(backup_path) if backup_path else "none",
                 )
-                return jsonify({
-                    'success': True,
-                    'backup_path': backup_path,
-                    'reload_queued': reload_queued,
-                    'restart_required': restart_required,
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "backup_path": backup_path,
+                        "reload_queued": reload_queued,
+                        "restart_required": restart_required,
+                    }
+                )
             except IniValueError as exc:
                 # A submitted key/value would corrupt the INI (newline, [ ], …).
                 # Nothing was written; report it as a client error.
-                return jsonify({'success': False, 'error': str(exc)}), 400
+                return jsonify({"success": False, "error": str(exc)}), 400
             except Exception:
                 self.logger.exception("Error saving plugin settings")
-                return jsonify({'success': False, 'error': 'Internal error — see server logs'}), 500
+                return jsonify(
+                    {"success": False, "error": "Internal error — see server logs"}
+                ), 500
 
-        @self.app.route('/api/plugins/reload-status')
+        @self.app.route("/api/plugins/reload-status")
         def api_plugins_reload_status():
             """Return the status of the most recent config_reload operation."""
             try:
@@ -1397,60 +1585,73 @@ class BotDataViewer:
                     "WHERE operation_type = 'config_reload' ORDER BY id DESC LIMIT 1"
                 )
                 if not rows:
-                    return jsonify({'status': None})
+                    return jsonify({"status": None})
                 row = rows[0]
-                return jsonify({
-                    'status': row.get('status'),
-                    'result_data': row.get('result_data'),
-                    'processed_at': row.get('processed_at'),
-                })
+                return jsonify(
+                    {
+                        "status": row.get("status"),
+                        "result_data": row.get("result_data"),
+                        "processed_at": row.get("processed_at"),
+                    }
+                )
             except Exception:
                 self.logger.exception("Error reading reload status")
-                return jsonify({'status': None}), 500
+                return jsonify({"status": None}), 500
 
-        @self.app.route('/api/config/notifications')
+        @self.app.route("/api/config/notifications")
         def api_config_notifications_get():
             """Return current notification settings from bot_metadata."""
             keys = [
-                'notif.smtp_host', 'notif.smtp_port', 'notif.smtp_security',
-                'notif.smtp_user', 'notif.smtp_password',
-                'notif.from_name', 'notif.from_email',
-                'notif.recipients', 'notif.nightly_enabled',
-                'notif.allow_local_smtp',
+                "notif.smtp_host",
+                "notif.smtp_port",
+                "notif.smtp_security",
+                "notif.smtp_user",
+                "notif.smtp_password",
+                "notif.from_name",
+                "notif.from_email",
+                "notif.recipients",
+                "notif.nightly_enabled",
+                "notif.allow_local_smtp",
             ]
             settings = {}
             for k in keys:
                 val = self.db_manager.get_metadata(k)
-                short = k.split('.', 1)[1]
-                settings[short] = val if val is not None else ''
+                short = k.split(".", 1)[1]
+                settings[short] = val if val is not None else ""
             # Provide safe defaults for unset fields
-            if not settings.get('smtp_port'):
-                settings['smtp_port'] = '587'
-            if not settings.get('smtp_security'):
-                settings['smtp_security'] = 'starttls'
-            if not settings.get('nightly_enabled'):
-                settings['nightly_enabled'] = 'false'
+            if not settings.get("smtp_port"):
+                settings["smtp_port"] = "587"
+            if not settings.get("smtp_security"):
+                settings["smtp_security"] = "starttls"
+            if not settings.get("nightly_enabled"):
+                settings["nightly_enabled"] = "false"
             return jsonify(settings)
 
-        @self.app.route('/api/config/notifications', methods=['POST'])
+        @self.app.route("/api/config/notifications", methods=["POST"])
         def api_config_notifications_post():
             """Save notification settings to bot_metadata."""
             data = request.get_json(silent=True) or {}
             allowed = {
-                'smtp_host', 'smtp_port', 'smtp_security',
-                'smtp_user', 'smtp_password',
-                'from_name', 'from_email',
-                'recipients', 'nightly_enabled', 'allow_local_smtp',
+                "smtp_host",
+                "smtp_port",
+                "smtp_security",
+                "smtp_user",
+                "smtp_password",
+                "from_name",
+                "from_email",
+                "recipients",
+                "nightly_enabled",
+                "allow_local_smtp",
             }
             saved = []
             for field in allowed:
                 if field in data:
-                    self.db_manager.set_metadata(f'notif.{field}', str(data[field]))
+                    self.db_manager.set_metadata(f"notif.{field}", str(data[field]))
                     saved.append(field)
             self.logger.info(f"Notification settings updated: {', '.join(saved)}")
-            return jsonify({'success': True, 'saved': saved})
+            return jsonify({"success": True, "saved": saved})
 
-        @self.app.route('/api/config/notifications/test', methods=['POST'])
+        @self.app.route("/api/config/notifications/test", methods=["POST"])
         def api_config_notifications_test():
             """Send a test email using the saved SMTP settings."""
             import smtplib
@@ -1458,52 +1659,58 @@ class BotDataViewer:
             from email.message import EmailMessage
 
             def _get(key):
-                return self.db_manager.get_metadata(f'notif.{key}') or ''
+                return self.db_manager.get_metadata(f"notif.{key}") or ""
 
-            smtp_host     = _get('smtp_host')
-            smtp_port     = int(_get('smtp_port') or 587)
-            smtp_security = _get('smtp_security') or 'starttls'
-            smtp_user     = _get('smtp_user')
-            smtp_password = _get('smtp_password')
-            from_name     = _get('from_name') or 'MeshCore Bot'
-            from_email    = _get('from_email')
-            recipients    = [r.strip() for r in _get('recipients').split(',') if r.strip()]
+            smtp_host = _get("smtp_host")
+            smtp_port = int(_get("smtp_port") or 587)
+            smtp_security = _get("smtp_security") or "starttls"
+            smtp_user = _get("smtp_user")
+            smtp_password = _get("smtp_password")
+            from_name = _get("from_name") or "MeshCore Bot"
+            from_email = _get("from_email")
+            recipients = [r.strip() for r in _get("recipients").split(",") if r.strip()]
 
             if not smtp_host:
-                return jsonify({'error': 'SMTP host is not configured'}), 400
+                return jsonify({"error": "SMTP host is not configured"}), 400
             if not from_email:
-                return jsonify({'error': 'Sender email is not configured'}), 400
+                return jsonify({"error": "Sender email is not configured"}), 400
             if not recipients:
-                return jsonify({'error': 'No recipients configured'}), 400
+                return jsonify({"error": "No recipients configured"}), 400
 
             # Validate SMTP host for SSRF protection
             # allow_local_smtp=true permits private/internal SMTP hosts (e.g., local Postfix)
-            allow_local_smtp = _get('allow_local_smtp').lower() == 'true'
-            if not validate_external_url(f'http://{smtp_host}', allow_private=allow_local_smtp):
+            allow_local_smtp = _get("allow_local_smtp").lower() == "true"
+            if not validate_external_url(
+                f"http://{smtp_host}", allow_private=allow_local_smtp
+            ):
                 if allow_local_smtp:
-                    return jsonify({'error': 'Invalid or unsafe SMTP host'}), 400
-                return jsonify({'error': 'Invalid or unsafe SMTP host (private/internal IP blocked)'}), 400
+                    return jsonify({"error": "Invalid or unsafe SMTP host"}), 400
+                return jsonify(
+                    {
+                        "error": "Invalid or unsafe SMTP host (private/internal IP blocked)"
+                    }
+                ), 400
 
             try:
                 msg = EmailMessage()
-                msg['Subject'] = 'MeshCore Bot — test email'
-                msg['From']    = f'{from_name} <{from_email}>'
-                msg['To']      = ', '.join(recipients)
+                msg["Subject"] = "MeshCore Bot — test email"
+                msg["From"] = f"{from_name} <{from_email}>"
+                msg["To"] = ", ".join(recipients)
                 msg.set_content(
-                    'This is a test email from MeshCore Bot.\n\n'
-                    'If you received this, your SMTP settings are working correctly.\n'
+                    "This is a test email from MeshCore Bot.\n\n"
+                    "If you received this, your SMTP settings are working correctly.\n"
                 )
 
                 context = _ssl.create_default_context()
 
-                if smtp_security == 'ssl':
+                if smtp_security == "ssl":
                     with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as s:
                         if smtp_user and smtp_password:
                             s.login(smtp_user, smtp_password)
                         s.send_message(msg)
                 else:
                     with smtplib.SMTP(smtp_host, smtp_port) as s:
-                        if smtp_security == 'starttls':
+                        if smtp_security == "starttls":
                             s.ehlo()
                             s.starttls(context=context)
                             s.ehlo()
@@ -1512,98 +1719,112 @@ class BotDataViewer:
                         s.send_message(msg)
 
                 self.logger.info(f"Test email sent to {recipients}")
-                return jsonify({'success': True, 'message': f'Test email sent to {", ".join(recipients)}'})
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": f"Test email sent to {', '.join(recipients)}",
+                    }
+                )
 
             except Exception as e:
                 self.logger.error(f"Test email failed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
         # ── Logging config ───────────────────────────────────────────────────
 
-        @self.app.route('/api/config/logging')
+        @self.app.route("/api/config/logging")
         def api_config_logging_get():
             """Return log rotation settings from bot_metadata."""
-            keys = ['maint.log_max_bytes', 'maint.log_backup_count']
+            keys = ["maint.log_max_bytes", "maint.log_backup_count"]
             settings = {}
             for k in keys:
-                short = k.split('.', 1)[1]
+                short = k.split(".", 1)[1]
                 val = self.db_manager.get_metadata(k)
-                settings[short] = val if val is not None else ''
-            if not settings.get('log_max_bytes'):
-                settings['log_max_bytes'] = str(5 * 1024 * 1024)
-            if not settings.get('log_backup_count'):
-                settings['log_backup_count'] = '3'
+                settings[short] = val if val is not None else ""
+            if not settings.get("log_max_bytes"):
+                settings["log_max_bytes"] = str(5 * 1024 * 1024)
+            if not settings.get("log_backup_count"):
+                settings["log_backup_count"] = "3"
             return jsonify(settings)
 
-        @self.app.route('/api/config/logging', methods=['POST'])
+        @self.app.route("/api/config/logging", methods=["POST"])
         def api_config_logging_post():
             """Save log rotation settings to bot_metadata."""
             data = request.get_json(silent=True) or {}
-            allowed = {'log_max_bytes', 'log_backup_count'}
+            allowed = {"log_max_bytes", "log_backup_count"}
             saved = []
             for field in allowed:
                 if field in data:
-                    self.db_manager.set_metadata(f'maint.{field}', str(data[field]))
+                    self.db_manager.set_metadata(f"maint.{field}", str(data[field]))
                     saved.append(field)
             self.logger.info(f"Log rotation config updated: {', '.join(saved)}")
-            return jsonify({'success': True, 'saved': saved})
+            return jsonify({"success": True, "saved": saved})
 
         # ── Maintenance config ───────────────────────────────────────────────
 
-        @self.app.route('/api/config/maintenance')
+        @self.app.route("/api/config/maintenance")
         def api_config_maintenance_get():
             """Return DB backup and email hook settings from bot_metadata."""
             keys = [
-                'maint.db_backup_enabled', 'maint.db_backup_schedule',
-                'maint.db_backup_time', 'maint.db_backup_retention_count',
-                'maint.db_backup_dir', 'maint.email_attach_log',
+                "maint.db_backup_enabled",
+                "maint.db_backup_schedule",
+                "maint.db_backup_time",
+                "maint.db_backup_retention_count",
+                "maint.db_backup_dir",
+                "maint.email_attach_log",
             ]
             settings = {}
             for k in keys:
-                short = k.split('.', 1)[1]
+                short = k.split(".", 1)[1]
                 val = self.db_manager.get_metadata(k)
-                settings[short] = val if val is not None else ''
+                settings[short] = val if val is not None else ""
             # Defaults
-            if not settings.get('db_backup_enabled'):
-                settings['db_backup_enabled'] = 'false'
-            if not settings.get('db_backup_schedule'):
-                settings['db_backup_schedule'] = 'daily'
-            if not settings.get('db_backup_time'):
-                settings['db_backup_time'] = '02:00'
-            if not settings.get('db_backup_retention_count'):
-                settings['db_backup_retention_count'] = '7'
-            if not settings.get('db_backup_dir'):
-                settings['db_backup_dir'] = '/data/backups'
-            if not settings.get('email_attach_log'):
-                settings['email_attach_log'] = 'false'
+            if not settings.get("db_backup_enabled"):
+                settings["db_backup_enabled"] = "false"
+            if not settings.get("db_backup_schedule"):
+                settings["db_backup_schedule"] = "daily"
+            if not settings.get("db_backup_time"):
+                settings["db_backup_time"] = "02:00"
+            if not settings.get("db_backup_retention_count"):
+                settings["db_backup_retention_count"] = "7"
+            if not settings.get("db_backup_dir"):
+                settings["db_backup_dir"] = "/data/backups"
+            if not settings.get("email_attach_log"):
+                settings["email_attach_log"] = "false"
             return jsonify(settings)
 
-        @self.app.route('/api/config/maintenance', methods=['POST'])
+        @self.app.route("/api/config/maintenance", methods=["POST"])
         def api_config_maintenance_post():
             """Save DB backup and email hook settings to bot_metadata."""
             data = request.get_json(silent=True) or {}
             # Validate db_backup_dir before saving anything
-            if 'db_backup_dir' in data:
-                backup_dir = str(data['db_backup_dir']).strip()
+            if "db_backup_dir" in data:
+                backup_dir = str(data["db_backup_dir"]).strip()
                 if backup_dir and not os.path.isdir(backup_dir):
-                    return jsonify({
-                        'error': f"Backup directory does not exist: {backup_dir}",
-                    }), 400
+                    return jsonify(
+                        {
+                            "error": f"Backup directory does not exist: {backup_dir}",
+                        }
+                    ), 400
             allowed = {
-                'db_backup_enabled', 'db_backup_schedule', 'db_backup_time',
-                'db_backup_retention_count', 'db_backup_dir', 'email_attach_log',
+                "db_backup_enabled",
+                "db_backup_schedule",
+                "db_backup_time",
+                "db_backup_retention_count",
+                "db_backup_dir",
+                "email_attach_log",
             }
             saved = []
             for field in allowed:
                 if field in data:
-                    self.db_manager.set_metadata(f'maint.{field}', str(data[field]))
+                    self.db_manager.set_metadata(f"maint.{field}", str(data[field]))
                     saved.append(field)
             self.logger.info(f"Maintenance config updated: {', '.join(saved)}")
-            return jsonify({'success': True, 'saved': saved})
+            return jsonify({"success": True, "saved": saved})
 
         # ── Zombie radio alert config ────────────────────────────────────────
 
-        @self.app.route('/api/config/zombie-alert')
+        @self.app.route("/api/config/zombie-alert")
         def api_config_zombie_alert_get() -> "Response":
             """Return zombie alert settings.
 
@@ -1612,31 +1833,35 @@ class BotDataViewer:
             show config.ini as the baseline defaults.
             """
             meta: dict[str, str] = {}
-            for key in ('zombie.alert_enabled', 'zombie.alert_email'):
-                short = key.split('.', 1)[1]
+            for key in ("zombie.alert_enabled", "zombie.alert_email"):
+                short = key.split(".", 1)[1]
                 val = self.db_manager.get_metadata(key)
-                meta[short] = val if isinstance(val, str) else ''
-            if not meta.get('alert_enabled'):
-                meta['alert_enabled'] = 'false'
+                meta[short] = val if isinstance(val, str) else ""
+            if not meta.get("alert_enabled"):
+                meta["alert_enabled"] = "false"
             ini: dict[str, str] = {
-                'alert_enabled': (
-                    'true'
+                "alert_enabled": (
+                    "true"
                     if self.config.getboolean(
-                        'Connection',
-                        'radio_zombie_alert_enabled',
-                        fallback=self.config.getboolean('Bot', 'radio_zombie_alert_enabled', fallback=False),
+                        "Connection",
+                        "radio_zombie_alert_enabled",
+                        fallback=self.config.getboolean(
+                            "Bot", "radio_zombie_alert_enabled", fallback=False
+                        ),
                     )
-                    else 'false'
+                    else "false"
                 ),
-                'alert_email': self.config.get(
-                    'Connection',
-                    'radio_zombie_alert_email',
-                    fallback=self.config.get('Bot', 'radio_zombie_alert_email', fallback=''),
+                "alert_email": self.config.get(
+                    "Connection",
+                    "radio_zombie_alert_email",
+                    fallback=self.config.get(
+                        "Bot", "radio_zombie_alert_email", fallback=""
+                    ),
                 ),
             }
-            return jsonify({'meta': meta, 'config_ini': ini})
+            return jsonify({"meta": meta, "config_ini": ini})
 
-        @self.app.route('/api/config/zombie-alert', methods=['POST'])
+        @self.app.route("/api/config/zombie-alert", methods=["POST"])
         def api_config_zombie_alert_post() -> "Response":
             """Save zombie alert settings to bot_metadata.
 
@@ -1646,52 +1871,64 @@ class BotDataViewer:
             new values without a restart.
             """
             data = request.get_json(silent=True) or {}
-            allowed = {'alert_enabled', 'alert_email'}
+            allowed = {"alert_enabled", "alert_email"}
             saved = []
             for field in allowed:
                 if field in data:
-                    self.db_manager.set_metadata(f'zombie.{field}', str(data[field]))
+                    self.db_manager.set_metadata(f"zombie.{field}", str(data[field]))
                     saved.append(field)
-            self.logger.info("Zombie alert config updated (metadata): %s", ', '.join(saved))
+            self.logger.info(
+                "Zombie alert config updated (metadata): %s", ", ".join(saved)
+            )
 
-            write_to_config = str(data.get('write_to_config', '')).lower() == 'true'
+            write_to_config = str(data.get("write_to_config", "")).lower() == "true"
             config_saved = False
             if write_to_config:
                 try:
-                    if not self.config.has_section('Connection'):
-                        self.config.add_section('Connection')
+                    if not self.config.has_section("Connection"):
+                        self.config.add_section("Connection")
                     ini_updates: dict[str, str] = {}
-                    if 'alert_enabled' in data:
-                        ini_updates['radio_zombie_alert_enabled'] = (
-                            'true' if str(data['alert_enabled']).lower() == 'true' else 'false'
+                    if "alert_enabled" in data:
+                        ini_updates["radio_zombie_alert_enabled"] = (
+                            "true"
+                            if str(data["alert_enabled"]).lower() == "true"
+                            else "false"
                         )
-                    if 'alert_email' in data:
-                        ini_updates['radio_zombie_alert_email'] = str(data['alert_email'])
+                    if "alert_email" in data:
+                        ini_updates["radio_zombie_alert_email"] = str(
+                            data["alert_email"]
+                        )
                     if ini_updates:
                         # Persist first: alert_email is free-form client JSON, so
                         # a rejected value must not leave the in-memory config
                         # holding something that was never written to disk.
-                        update_ini_values(self.config_path, {'Connection': ini_updates})
+                        update_ini_values(self.config_path, {"Connection": ini_updates})
                         for ini_key, ini_val in ini_updates.items():
-                            self.config.set('Connection', ini_key, ini_val)
+                            self.config.set("Connection", ini_key, ini_val)
                     config_saved = True
                     self.logger.info("Zombie alert settings written to config.ini")
                 except IniValueError as exc:
                     # Not an OSError — without this the route would 500.
                     self.logger.warning("Rejected zombie alert config value: %s", exc)
-                    return jsonify({'success': False, 'error': str(exc)}), 400
+                    return jsonify({"success": False, "error": str(exc)}), 400
                 except OSError as exc:
-                    self.logger.error("Failed to write zombie alert settings to config.ini: %s", exc)
-                    return jsonify({
-                        'success': False,
-                        'error': 'Could not write config.ini — check file permissions',
-                    }), 500
+                    self.logger.error(
+                        "Failed to write zombie alert settings to config.ini: %s", exc
+                    )
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": "Could not write config.ini — check file permissions",
+                        }
+                    ), 500
 
-            return jsonify({'success': True, 'saved': saved, 'config_saved': config_saved})
+            return jsonify(
+                {"success": True, "saved": saved, "config_saved": config_saved}
+            )
 
         # ── Zombie recover ───────────────────────────────────────────────────
 
-        @self.app.route('/api/admin/zombie-recover', methods=['POST'])
+        @self.app.route("/api/admin/zombie-recover", methods=["POST"])
         def api_admin_zombie_recover() -> "Response":
             """Clear zombie state so bot resumes processing after a radio power cycle.
 
@@ -1700,22 +1937,29 @@ class BotDataViewer:
             web-viewer banner disappears on the next page load.
             """
             try:
-                self.db_manager.set_metadata('bot.radio_zombie', 'false')
-                self.db_manager.set_metadata('bot.radio_zombie_since', '')
-                bot = getattr(self, 'bot', None)
+                self.db_manager.set_metadata("bot.radio_zombie", "false")
+                self.db_manager.set_metadata("bot.radio_zombie_since", "")
+                bot = getattr(self, "bot", None)
                 if bot is not None:
                     bot._radio_zombie_detected = False
                     bot._radio_fail_count = 0
                     bot._last_radio_probe = 0  # force probe on next cycle
                 self.logger.info("Zombie state cleared via web UI recover action")
-                return jsonify({'success': True, 'message': 'Zombie state cleared; bot will resume'})
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": "Zombie state cleared; bot will resume",
+                    }
+                )
             except Exception:
                 self.logger.exception("Error clearing zombie state")
-                return jsonify({'success': False, 'error': 'Internal error — see server logs'}), 500
+                return jsonify(
+                    {"success": False, "error": "Internal error — see server logs"}
+                ), 500
 
         # ── Radio debug config ───────────────────────────────────────────────
 
-        @self.app.route('/api/config/radio-debug')
+        @self.app.route("/api/config/radio-debug")
         def api_config_radio_debug_get() -> "Response":
             """Return current radio debug logging setting.
 
@@ -1723,16 +1967,21 @@ class BotDataViewer:
             ``config_ini`` value (read from config.ini) so the browser can show
             which is the persistent baseline.
             """
-            meta_val = self.db_manager.get_metadata('radio.debug')
-            meta_enabled = meta_val if isinstance(meta_val, str) else ''
+            meta_val = self.db_manager.get_metadata("radio.debug")
+            meta_enabled = meta_val if isinstance(meta_val, str) else ""
             ini_enabled = (
-                'true'
-                if self.config.getboolean('Connection', 'radio_debug', fallback=False)
-                else 'false'
+                "true"
+                if self.config.getboolean("Connection", "radio_debug", fallback=False)
+                else "false"
             )
-            return jsonify({'meta': {'enabled': meta_enabled}, 'config_ini': {'enabled': ini_enabled}})
+            return jsonify(
+                {
+                    "meta": {"enabled": meta_enabled},
+                    "config_ini": {"enabled": ini_enabled},
+                }
+            )
 
-        @self.app.route('/api/config/radio-debug', methods=['POST'])
+        @self.app.route("/api/config/radio-debug", methods=["POST"])
         def api_config_radio_debug_post() -> "Response":
             """Save radio debug logging setting.
 
@@ -1746,30 +1995,40 @@ class BotDataViewer:
             """
             try:
                 data = request.get_json(silent=True) or {}
-                enabled = str(data.get('enabled', 'false')).lower() == 'true'
-                write_to_config = str(data.get('write_to_config', 'false')).lower() == 'true'
-                do_reconnect = str(data.get('reconnect', 'false')).lower() == 'true'
+                enabled = str(data.get("enabled", "false")).lower() == "true"
+                write_to_config = (
+                    str(data.get("write_to_config", "false")).lower() == "true"
+                )
+                do_reconnect = str(data.get("reconnect", "false")).lower() == "true"
 
-                self.db_manager.set_metadata('radio.debug', 'true' if enabled else 'false')
+                self.db_manager.set_metadata(
+                    "radio.debug", "true" if enabled else "false"
+                )
                 config_saved = False
 
                 if write_to_config:
                     try:
-                        if not self.config.has_section('Connection'):
-                            self.config.add_section('Connection')
-                        val = 'true' if enabled else 'false'
-                        self.config.set('Connection', 'radio_debug', val)
-                        update_ini_values(self.config_path, {'Connection': {'radio_debug': val}})
+                        if not self.config.has_section("Connection"):
+                            self.config.add_section("Connection")
+                        val = "true" if enabled else "false"
+                        self.config.set("Connection", "radio_debug", val)
+                        update_ini_values(
+                            self.config_path, {"Connection": {"radio_debug": val}}
+                        )
                         config_saved = True
                         self.logger.info(
                             "radio_debug=%s written to config.ini by web UI", val
                         )
                     except OSError as exc:
-                        self.logger.error("Failed to write radio_debug to config.ini: %s", exc)
-                        return jsonify({
-                            'success': False,
-                            'error': 'Could not write config.ini — check file permissions',
-                        }), 500
+                        self.logger.error(
+                            "Failed to write radio_debug to config.ini: %s", exc
+                        )
+                        return jsonify(
+                            {
+                                "success": False,
+                                "error": "Could not write config.ini — check file permissions",
+                            }
+                        ), 500
 
                 op_id = None
                 if do_reconnect:
@@ -1780,178 +2039,269 @@ class BotDataViewer:
                         )
                         conn.commit()
                         op_id = cursor.lastrowid
-                    self.logger.info("Radio reconnect queued (op_id=%s) to apply radio_debug=%s", op_id, enabled)
+                    self.logger.info(
+                        "Radio reconnect queued (op_id=%s) to apply radio_debug=%s",
+                        op_id,
+                        enabled,
+                    )
 
-                return jsonify({'success': True, 'config_saved': config_saved, 'op_id': op_id})
+                return jsonify(
+                    {"success": True, "config_saved": config_saved, "op_id": op_id}
+                )
             except Exception as exc:
                 self.logger.exception("Error saving radio debug config")
-                return jsonify({'success': False, 'error': str(exc)}), 500
+                return jsonify({"success": False, "error": str(exc)}), 500
 
         # ── Radio probe config ───────────────────────────────────────────────
 
-        @self.app.route('/api/config/radio-probe')
+        @self.app.route("/api/config/radio-probe")
         def api_config_radio_probe_get() -> "Response":
             """Return radio probe settings."""
             try:
-                return jsonify({
-                    'probe_interval_seconds': self.db_manager.get_metadata('radio.probe_interval_seconds') or
-                        self.config.getint('Connection', 'radio_probe_interval_seconds', fallback=300),
-                    'probe_fail_threshold': self.db_manager.get_metadata('radio.probe_fail_threshold') or
-                        self.config.getint('Connection', 'radio_probe_fail_threshold', fallback=3),
-                })
+                return jsonify(
+                    {
+                        "probe_interval_seconds": self.db_manager.get_metadata(
+                            "radio.probe_interval_seconds"
+                        )
+                        or self.config.getint(
+                            "Connection", "radio_probe_interval_seconds", fallback=300
+                        ),
+                        "probe_fail_threshold": self.db_manager.get_metadata(
+                            "radio.probe_fail_threshold"
+                        )
+                        or self.config.getint(
+                            "Connection", "radio_probe_fail_threshold", fallback=3
+                        ),
+                    }
+                )
             except Exception as exc:
                 self.logger.exception("Error getting radio probe config")
-                return jsonify({'success': False, 'error': str(exc)}), 500
+                return jsonify({"success": False, "error": str(exc)}), 500
 
-        @self.app.route('/api/config/radio-probe', methods=['POST'])
+        @self.app.route("/api/config/radio-probe", methods=["POST"])
         def api_config_radio_probe_post() -> "Response":
             """Save radio probe settings to bot_metadata."""
             try:
                 data = request.get_json(silent=True) or {}
-                probe_interval = int(data.get('probe_interval_seconds', 300))
-                probe_fail_threshold = int(data.get('probe_fail_threshold', 3))
+                probe_interval = int(data.get("probe_interval_seconds", 300))
+                probe_fail_threshold = int(data.get("probe_fail_threshold", 3))
 
                 # Validate ranges
                 if not (300 <= probe_interval <= 900):
-                    return jsonify({'success': False, 'error': 'probe_interval_seconds must be 300-900'}), 400
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": "probe_interval_seconds must be 300-900",
+                        }
+                    ), 400
                 if not (1 <= probe_fail_threshold <= 10):
-                    return jsonify({'success': False, 'error': 'probe_fail_threshold must be 1-10'}), 400
+                    return jsonify(
+                        {"success": False, "error": "probe_fail_threshold must be 1-10"}
+                    ), 400
 
                 saved = []
-                self.db_manager.set_metadata('radio.probe_interval_seconds', str(probe_interval))
-                saved.append('probe_interval_seconds')
-                self.db_manager.set_metadata('radio.probe_fail_threshold', str(probe_fail_threshold))
-                saved.append('probe_fail_threshold')
+                self.db_manager.set_metadata(
+                    "radio.probe_interval_seconds", str(probe_interval)
+                )
+                saved.append("probe_interval_seconds")
+                self.db_manager.set_metadata(
+                    "radio.probe_fail_threshold", str(probe_fail_threshold)
+                )
+                saved.append("probe_fail_threshold")
 
-                self.logger.info("Radio probe config updated (metadata): %s", ', '.join(saved))
+                self.logger.info(
+                    "Radio probe config updated (metadata): %s", ", ".join(saved)
+                )
 
                 # Optionally save to config.ini
                 config_saved = False
-                if data.get('save_to_config', False):
+                if data.get("save_to_config", False):
                     try:
-                        self.config.set('Connection', 'radio_probe_interval_seconds', str(probe_interval))
-                        self.config.set('Connection', 'radio_probe_fail_threshold', str(probe_fail_threshold))
-                        update_ini_values(self.config_path, {'Connection': {
-                            'radio_probe_interval_seconds': str(probe_interval),
-                            'radio_probe_fail_threshold': str(probe_fail_threshold),
-                        }})
+                        self.config.set(
+                            "Connection",
+                            "radio_probe_interval_seconds",
+                            str(probe_interval),
+                        )
+                        self.config.set(
+                            "Connection",
+                            "radio_probe_fail_threshold",
+                            str(probe_fail_threshold),
+                        )
+                        update_ini_values(
+                            self.config_path,
+                            {
+                                "Connection": {
+                                    "radio_probe_interval_seconds": str(probe_interval),
+                                    "radio_probe_fail_threshold": str(
+                                        probe_fail_threshold
+                                    ),
+                                }
+                            },
+                        )
                         config_saved = True
                         self.logger.info("Radio probe settings written to config.ini")
                     except Exception as exc:
-                        self.logger.error("Failed to write radio probe settings to config.ini: %s", exc)
+                        self.logger.error(
+                            "Failed to write radio probe settings to config.ini: %s",
+                            exc,
+                        )
 
-                return jsonify({'success': True, 'saved': saved, 'config_saved': config_saved})
+                return jsonify(
+                    {"success": True, "saved": saved, "config_saved": config_saved}
+                )
             except Exception as exc:
                 self.logger.exception("Error saving radio probe config")
-                return jsonify({'success': False, 'error': str(exc)}), 500
+                return jsonify({"success": False, "error": str(exc)}), 500
 
         # ── Radio offline alert config ───────────────────────────────────────
 
-        @self.app.route('/api/config/radio-offline-alert')
+        @self.app.route("/api/config/radio-offline-alert")
         def api_config_radio_offline_alert_get() -> "Response":
             """Return radio offline alert settings."""
             try:
-                return jsonify({
-                    'offline_threshold': self.db_manager.get_metadata('radio.offline_threshold') or
-                        self.config.getint('Connection', 'radio_offline_threshold', fallback=3),
-                    'alert_enabled': self.db_manager.get_metadata('radio.offline_alert_enabled') == 'true' or
-                        self.config.getboolean('Connection', 'radio_offline_alert_enabled', fallback=False),
-                    'alert_email': self.db_manager.get_metadata('radio.offline_alert_email') or
-                        self.config.get('Connection', 'radio_offline_alert_email', fallback=''),
-                })
+                return jsonify(
+                    {
+                        "offline_threshold": self.db_manager.get_metadata(
+                            "radio.offline_threshold"
+                        )
+                        or self.config.getint(
+                            "Connection", "radio_offline_threshold", fallback=3
+                        ),
+                        "alert_enabled": self.db_manager.get_metadata(
+                            "radio.offline_alert_enabled"
+                        )
+                        == "true"
+                        or self.config.getboolean(
+                            "Connection", "radio_offline_alert_enabled", fallback=False
+                        ),
+                        "alert_email": self.db_manager.get_metadata(
+                            "radio.offline_alert_email"
+                        )
+                        or self.config.get(
+                            "Connection", "radio_offline_alert_email", fallback=""
+                        ),
+                    }
+                )
             except Exception as exc:
                 self.logger.exception("Error getting radio offline alert config")
-                return jsonify({'success': False, 'error': str(exc)}), 500
+                return jsonify({"success": False, "error": str(exc)}), 500
 
-        @self.app.route('/api/config/radio-offline-alert', methods=['POST'])
+        @self.app.route("/api/config/radio-offline-alert", methods=["POST"])
         def api_config_radio_offline_alert_post() -> "Response":
             """Save radio offline alert settings to bot_metadata."""
             try:
                 data = request.get_json(silent=True) or {}
-                offline_threshold = int(data.get('offline_threshold', 3))
-                alert_enabled = bool(data.get('alert_enabled', False))
-                alert_email = str(data.get('alert_email', '')).strip()
+                offline_threshold = int(data.get("offline_threshold", 3))
+                alert_enabled = bool(data.get("alert_enabled", False))
+                alert_email = str(data.get("alert_email", "")).strip()
 
                 # Validate ranges
                 if not (1 <= offline_threshold <= 10):
-                    return jsonify({'success': False, 'error': 'offline_threshold must be 1-10'}), 400
+                    return jsonify(
+                        {"success": False, "error": "offline_threshold must be 1-10"}
+                    ), 400
 
                 saved = []
-                self.db_manager.set_metadata('radio.offline_threshold', str(offline_threshold))
-                saved.append('offline_threshold')
-                self.db_manager.set_metadata('radio.offline_alert_enabled', 'true' if alert_enabled else 'false')
-                saved.append('alert_enabled')
-                self.db_manager.set_metadata('radio.offline_alert_email', alert_email)
-                saved.append('alert_email')
+                self.db_manager.set_metadata(
+                    "radio.offline_threshold", str(offline_threshold)
+                )
+                saved.append("offline_threshold")
+                self.db_manager.set_metadata(
+                    "radio.offline_alert_enabled", "true" if alert_enabled else "false"
+                )
+                saved.append("alert_enabled")
+                self.db_manager.set_metadata("radio.offline_alert_email", alert_email)
+                saved.append("alert_email")
 
-                self.logger.info("Radio offline alert config updated (metadata): %s", ', '.join(saved))
+                self.logger.info(
+                    "Radio offline alert config updated (metadata): %s",
+                    ", ".join(saved),
+                )
 
                 # Optionally save to config.ini
                 config_saved = False
-                if data.get('save_to_config', False):
+                if data.get("save_to_config", False):
                     try:
-                        enabled_val = 'true' if alert_enabled else 'false'
+                        enabled_val = "true" if alert_enabled else "false"
                         offline_ini = {
-                            'radio_offline_threshold': str(offline_threshold),
-                            'radio_offline_alert_enabled': enabled_val,
-                            'radio_offline_alert_email': alert_email,
+                            "radio_offline_threshold": str(offline_threshold),
+                            "radio_offline_alert_enabled": enabled_val,
+                            "radio_offline_alert_email": alert_email,
                         }
                         # Persist first: alert_email is free-form client input, so
                         # a rejected value must not leave the in-memory config
                         # holding something that was never written to disk.
-                        update_ini_values(self.config_path, {'Connection': offline_ini})
+                        update_ini_values(self.config_path, {"Connection": offline_ini})
                         for ini_key, ini_val in offline_ini.items():
-                            self.config.set('Connection', ini_key, ini_val)
+                            self.config.set("Connection", ini_key, ini_val)
                         config_saved = True
-                        self.logger.info("Radio offline alert settings written to config.ini")
+                        self.logger.info(
+                            "Radio offline alert settings written to config.ini"
+                        )
                     except Exception as exc:
-                        self.logger.error("Failed to write radio offline alert settings to config.ini: %s", exc)
+                        self.logger.error(
+                            "Failed to write radio offline alert settings to config.ini: %s",
+                            exc,
+                        )
 
-                return jsonify({'success': True, 'saved': saved, 'config_saved': config_saved})
+                return jsonify(
+                    {"success": True, "saved": saved, "config_saved": config_saved}
+                )
             except Exception as exc:
                 self.logger.exception("Error saving radio offline alert config")
-                return jsonify({'success': False, 'error': str(exc)}), 500
+                return jsonify({"success": False, "error": str(exc)}), 500
 
         # ── Radio offline clear ──────────────────────────────────────────────
 
-        @self.app.route('/api/admin/radio-offline-clear', methods=['POST'])
+        @self.app.route("/api/admin/radio-offline-clear", methods=["POST"])
         def api_admin_radio_offline_clear() -> "Response":
             """Clear the radio-offline flag so the bot resumes outbound sends."""
             try:
-                self.db_manager.set_metadata('bot.radio_offline', 'false')
-                self.db_manager.set_metadata('bot.radio_offline_since', '')
-                bot = getattr(self, 'bot', None)
+                self.db_manager.set_metadata("bot.radio_offline", "false")
+                self.db_manager.set_metadata("bot.radio_offline_since", "")
+                bot = getattr(self, "bot", None)
                 if bot is not None:
                     bot._radio_offline = False
                     bot._send_consecutive_failures = 0
                 self.logger.info("Radio-offline state cleared via web UI action")
-                return jsonify({'success': True, 'message': 'Radio-offline flag cleared; sends will resume'})
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": "Radio-offline flag cleared; sends will resume",
+                    }
+                )
             except Exception:
                 self.logger.exception("Error clearing radio-offline state")
-                return jsonify({'success': False, 'error': 'Internal error — see server logs'}), 500
+                return jsonify(
+                    {"success": False, "error": "Internal error — see server logs"}
+                ), 500
 
         # ── Maintenance status ───────────────────────────────────────────────
 
-        @self.app.route('/api/maintenance/backup_now', methods=['POST'])
+        @self.app.route("/api/maintenance/backup_now", methods=["POST"])
         def api_maintenance_backup_now():
             """Trigger an immediate DB backup outside the normal schedule."""
             try:
-                bot = getattr(self, 'bot', None)
-                scheduler = getattr(bot, 'scheduler', None) if bot else None
-                if scheduler is None or not hasattr(scheduler, 'run_db_backup'):
-                    return jsonify({'success': False, 'error': 'Scheduler not available'}), 503
+                bot = getattr(self, "bot", None)
+                scheduler = getattr(bot, "scheduler", None) if bot else None
+                if scheduler is None or not hasattr(scheduler, "run_db_backup"):
+                    return jsonify(
+                        {"success": False, "error": "Scheduler not available"}
+                    ), 503
                 scheduler.run_db_backup()
                 # Read outcome written by _run_db_backup
-                path = self.db_manager.get_metadata('maint.status.db_backup_path') or ''
-                outcome = self.db_manager.get_metadata('maint.status.db_backup_outcome') or ''
-                if outcome.startswith('error'):
-                    return jsonify({'success': False, 'error': outcome}), 500
-                return jsonify({'success': True, 'path': path, 'outcome': outcome})
+                path = self.db_manager.get_metadata("maint.status.db_backup_path") or ""
+                outcome = (
+                    self.db_manager.get_metadata("maint.status.db_backup_outcome") or ""
+                )
+                if outcome.startswith("error"):
+                    return jsonify({"success": False, "error": outcome}), 500
+                return jsonify({"success": True, "path": path, "outcome": outcome})
             except Exception as e:
                 self.logger.error(f"Error in backup_now: {e}", exc_info=True)
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
 
-        @self.app.route('/api/maintenance/restore', methods=['POST'])
+        @self.app.route("/api/maintenance/restore", methods=["POST"])
         def api_maintenance_restore():
             """Stage a verified DB backup for the next full service restart.
 
@@ -1961,14 +2311,18 @@ class BotDataViewer:
             """
             try:
                 data = request.get_json(silent=True) or {}
-                db_file = str(data.get('db_file', '')).strip()
+                db_file = str(data.get("db_file", "")).strip()
                 if not db_file:
-                    return jsonify({'error': 'db_file is required'}), 400
+                    return jsonify({"error": "db_file is required"}), 400
 
                 # Validate path is within the configured backup directory
-                backup_dir_str = self.db_manager.get_metadata('maint.db_backup_dir') or ''
+                backup_dir_str = (
+                    self.db_manager.get_metadata("maint.db_backup_dir") or ""
+                )
                 if not backup_dir_str or not os.path.isdir(backup_dir_str):
-                    return jsonify({'error': 'No valid backup directory configured'}), 400
+                    return jsonify(
+                        {"error": "No valid backup directory configured"}
+                    ), 400
 
                 # Validate path is within the configured backup directory
                 # First check for dangerous system paths, then check if path is within backup dir
@@ -1978,25 +2332,35 @@ class BotDataViewer:
                 # Check for dangerous system paths first (returns 400)
                 target_str = str(src).lower()
                 dangerous_prefixes = [
-                    '/etc', '/private/etc',
-                    '/sys', '/proc', '/dev', '/bin', '/sbin', '/boot',
+                    "/etc",
+                    "/private/etc",
+                    "/sys",
+                    "/proc",
+                    "/dev",
+                    "/bin",
+                    "/sbin",
+                    "/boot",
                 ]
                 if any(target_str.startswith(prefix) for prefix in dangerous_prefixes):
-                    return jsonify({'error': 'Access to system directory denied'}), 400
+                    return jsonify({"error": "Access to system directory denied"}), 400
 
                 # Check if path is within the backup directory (prevents traversal)
                 try:
                     src.relative_to(backup_dir)
                 except ValueError:
                     # Path is outside backup directory - return 403
-                    return jsonify({'error': 'Restore path must be within the configured backup directory'}), 403
+                    return jsonify(
+                        {
+                            "error": "Restore path must be within the configured backup directory"
+                        }
+                    ), 403
 
                 if not src.exists():
-                    return jsonify({'error': f'File not found: {db_file}'}), 400
+                    return jsonify({"error": f"File not found: {db_file}"}), 400
                 try:
                     max_restore_bytes = self.config.getint(
-                        'Web_Viewer',
-                        'restore_max_bytes',
+                        "Web_Viewer",
+                        "restore_max_bytes",
                         fallback=DEFAULT_MAX_RESTORE_BYTES,
                     )
                     pending = stage_database_restore(
@@ -2005,58 +2369,64 @@ class BotDataViewer:
                         max_bytes=max_restore_bytes,
                     )
                 except (DatabaseRestoreError, OSError, ValueError) as exc:
-                    self.logger.warning("Database restore staging rejected for %s: %s", src, exc)
-                    return jsonify({'error': str(exc)}), 400
+                    self.logger.warning(
+                        "Database restore staging rejected for %s: %s", src, exc
+                    )
+                    return jsonify({"error": str(exc)}), 400
 
                 self.logger.warning(
                     "Database restore staged from %s at %s; a full service restart is required",
                     src,
                     pending,
                 )
-                return jsonify({
-                    'success': True,
-                    'staged_from': db_file,
-                    'pending_path': str(pending),
-                    'active_db': self.db_path,
-                    'requires_restart': True,
-                    'warning': (
-                        'Restore verified and staged. Restart the complete MeshCore Bot service '
-                        'to apply it before any database writer starts.'
-                    ),
-                }), 202
+                return jsonify(
+                    {
+                        "success": True,
+                        "staged_from": db_file,
+                        "pending_path": str(pending),
+                        "active_db": self.db_path,
+                        "requires_restart": True,
+                        "warning": (
+                            "Restore verified and staged. Restart the complete MeshCore Bot service "
+                            "to apply it before any database writer starts."
+                        ),
+                    }
+                ), 202
             except Exception as e:
                 self.logger.error(f"Error in restore: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/maintenance/list_backups')
+        @self.app.route("/api/maintenance/list_backups")
         def api_maintenance_list_backups():
             """List available backup files from the configured backup directory."""
             try:
-                backup_dir_str = self.db_manager.get_metadata('maint.db_backup_dir') or ''
+                backup_dir_str = (
+                    self.db_manager.get_metadata("maint.db_backup_dir") or ""
+                )
                 if not backup_dir_str or not os.path.isdir(backup_dir_str):
-                    return jsonify({'backups': []})
+                    return jsonify({"backups": []})
                 backup_dir = Path(backup_dir_str)
                 db_stem = Path(self.db_path).stem
                 files = sorted(
-                    backup_dir.glob(f'{db_stem}_*.db'),
+                    backup_dir.glob(f"{db_stem}_*.db"),
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )
                 backups = [
                     {
-                        'path': str(f),
-                        'name': f.name,
-                        'size_mb': round(f.stat().st_size / 1_048_576, 2),
-                        'mtime': f.stat().st_mtime,
+                        "path": str(f),
+                        "name": f.name,
+                        "size_mb": round(f.stat().st_size / 1_048_576, 2),
+                        "mtime": f.stat().st_mtime,
                     }
                     for f in files
                 ]
-                return jsonify({'backups': backups})
+                return jsonify({"backups": backups})
             except Exception as e:
                 self.logger.error(f"Error listing backups: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/maintenance/purge', methods=['POST'])
+        @self.app.route("/api/maintenance/purge", methods=["POST"])
         def api_maintenance_purge():
             """Delete aged rows from time-series tables.
 
@@ -2073,42 +2443,58 @@ class BotDataViewer:
             _VALID_KEEP_DAYS = {"all", 1, 7, 14, 30, 60, 90}
             # (table, timestamp column) — some tables are created lazily.
             _purge_ops = [
-                ('packet_stream', 'timestamp'),
-                ('message_stats', 'timestamp'),
-                ('complete_contact_tracking', 'last_heard'),
-                ('purging_log', 'timestamp'),
-                ('mesh_connections', 'last_seen'),
-                ('daily_stats', 'date'),
+                ("packet_stream", "timestamp"),
+                ("message_stats", "timestamp"),
+                ("complete_contact_tracking", "last_heard"),
+                ("purging_log", "timestamp"),
+                ("mesh_connections", "last_seen"),
+                ("daily_stats", "date"),
             ]
             _PURGEABLE = {table for table, _ in _purge_ops}
             try:
                 data = request.get_json(silent=True) or {}
-                raw = data.get('keep_days', 'all')
-                if raw == 'all' or raw == 'All':
-                    keep_days: str | int = 'all'
+                raw = data.get("keep_days", "all")
+                if raw == "all" or raw == "All":
+                    keep_days: str | int = "all"
                 else:
                     try:
                         keep_days = int(raw)
                     except (TypeError, ValueError):
-                        return jsonify({'error': f'Invalid keep_days: {raw!r}'}), 400
+                        return jsonify({"error": f"Invalid keep_days: {raw!r}"}), 400
                 if keep_days not in _VALID_KEEP_DAYS:
-                    return jsonify({'error': f'keep_days must be one of {sorted(v for v in _VALID_KEEP_DAYS if isinstance(v, int))} or "all"'}), 400
+                    return jsonify(
+                        {
+                            "error": f'keep_days must be one of {sorted(v for v in _VALID_KEEP_DAYS if isinstance(v, int))} or "all"'
+                        }
+                    ), 400
 
                 tables_filter: list[str] | None = None
-                if 'tables' in data:
-                    tf = data.get('tables')
+                if "tables" in data:
+                    tf = data.get("tables")
                     if tf is None:
                         tables_filter = None
                     elif not isinstance(tf, list):
-                        return jsonify({'error': 'tables must be a list of table names or null'}), 400
+                        return jsonify(
+                            {"error": "tables must be a list of table names or null"}
+                        ), 400
                     elif len(tf) == 0:
-                        return jsonify({'error': 'tables cannot be empty; omit tables to purge all tables'}), 400
+                        return jsonify(
+                            {
+                                "error": "tables cannot be empty; omit tables to purge all tables"
+                            }
+                        ), 400
                     else:
-                        bad = [x for x in tf if not isinstance(x, str) or x not in _PURGEABLE]
+                        bad = [
+                            x
+                            for x in tf
+                            if not isinstance(x, str) or x not in _PURGEABLE
+                        ]
                         if bad:
-                            return jsonify({
-                                'error': f'Invalid table name(s): {bad!r}; allowed: {sorted(_PURGEABLE)}',
-                            }), 400
+                            return jsonify(
+                                {
+                                    "error": f"Invalid table name(s): {bad!r}; allowed: {sorted(_PURGEABLE)}",
+                                }
+                            ), 400
                         seen: set[str] = set()
                         tables_filter = []
                         for name in tf:
@@ -2117,24 +2503,25 @@ class BotDataViewer:
                                 tables_filter.append(name)
 
                 deleted: dict[str, int] = {}
-                if keep_days == 'all':
+                if keep_days == "all":
                     # Nothing to delete — keep everything
-                    return jsonify({'deleted': deleted})
+                    return jsonify({"deleted": deleted})
 
                 assert isinstance(keep_days, int)
                 from datetime import timedelta as _timedelta
+
                 cutoff_unix = time.time() - keep_days * 86400
                 _cutoff_dt = datetime.now(timezone.utc) - _timedelta(days=keep_days)
-                cutoff_iso = _cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
-                cutoff_date = _cutoff_dt.strftime('%Y-%m-%d')
+                cutoff_iso = _cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+                cutoff_date = _cutoff_dt.strftime("%Y-%m-%d")
 
                 _params_for = {
-                    'packet_stream': (cutoff_unix,),
-                    'message_stats': (int(cutoff_unix),),
-                    'complete_contact_tracking': (cutoff_iso,),
-                    'purging_log': (cutoff_iso,),
-                    'mesh_connections': (cutoff_iso,),
-                    'daily_stats': (cutoff_date,),
+                    "packet_stream": (cutoff_unix,),
+                    "message_stats": (int(cutoff_unix),),
+                    "complete_contact_tracking": (cutoff_iso,),
+                    "purging_log": (cutoff_iso,),
+                    "mesh_connections": (cutoff_iso,),
+                    "daily_stats": (cutoff_date,),
                 }
 
                 if tables_filter is None:
@@ -2157,7 +2544,7 @@ class BotDataViewer:
                                 table,
                                 column,
                                 cutoff,
-                                progress_label=f'manual {table.replace("_", " ")} purge',
+                                progress_label=f"manual {table.replace('_', ' ')} purge",
                             )
                         )
                     except Exception:
@@ -2168,99 +2555,96 @@ class BotDataViewer:
                     f"Purge completed: keep_days={keep_days}, tables={tables_filter!r}, "
                     f"total_deleted={total}, by_table={deleted}"
                 )
-                return jsonify({'deleted': deleted})
+                return jsonify({"deleted": deleted})
 
             except Exception as e:
                 self.logger.error(f"Error in purge: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/maintenance/status')
+        @self.app.route("/api/maintenance/status")
         def api_maintenance_status():
             """Return last-run times and outcomes for all maintenance jobs."""
             status_keys = [
-                'maint.status.data_retention_ran_at',
-                'maint.status.data_retention_outcome',
-                'maint.status.nightly_email_ran_at',
-                'maint.status.nightly_email_outcome',
-                'maint.status.db_backup_ran_at',
-                'maint.status.db_backup_outcome',
-                'maint.status.db_backup_path',
-                'maint.status.log_rotation_applied_at',
+                "maint.status.data_retention_ran_at",
+                "maint.status.data_retention_outcome",
+                "maint.status.nightly_email_ran_at",
+                "maint.status.nightly_email_outcome",
+                "maint.status.db_backup_ran_at",
+                "maint.status.db_backup_outcome",
+                "maint.status.db_backup_path",
+                "maint.status.log_rotation_applied_at",
             ]
             result = {}
             for k in status_keys:
-                short = k[len('maint.status.'):]
+                short = k[len("maint.status.") :]
                 val = self.db_manager.get_metadata(k)
-                result[short] = val if val is not None else ''
+                result[short] = val if val is not None else ""
             return jsonify(result)
 
-        @self.app.route('/api-explorer')
+        @self.app.route("/api-explorer")
         def api_explorer():
             """API Explorer — browse all endpoints with curl examples."""
-            return render_template('api_explorer.html')
+            return render_template("api_explorer.html")
 
-        @self.app.route('/admin/config')
+        @self.app.route("/admin/config")
         def admin_config():
             """Resolved config viewer — shows effective config.ini values with sensitive fields redacted."""
             sections = config_to_redacted_sections(self.config)
-            return render_template('admin_config.html', sections=sections, config_path=self.config_path)
-
-        @self.app.route('/mesh')
-        def mesh():
-            """Mesh graph visualization page"""
-            prefix_hex_chars = self.config.getint('Bot', 'prefix_bytes', fallback=1) * 2
-            if prefix_hex_chars <= 0:
-                prefix_hex_chars = 2
             return render_template(
-                'mesh.html',
-                prefix_hex_chars=prefix_hex_chars
+                "admin_config.html", sections=sections, config_path=self.config_path
             )
 
+        @self.app.route("/mesh")
+        def mesh():
+            """Mesh graph visualization page"""
+            prefix_hex_chars = self.config.getint("Bot", "prefix_bytes", fallback=1) * 2
+            if prefix_hex_chars <= 0:
+                prefix_hex_chars = 2
+            return render_template("mesh.html", prefix_hex_chars=prefix_hex_chars)
+
         # Favicon routes
-        @self.app.route('/apple-touch-icon.png')
+        @self.app.route("/apple-touch-icon.png")
         def apple_touch_icon():
             """Apple touch icon"""
             return send_from_directory(
-                os.path.join(os.path.dirname(__file__), 'static', 'ico'),
-                'apple-touch-icon.png'
+                os.path.join(os.path.dirname(__file__), "static", "ico"),
+                "apple-touch-icon.png",
             )
 
-        @self.app.route('/favicon-32x32.png')
+        @self.app.route("/favicon-32x32.png")
         def favicon_32x32():
             """32x32 favicon"""
             return send_from_directory(
-                os.path.join(os.path.dirname(__file__), 'static', 'ico'),
-                'favicon-32x32.png'
+                os.path.join(os.path.dirname(__file__), "static", "ico"),
+                "favicon-32x32.png",
             )
 
-        @self.app.route('/favicon-16x16.png')
+        @self.app.route("/favicon-16x16.png")
         def favicon_16x16():
             """16x16 favicon"""
             return send_from_directory(
-                os.path.join(os.path.dirname(__file__), 'static', 'ico'),
-                'favicon-16x16.png'
+                os.path.join(os.path.dirname(__file__), "static", "ico"),
+                "favicon-16x16.png",
             )
 
-        @self.app.route('/site.webmanifest')
+        @self.app.route("/site.webmanifest")
         def site_webmanifest():
             """Web manifest file"""
             return send_from_directory(
-                os.path.join(os.path.dirname(__file__), 'static', 'ico'),
-                'site.webmanifest',
-                mimetype='application/manifest+json'
+                os.path.join(os.path.dirname(__file__), "static", "ico"),
+                "site.webmanifest",
+                mimetype="application/manifest+json",
             )
 
-        @self.app.route('/favicon.ico')
+        @self.app.route("/favicon.ico")
         def favicon():
             """Default favicon"""
             return send_from_directory(
-                os.path.join(os.path.dirname(__file__), 'static', 'ico'),
-                'favicon.ico'
+                os.path.join(os.path.dirname(__file__), "static", "ico"), "favicon.ico"
             )
 
-
         # API Routes
-        @self.app.route('/api/health')
+        @self.app.route("/api/health")
         def api_health():
             """Health check endpoint"""
             # Get bot uptime
@@ -2269,44 +2653,60 @@ class BotDataViewer:
             with self._clients_lock:
                 client_count = len(self.connected_clients)
 
-            radio_zombie = self.db_manager.get_metadata('bot.radio_zombie') == 'true'
-            radio_zombie_since = self.db_manager.get_metadata('bot.radio_zombie_since') or None
+            radio_zombie = self.db_manager.get_metadata("bot.radio_zombie") == "true"
+            radio_zombie_since = (
+                self.db_manager.get_metadata("bot.radio_zombie_since") or None
+            )
 
-            return jsonify({
-                'status': 'degraded' if radio_zombie else 'healthy',
-                'connected_clients': client_count,
-                'max_clients': self.max_clients,
-                'timestamp': time.time(),
-                'bot_uptime': bot_uptime,
-                'version': 'modern_2.0',
-                'radio_zombie': radio_zombie,
-                'radio_zombie_since': radio_zombie_since,
-            })
+            return jsonify(
+                {
+                    "status": "degraded" if radio_zombie else "healthy",
+                    "connected_clients": client_count,
+                    "max_clients": self.max_clients,
+                    "timestamp": time.time(),
+                    "bot_uptime": bot_uptime,
+                    "version": "modern_2.0",
+                    "radio_zombie": radio_zombie,
+                    "radio_zombie_since": radio_zombie_since,
+                }
+            )
 
-        @self.app.route('/api/banner-status')
+        @self.app.route("/api/banner-status")
         def api_banner_status():
             """Return current banner states for live JS polling."""
             try:
-                radio_zombie = self.db_manager.get_metadata('bot.radio_zombie') == 'true'
-                radio_zombie_since = self.db_manager.get_metadata('bot.radio_zombie_since') or None
-                radio_offline = self.db_manager.get_metadata('bot.radio_offline') == 'true'
-                radio_offline_since = self.db_manager.get_metadata('bot.radio_offline_since') or None
-                bot_initializing = self.db_manager.get_metadata('bot.initializing') == 'true'
+                radio_zombie = (
+                    self.db_manager.get_metadata("bot.radio_zombie") == "true"
+                )
+                radio_zombie_since = (
+                    self.db_manager.get_metadata("bot.radio_zombie_since") or None
+                )
+                radio_offline = (
+                    self.db_manager.get_metadata("bot.radio_offline") == "true"
+                )
+                radio_offline_since = (
+                    self.db_manager.get_metadata("bot.radio_offline_since") or None
+                )
+                bot_initializing = (
+                    self.db_manager.get_metadata("bot.initializing") == "true"
+                )
             except Exception:
                 radio_zombie = False
                 radio_zombie_since = None
                 radio_offline = False
                 radio_offline_since = None
                 bot_initializing = False
-            return jsonify({
-                'radio_zombie': radio_zombie,
-                'radio_zombie_since': radio_zombie_since,
-                'radio_offline': radio_offline,
-                'radio_offline_since': radio_offline_since,
-                'bot_initializing': bot_initializing,
-            })
+            return jsonify(
+                {
+                    "radio_zombie": radio_zombie,
+                    "radio_zombie_since": radio_zombie_since,
+                    "radio_offline": radio_offline,
+                    "radio_offline_since": radio_offline_since,
+                    "bot_initializing": bot_initializing,
+                }
+            )
 
-        @self.app.route('/api/system-health')
+        @self.app.route("/api/system-health")
         def api_system_health():
             """Get comprehensive system health status from database"""
             try:
@@ -2315,42 +2715,44 @@ class BotDataViewer:
 
                 if not health_data:
                     # If no health data in database, return minimal status
-                    return jsonify({
-                        'status': 'unknown',
-                        'timestamp': time.time(),
-                        'message': 'Health data not available yet',
-                        'components': {}
-                    })
+                    return jsonify(
+                        {
+                            "status": "unknown",
+                            "timestamp": time.time(),
+                            "message": "Health data not available yet",
+                            "components": {},
+                        }
+                    )
 
                 # Update timestamp to reflect current time (data may be slightly stale)
-                health_data['timestamp'] = time.time()
+                health_data["timestamp"] = time.time()
 
                 # Recalculate uptime if start_time is available
                 start_time = self.db_manager.get_bot_start_time()
                 if start_time:
-                    health_data['uptime_seconds'] = time.time() - start_time
+                    health_data["uptime_seconds"] = time.time() - start_time
 
                 # Inject zombie radio state from shared metadata
-                radio_zombie = self.db_manager.get_metadata('bot.radio_zombie') == 'true'
-                health_data['radio_zombie'] = radio_zombie
-                health_data['radio_zombie_since'] = (
-                    self.db_manager.get_metadata('bot.radio_zombie_since') or None
+                radio_zombie = (
+                    self.db_manager.get_metadata("bot.radio_zombie") == "true"
+                )
+                health_data["radio_zombie"] = radio_zombie
+                health_data["radio_zombie_since"] = (
+                    self.db_manager.get_metadata("bot.radio_zombie_since") or None
                 )
                 if radio_zombie:
-                    health_data['status'] = 'degraded'
+                    health_data["status"] = "degraded"
 
                 return jsonify(health_data)
 
             except Exception as e:
                 self.logger.error(f"Error getting system health: {e}")
                 import traceback
-                self.logger.debug(traceback.format_exc())
-                return jsonify({
-                    'error': str(e),
-                    'status': 'error'
-                }), 500
 
-        @self.app.route('/api/stats')
+                self.logger.debug(traceback.format_exc())
+                return jsonify({"error": str(e), "status": "error"}), 500
+
+        @self.app.route("/api/stats")
         def api_stats():
             """Deprecated: whole-database statistics in one payload.
 
@@ -2361,29 +2763,29 @@ class BotDataViewer:
             """
             try:
                 # Get optional time window parameters for analytics
-                top_users_window = request.args.get('top_users_window', 'all')
-                top_commands_window = request.args.get('top_commands_window', 'all')
-                top_paths_window = request.args.get('top_paths_window', 'all')
-                top_channels_window = request.args.get('top_channels_window', 'all')
+                top_users_window = request.args.get("top_users_window", "all")
+                top_commands_window = request.args.get("top_commands_window", "all")
+                top_paths_window = request.args.get("top_paths_window", "all")
+                top_channels_window = request.args.get("top_channels_window", "all")
                 stats = self._get_database_stats(
                     top_users_window=top_users_window,
                     top_commands_window=top_commands_window,
                     top_paths_window=top_paths_window,
-                    top_channels_window=top_channels_window
+                    top_channels_window=top_channels_window,
                 )
-                stats['deprecated'] = True
+                stats["deprecated"] = True
                 response = jsonify(stats)
-                response.headers['Deprecation'] = 'true'
-                response.headers['Sunset'] = STATS_ENDPOINT_SUNSET
-                response.headers['Link'] = '</api/dashboard/summary>; rel="successor-version"'
+                response.headers["Deprecation"] = "true"
+                response.headers["Sunset"] = STATS_ENDPOINT_SUNSET
+                response.headers["Link"] = (
+                    '</api/dashboard/summary>; rel="successor-version"'
+                )
                 return response
             except Exception as e:
                 self.logger.error(f"Error getting stats: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-
-
-        @self.app.route('/api/dashboard/summary')
+        @self.app.route("/api/dashboard/summary")
         def api_dashboard_summary():
             """Snapshot-backed dashboard payload — one row read, no aggregation.
 
@@ -2397,166 +2799,173 @@ class BotDataViewer:
                     # No snapshot yet: the refresher runs a couple of seconds
                     # after startup, so tell the client to retry rather than
                     # recomputing everything on the request path.
-                    response = jsonify({
-                        'error': 'Dashboard snapshot not generated yet',
-                        'pending': True,
-                    })
+                    response = jsonify(
+                        {
+                            "error": "Dashboard snapshot not generated yet",
+                            "pending": True,
+                        }
+                    )
                     response.status_code = 503
-                    response.headers['Retry-After'] = '5'
+                    response.headers["Retry-After"] = "5"
                     return response
 
                 # ETags.contains() wants the bare tag; the quotes belong only in
                 # the header itself.
-                tag = str(payload['generated_at'])
+                tag = str(payload["generated_at"])
                 if request.if_none_match.contains(tag):
                     response = self.app.response_class(status=304)
                 else:
                     response = jsonify(payload)
-                response.headers['ETag'] = f'"{tag}"'
-                response.headers['Cache-Control'] = 'private, max-age=15'
+                response.headers["ETag"] = f'"{tag}"'
+                response.headers["Cache-Control"] = "private, max-age=15"
                 return response
             except Exception as e:
                 self.logger.error(f"Error reading dashboard summary: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/dashboard/series')
+        @self.app.route("/api/dashboard/series")
         def api_dashboard_series():
             """Full-history points for one metric, for the expand-chart interaction."""
-            metric = request.args.get('metric', 'messages')
+            metric = request.args.get("metric", "messages")
             if metric not in SERIES_METRICS:
-                return jsonify({'error': f'Unknown metric: {metric}'}), 400
+                return jsonify({"error": f"Unknown metric: {metric}"}), 400
             try:
-                days = int(request.args.get('days', 30))
+                days = int(request.args.get("days", 30))
             except (TypeError, ValueError):
                 days = 30
             try:
                 with self._with_db_connection() as conn:
                     payload = self.dashboard_stats.read_series(conn, metric, days)
-                tag = f'{metric}:{days}:{payload.pop("etag_source", None)}'
+                tag = f"{metric}:{days}:{payload.pop('etag_source', None)}"
                 if request.if_none_match.contains(tag):
                     response = self.app.response_class(status=304)
                 else:
                     response = jsonify(payload)
-                response.headers['ETag'] = f'"{tag}"'
-                response.headers['Cache-Control'] = 'private, max-age=300'
+                response.headers["ETag"] = f'"{tag}"'
+                response.headers["Cache-Control"] = "private, max-age=300"
                 return response
             except Exception as e:
                 self.logger.error(f"Error reading dashboard series: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/dashboard/top')
+        @self.app.route("/api/dashboard/top")
         def api_dashboard_top():
             """One leaderboard, one narrow query — replaces four whole-payload reads."""
-            kind = request.args.get('kind', 'users')
+            kind = request.args.get("kind", "users")
             if kind not in TOP_KINDS:
-                return jsonify({'error': f'Unknown kind: {kind}'}), 400
-            window = request.args.get('window', 'all')
-            if window not in ('24h', '7d', '30d', '90d', 'all'):
-                window = 'all'
+                return jsonify({"error": f"Unknown kind: {kind}"}), 400
+            window = request.args.get("window", "all")
+            if window not in ("24h", "7d", "30d", "90d", "all"):
+                window = "all"
             try:
-                limit = int(request.args.get('limit', 15))
+                limit = int(request.args.get("limit", 15))
             except (TypeError, ValueError):
                 limit = 15
             try:
                 with self._with_db_connection() as conn:
                     payload = self.dashboard_stats.read_top(conn, kind, window, limit)
                 response = jsonify(payload)
-                response.headers['Cache-Control'] = 'private, max-age=30'
+                response.headers["Cache-Control"] = "private, max-age=30"
                 return response
             except Exception as e:
                 self.logger.error(f"Error reading dashboard top {kind}: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/dashboard/windows')
+        @self.app.route("/api/dashboard/windows")
         def api_dashboard_windows():
             """Selector options derived from retention, so no label overclaims."""
             try:
                 response = jsonify(self.dashboard_stats.derive_windows())
-                response.headers['Cache-Control'] = 'private, max-age=300'
+                response.headers["Cache-Control"] = "private, max-age=300"
                 return response
             except Exception as e:
                 self.logger.error(f"Error deriving dashboard windows: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/dashboard/refresh', methods=['POST'])
+        @self.app.route("/api/dashboard/refresh", methods=["POST"])
         def api_dashboard_refresh():
             """Force a snapshot refresh. Used by the health strip's manual control."""
             try:
                 with closing(self._dashboard_connection()) as conn:
                     result = self.dashboard_stats.refresh(conn)
-                return jsonify({'success': True, **result})
+                return jsonify({"success": True, **result})
             except Exception as e:
                 self.logger.error(f"Error refreshing dashboard snapshot: {e}")
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
 
-        @self.app.route('/api/stats/rate_limiters')
+        @self.app.route("/api/stats/rate_limiters")
         def api_rate_limiter_stats():
             """Return current rate limiter statistics from the running bot."""
             try:
-                bot = getattr(self, 'bot', None)
+                bot = getattr(self, "bot", None)
                 stats: dict[str, Any] = {}
                 if bot is None:
                     return jsonify(stats)
-                if hasattr(bot, 'rate_limiter') and bot.rate_limiter:
-                    stats['message'] = bot.rate_limiter.get_stats()
-                if hasattr(bot, 'bot_tx_rate_limiter') and bot.bot_tx_rate_limiter:
-                    stats['tx'] = bot.bot_tx_rate_limiter.get_stats()
-                if hasattr(bot, 'per_user_rate_limiter') and bot.per_user_rate_limiter:
+                if hasattr(bot, "rate_limiter") and bot.rate_limiter:
+                    stats["message"] = bot.rate_limiter.get_stats()
+                if hasattr(bot, "bot_tx_rate_limiter") and bot.bot_tx_rate_limiter:
+                    stats["tx"] = bot.bot_tx_rate_limiter.get_stats()
+                if hasattr(bot, "per_user_rate_limiter") and bot.per_user_rate_limiter:
                     rl = bot.per_user_rate_limiter
-                    stats['per_user'] = {
-                        'seconds': rl.seconds,
-                        'tracked_users': len(rl._last_send),
-                        'max_entries': rl.max_entries,
+                    stats["per_user"] = {
+                        "seconds": rl.seconds,
+                        "tracked_users": len(rl._last_send),
+                        "max_entries": rl.max_entries,
                     }
-                if hasattr(bot, 'channel_rate_limiter') and bot.channel_rate_limiter:
-                    stats['channels'] = bot.channel_rate_limiter.get_stats()
-                if hasattr(bot, 'nominatim_rate_limiter') and bot.nominatim_rate_limiter:
-                    stats['nominatim'] = bot.nominatim_rate_limiter.get_stats()
+                if hasattr(bot, "channel_rate_limiter") and bot.channel_rate_limiter:
+                    stats["channels"] = bot.channel_rate_limiter.get_stats()
+                if (
+                    hasattr(bot, "nominatim_rate_limiter")
+                    and bot.nominatim_rate_limiter
+                ):
+                    stats["nominatim"] = bot.nominatim_rate_limiter.get_stats()
                 return jsonify(stats)
             except Exception as e:
                 self.logger.error(f"Error getting rate limiter stats: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/connected_clients')
+        @self.app.route("/api/connected_clients")
         def api_connected_clients():
             """Return list of currently connected web viewer clients."""
             try:
                 with self._clients_lock:
                     clients = [
                         {
-                            'client_id': cid[:8] + '…' if len(cid) > 8 else cid,
-                            'connected_at': info.get('connected_at'),
-                            'last_activity': info.get('last_activity'),
+                            "client_id": cid[:8] + "…" if len(cid) > 8 else cid,
+                            "connected_at": info.get("connected_at"),
+                            "last_activity": info.get("last_activity"),
                         }
                         for cid, info in self.connected_clients.items()
                     ]
                 return jsonify(clients)
             except Exception as e:
                 self.logger.error(f"Error getting connected clients: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/contacts')
+        @self.app.route("/api/contacts")
         def api_contacts():
             """Get filtered contact data, optionally paginated for the interactive list."""
             try:
-                since = request.args.get('since', '30d')
-                if since not in ('24h', '7d', '30d', '90d', 'all'):
-                    since = '30d'
-                paginate = 'page' in request.args or 'page_size' in request.args
+                since = request.args.get("since", "30d")
+                if since not in ("24h", "7d", "30d", "90d", "all"):
+                    since = "30d"
+                paginate = "page" in request.args or "page_size" in request.args
                 page = None
                 page_size = None
                 if paginate:
                     try:
-                        page = max(1, int(request.args.get('page', '1')))
+                        page = max(1, int(request.args.get("page", "1")))
                     except (TypeError, ValueError):
                         page = 1
                     try:
-                        page_size = max(1, min(200, int(request.args.get('page_size', '100'))))
+                        page_size = max(
+                            1, min(200, int(request.args.get("page_size", "100")))
+                        )
                     except (TypeError, ValueError):
                         page_size = 100
-                search = request.args.get('search', '').strip()[:100]
-                sort = request.args.get('sort', 'last_seen')
-                direction = request.args.get('direction', 'desc').lower()
+                search = request.args.get("search", "").strip()[:100]
+                sort = request.args.get("sort", "last_seen")
+                direction = request.args.get("direction", "desc").lower()
                 contacts = self._get_tracking_data(
                     since=since,
                     page=page,
@@ -2568,41 +2977,43 @@ class BotDataViewer:
                 return jsonify(contacts)
             except Exception as e:
                 self.logger.error(f"Error getting contacts: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/contact-detail')
+        @self.app.route("/api/contact-detail")
         def api_contact_detail():
             """On-demand per-contact detail (recent advert paths + advertisement data) for the
             contacts UI modals. These are intentionally excluded from the /api/contacts list
             payload. Query param: user_id (the contact's public key)."""
             try:
-                public_key = request.args.get('user_id', '').strip()
+                public_key = request.args.get("user_id", "").strip()
                 if not public_key:
-                    return jsonify({'error': 'user_id is required'}), 400
+                    return jsonify({"error": "user_id is required"}), 400
                 return jsonify(self._get_contact_detail(public_key))
             except Exception as e:
                 self.logger.error(f"Error getting contact detail: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/multibyte-rollout')
+        @self.app.route("/api/multibyte-rollout")
         def api_multibyte_rollout():
             """Multibyte hash rollout analytics. since=24h|7d|30d|90d|all, node_type=all|repeater|roomserver."""
             if not self.multibyte_monitor_enabled:
                 return abort(404)
             try:
-                since = request.args.get('since', '30d')
-                if since not in ('24h', '7d', '30d', '90d', 'all'):
-                    since = '30d'
-                node_type = request.args.get('node_type', 'all')
-                if node_type not in ('all', 'repeater', 'roomserver'):
-                    node_type = 'all'
-                data = self._get_multibyte_rollout_data(since=since, node_type=node_type)
+                since = request.args.get("since", "30d")
+                if since not in ("24h", "7d", "30d", "90d", "all"):
+                    since = "30d"
+                node_type = request.args.get("node_type", "all")
+                if node_type not in ("all", "repeater", "roomserver"):
+                    node_type = "all"
+                data = self._get_multibyte_rollout_data(
+                    since=since, node_type=node_type
+                )
                 return jsonify(data)
             except Exception as e:
                 self.logger.error(f"Error getting multibyte rollout data: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/cache')
+        @self.app.route("/api/cache")
         def api_cache():
             """Get cache data"""
             try:
@@ -2610,9 +3021,9 @@ class BotDataViewer:
                 return jsonify(cache_data)
             except Exception as e:
                 self.logger.error(f"Error getting cache: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/database')
+        @self.app.route("/api/database")
         def api_database():
             """Get database information"""
             try:
@@ -2620,9 +3031,9 @@ class BotDataViewer:
                 return jsonify(db_info)
             except Exception as e:
                 self.logger.error(f"Error getting database info: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/optimize-database', methods=['POST'])
+        @self.app.route("/api/optimize-database", methods=["POST"])
         def api_optimize_database():
             """Optimize database using VACUUM, ANALYZE, and REINDEX"""
             try:
@@ -2630,23 +3041,25 @@ class BotDataViewer:
                 return jsonify(result)
             except Exception as e:
                 self.logger.error(f"Error optimizing database: {e}")
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
 
-        @self.app.route('/api/mesh/nodes')
+        @self.app.route("/api/mesh/nodes")
         def api_mesh_nodes():
             """Get all repeater nodes with locations and metadata. Prefix length from query param or [Bot] prefix_bytes."""
             conn = None
             try:
-                prefix_hex_chars = request.args.get('prefix_hex_chars', type=int)
-                days = request.args.get('days', type=int)
+                prefix_hex_chars = request.args.get("prefix_hex_chars", type=int)
+                days = request.args.get("days", type=int)
                 if prefix_hex_chars not in (2, 4, 6):
-                    prefix_hex_chars = self.config.getint('Bot', 'prefix_bytes', fallback=1) * 2
+                    prefix_hex_chars = (
+                        self.config.getint("Bot", "prefix_bytes", fallback=1) * 2
+                    )
                 if prefix_hex_chars <= 0:
                     prefix_hex_chars = 2
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
 
-                query = f'''
+                query = f"""
                     SELECT
                         public_key,
                         SUBSTR(public_key, 1, {prefix_hex_chars}) as prefix,
@@ -2663,42 +3076,44 @@ class BotDataViewer:
                     AND longitude IS NOT NULL
                     AND latitude != 0
                     AND longitude != 0
-                '''
+                """
                 params = []
                 if days is not None:
-                    query += '''
+                    query += """
                     AND COALESCE(NULLIF(last_heard, ''), last_advert_timestamp)
                         >= datetime("now", "-" || ? || " days")
-                    '''
+                    """
                     params.append(days)
-                query += ' ORDER BY name'
+                query += " ORDER BY name"
 
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
 
                 nodes = []
                 for row in rows:
-                    nodes.append({
-                        'public_key': row['public_key'],
-                        'prefix': row['prefix'].lower(),
-                        'name': row['name'] or f"Node {row['prefix']}",
-                        'latitude': float(row['latitude']),
-                        'longitude': float(row['longitude']),
-                        'role': row['role'],
-                        'is_starred': bool(row['is_starred']),
-                        'last_heard': row['last_heard'],
-                        'last_advert_timestamp': row['last_advert_timestamp']
-                    })
+                    nodes.append(
+                        {
+                            "public_key": row["public_key"],
+                            "prefix": row["prefix"].lower(),
+                            "name": row["name"] or f"Node {row['prefix']}",
+                            "latitude": float(row["latitude"]),
+                            "longitude": float(row["longitude"]),
+                            "role": row["role"],
+                            "is_starred": bool(row["is_starred"]),
+                            "last_heard": row["last_heard"],
+                            "last_advert_timestamp": row["last_advert_timestamp"],
+                        }
+                    )
 
-                return jsonify({'nodes': nodes})
+                return jsonify({"nodes": nodes})
             except Exception as e:
                 self.logger.error(f"Error getting mesh nodes: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/mesh/edges')
+        @self.app.route("/api/mesh/edges")
         def api_mesh_edges():
             """Get all graph edges with metadata.
 
@@ -2709,24 +3124,26 @@ class BotDataViewer:
             conn = None
             try:
                 # Get optional query parameters
-                min_observations = request.args.get('min_observations', type=int)
-                days = request.args.get('days', type=int)
-                min_distance = request.args.get('min_distance', type=float)
-                max_distance = request.args.get('max_distance', type=float)
-                evidence = request.args.get('evidence', 'all')
-                force_refresh = request.args.get('refresh') == '1'
+                min_observations = request.args.get("min_observations", type=int)
+                days = request.args.get("days", type=int)
+                min_distance = request.args.get("min_distance", type=float)
+                max_distance = request.args.get("max_distance", type=float)
+                evidence = request.args.get("evidence", "all")
+                force_refresh = request.args.get("refresh") == "1"
 
-                if evidence == 'multibyte':
+                if evidence == "multibyte":
                     edges, prefix_hex_chars = self._derive_multibyte_evidence_graph(
                         days=days,
                         min_observations=min_observations,
                         force_refresh=force_refresh,
                     )
-                    return jsonify({
-                        'edges': edges,
-                        'prefix_hex_chars': prefix_hex_chars,
-                        'evidence': 'multibyte',
-                    })
+                    return jsonify(
+                        {
+                            "edges": edges,
+                            "prefix_hex_chars": prefix_hex_chars,
+                            "evidence": "multibyte",
+                        }
+                    )
 
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
@@ -2736,7 +3153,7 @@ class BotDataViewer:
                 # multi-byte edge disappearing from the window can collapse
                 # distinct nodes onto one shorter prefix in the browser.
                 cursor.execute(
-                    '''
+                    """
                     SELECT COALESCE(
                         MAX(
                             CASE
@@ -2748,11 +3165,11 @@ class BotDataViewer:
                         2
                     ) AS prefix_hex_chars
                     FROM mesh_connections
-                    '''
+                    """
                 )
-                prefix_hex_chars = cursor.fetchone()['prefix_hex_chars']
+                prefix_hex_chars = cursor.fetchone()["prefix_hex_chars"]
 
-                query = '''
+                query = """
                     SELECT
                         from_prefix,
                         to_prefix,
@@ -2765,11 +3182,11 @@ class BotDataViewer:
                         geographic_distance
                     FROM mesh_connections
                     WHERE 1=1
-                '''
+                """
                 params = []
 
                 if min_observations is not None:
-                    query += ' AND observation_count >= ?'
+                    query += " AND observation_count >= ?"
                     params.append(min_observations)
 
                 if days is not None:
@@ -2777,48 +3194,56 @@ class BotDataViewer:
                     params.append(days)
 
                 if min_distance is not None:
-                    query += ' AND geographic_distance >= ?'
+                    query += " AND geographic_distance >= ?"
                     params.append(min_distance)
 
                 if max_distance is not None:
-                    query += ' AND geographic_distance <= ?'
+                    query += " AND geographic_distance <= ?"
                     params.append(max_distance)
 
-                query += ' ORDER BY last_seen DESC'
+                query += " ORDER BY last_seen DESC"
 
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
 
                 edges = []
                 for row in rows:
-                    fp, tp = row['from_prefix'], row['to_prefix']
-                    prefix_hex_chars = max(prefix_hex_chars, len(fp) if fp else 0, len(tp) if tp else 0)
+                    fp, tp = row["from_prefix"], row["to_prefix"]
+                    prefix_hex_chars = max(
+                        prefix_hex_chars, len(fp) if fp else 0, len(tp) if tp else 0
+                    )
                     # Edges keyed at 4+ hex chars were necessarily created (or promoted)
                     # by a multi-byte path observation; 2-char keys carry only ambiguous
                     # single-byte evidence.
-                    is_multibyte = bool(fp) and bool(tp) and len(fp) >= 4 and len(tp) >= 4
-                    edges.append({
-                        'from_prefix': fp.lower() if fp else '',
-                        'to_prefix': tp.lower() if tp else '',
-                        'from_public_key': row['from_public_key'],
-                        'to_public_key': row['to_public_key'],
-                        'observation_count': row['observation_count'],
-                        'first_seen': row['first_seen'],
-                        'last_seen': row['last_seen'],
-                        'avg_hop_position': row['avg_hop_position'],
-                        'geographic_distance': row['geographic_distance'],
-                        'evidence': 'multibyte' if is_multibyte else 'singlebyte'
-                    })
+                    is_multibyte = (
+                        bool(fp) and bool(tp) and len(fp) >= 4 and len(tp) >= 4
+                    )
+                    edges.append(
+                        {
+                            "from_prefix": fp.lower() if fp else "",
+                            "to_prefix": tp.lower() if tp else "",
+                            "from_public_key": row["from_public_key"],
+                            "to_public_key": row["to_public_key"],
+                            "observation_count": row["observation_count"],
+                            "first_seen": row["first_seen"],
+                            "last_seen": row["last_seen"],
+                            "avg_hop_position": row["avg_hop_position"],
+                            "geographic_distance": row["geographic_distance"],
+                            "evidence": "multibyte" if is_multibyte else "singlebyte",
+                        }
+                    )
 
-                return jsonify({'edges': edges, 'prefix_hex_chars': prefix_hex_chars or 2})
+                return jsonify(
+                    {"edges": edges, "prefix_hex_chars": prefix_hex_chars or 2}
+                )
             except Exception as e:
                 self.logger.error(f"Error getting mesh edges: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/mesh/stats')
+        @self.app.route("/api/mesh/stats")
         def api_mesh_stats():
             """Get graph statistics"""
             conn = None
@@ -2827,7 +3252,7 @@ class BotDataViewer:
                 cursor = conn.cursor()
 
                 # Get node count
-                cursor.execute('''
+                cursor.execute("""
                     SELECT COUNT(*) as count
                     FROM complete_contact_tracking
                     WHERE role IN ('repeater', 'roomserver')
@@ -2835,11 +3260,11 @@ class BotDataViewer:
                     AND longitude IS NOT NULL
                     AND latitude != 0
                     AND longitude != 0
-                ''')
-                node_count = cursor.fetchone()['count']
+                """)
+                node_count = cursor.fetchone()["count"]
 
                 # Get edge statistics
-                cursor.execute('''
+                cursor.execute("""
                     SELECT
                         COUNT(*) as total_edges,
                         SUM(observation_count) as total_observations,
@@ -2853,11 +3278,11 @@ class BotDataViewer:
                         COUNT(CASE WHEN LENGTH(from_prefix) >= 4 AND LENGTH(to_prefix) >= 4 THEN 1 END) as multibyte_edges,
                         COUNT(CASE WHEN last_seen >= datetime("now", "-1 days") THEN 1 END) as recent_edges_24h
                     FROM mesh_connections
-                ''')
+                """)
                 edge_stats = cursor.fetchone()
 
                 # Get most connected nodes
-                cursor.execute('''
+                cursor.execute("""
                     SELECT
                         LOWER(prefix) AS prefix,
                         SUM(connection_count) AS connection_count
@@ -2873,66 +3298,76 @@ class BotDataViewer:
                     GROUP BY LOWER(prefix)
                     ORDER BY connection_count DESC, prefix
                     LIMIT 10
-                ''')
+                """)
                 top_connected = [
-                    (row['prefix'], row['connection_count'])
+                    (row["prefix"], row["connection_count"])
                     for row in cursor.fetchall()
                 ]
 
                 stats = {
-                    'node_count': node_count,
-                    'total_edges': edge_stats['total_edges'] or 0,
-                    'total_observations': edge_stats['total_observations'] or 0,
-                    'avg_observations': round(edge_stats['avg_observations'] or 0, 2),
-                    'avg_distance': round(edge_stats['avg_distance'] or 0, 2) if edge_stats['avg_distance'] else None,
-                    'min_distance': round(edge_stats['min_distance'] or 0, 2) if edge_stats['min_distance'] else None,
-                    'max_distance': round(edge_stats['max_distance'] or 0, 2) if edge_stats['max_distance'] else None,
-                    'edges_with_from_key': edge_stats['edges_with_from_key'] or 0,
-                    'edges_with_to_key': edge_stats['edges_with_to_key'] or 0,
-                    'edges_with_both_keys': edge_stats['edges_with_both_keys'] or 0,
-                    'multibyte_edges': edge_stats['multibyte_edges'] or 0,
-                    'top_connected': [{'prefix': prefix, 'count': count} for prefix, count in top_connected],
-                    'recent_edges_24h': edge_stats['recent_edges_24h'] or 0
+                    "node_count": node_count,
+                    "total_edges": edge_stats["total_edges"] or 0,
+                    "total_observations": edge_stats["total_observations"] or 0,
+                    "avg_observations": round(edge_stats["avg_observations"] or 0, 2),
+                    "avg_distance": round(edge_stats["avg_distance"] or 0, 2)
+                    if edge_stats["avg_distance"]
+                    else None,
+                    "min_distance": round(edge_stats["min_distance"] or 0, 2)
+                    if edge_stats["min_distance"]
+                    else None,
+                    "max_distance": round(edge_stats["max_distance"] or 0, 2)
+                    if edge_stats["max_distance"]
+                    else None,
+                    "edges_with_from_key": edge_stats["edges_with_from_key"] or 0,
+                    "edges_with_to_key": edge_stats["edges_with_to_key"] or 0,
+                    "edges_with_both_keys": edge_stats["edges_with_both_keys"] or 0,
+                    "multibyte_edges": edge_stats["multibyte_edges"] or 0,
+                    "top_connected": [
+                        {"prefix": prefix, "count": count}
+                        for prefix, count in top_connected
+                    ],
+                    "recent_edges_24h": edge_stats["recent_edges_24h"] or 0,
                 }
 
                 # Bot's own position (config [Bot] bot_latitude/bot_longitude), used by
                 # the mesh page to frame the initial map view on the home mesh
-                bot_lat = self.config.getfloat('Bot', 'bot_latitude', fallback=None)
-                bot_lon = self.config.getfloat('Bot', 'bot_longitude', fallback=None)
+                bot_lat = self.config.getfloat("Bot", "bot_latitude", fallback=None)
+                bot_lon = self.config.getfloat("Bot", "bot_longitude", fallback=None)
                 if bot_lat is not None and bot_lon is not None:
-                    stats['bot_location'] = {'latitude': bot_lat, 'longitude': bot_lon}
+                    stats["bot_location"] = {"latitude": bot_lat, "longitude": bot_lon}
 
                 return jsonify(stats)
             except Exception as e:
                 self.logger.error(f"Error getting mesh stats: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/mesh/resolve-path', methods=['POST'])
+        @self.app.route("/api/mesh/resolve-path", methods=["POST"])
         def api_resolve_path():
             """Resolve a hex path to repeater names and locations using the same algorithm as path command"""
             try:
                 data = request.get_json()
                 if not data:
-                    return jsonify({'error': 'JSON body required'}), 400
+                    return jsonify({"error": "JSON body required"}), 400
 
-                path_input = data.get('path', '').strip()
+                path_input = data.get("path", "").strip()
                 if not path_input:
-                    return jsonify({'error': 'Path input required'}), 400
+                    return jsonify({"error": "Path input required"}), 400
 
                 # Check if db_manager is initialized
-                if not hasattr(self, 'db_manager') or not self.db_manager:
+                if not hasattr(self, "db_manager") or not self.db_manager:
                     self.logger.error("db_manager not initialized")
-                    return jsonify({'error': 'Database not initialized'}), 500
+                    return jsonify({"error": "Database not initialized"}), 500
 
                 resolved_path = self._resolve_path(path_input)
                 return jsonify(resolved_path)
             except Exception as e:
                 import traceback
+
                 error_trace = traceback.format_exc()
                 self.logger.error(f"Error resolving path: {e}\n{error_trace}")
-                return jsonify({'error': str(e), 'traceback': error_trace}), 500
+                return jsonify({"error": str(e), "traceback": error_trace}), 500
 
-        @self.app.route('/api/stream_data', methods=['POST'])
+        @self.app.route("/api/stream_data", methods=["POST"])
         def api_stream_data():
             """API endpoint for receiving real-time data from bot.
 
@@ -2942,34 +3377,38 @@ class BotDataViewer:
             network-accessible.
             """
             try:
-                if not current_app.config.get('TESTING'):
-                    token = request.headers.get('X-Stream-Token', '')
-                    expected = self.db_manager.get_metadata('internal.stream_token') if self.db_manager else None
+                if not current_app.config.get("TESTING"):
+                    token = request.headers.get("X-Stream-Token", "")
+                    expected = (
+                        self.db_manager.get_metadata("internal.stream_token")
+                        if self.db_manager
+                        else None
+                    )
                     if not expected or not token or token != expected:
-                        return jsonify({'error': 'Unauthorized'}), 401
+                        return jsonify({"error": "Unauthorized"}), 401
 
                 data = request.get_json()
                 if not data:
-                    return jsonify({'error': 'No data provided'}), 400
+                    return jsonify({"error": "No data provided"}), 400
 
-                data_type = data.get('type')
-                if data_type == 'command':
-                    self._handle_command_data(data.get('data', {}))
-                elif data_type == 'packet':
-                    self._handle_packet_data(data.get('data', {}))
-                elif data_type == 'mesh_edge':
-                    self._handle_mesh_edge_data(data.get('data', {}))
-                elif data_type == 'mesh_node':
-                    self._handle_mesh_node_data(data.get('data', {}))
+                data_type = data.get("type")
+                if data_type == "command":
+                    self._handle_command_data(data.get("data", {}))
+                elif data_type == "packet":
+                    self._handle_packet_data(data.get("data", {}))
+                elif data_type == "mesh_edge":
+                    self._handle_mesh_edge_data(data.get("data", {}))
+                elif data_type == "mesh_node":
+                    self._handle_mesh_node_data(data.get("data", {}))
                 else:
-                    return jsonify({'error': 'Invalid data type'}), 400
+                    return jsonify({"error": "Invalid data type"}), 400
 
-                return jsonify({'status': 'success'})
+                return jsonify({"status": "success"})
             except Exception as e:
                 self.logger.error(f"Error in stream_data endpoint: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/recent_commands')
+        @self.app.route("/api/recent_commands")
         def api_recent_commands():
             """API endpoint to get recent commands from database"""
             try:
@@ -2983,12 +3422,15 @@ class BotDataViewer:
                 with closing(sqlite3.connect(self.db_path, timeout=60)) as conn:
                     cursor = conn.cursor()
 
-                    cursor.execute('''
+                    cursor.execute(
+                        """
                         SELECT data FROM packet_stream
                         WHERE type = 'command' AND timestamp > ?
                         ORDER BY timestamp DESC
                         LIMIT 100
-                    ''', (cutoff_time,))
+                    """,
+                        (cutoff_time,),
+                    )
 
                     rows = cursor.fetchall()
 
@@ -3001,56 +3443,75 @@ class BotDataViewer:
                         except Exception as e:
                             self.logger.debug(f"Error parsing command data: {e}")
 
-                    return jsonify({'commands': commands})
+                    return jsonify({"commands": commands})
 
             except Exception as e:
                 self.logger.error(f"Error getting recent commands: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
         # ── Export ──────────────────────────────────────────────────────────
 
-        @self.app.route('/api/export/contacts')
+        @self.app.route("/api/export/contacts")
         def api_export_contacts():
             """Export contact tracking data as CSV or JSON.
             Query params: format=csv|json (default json), since=24h|7d|30d|90d|all (default 30d)."""
             import csv
             import io
-            fmt = request.args.get('format', 'json').lower()
-            since = request.args.get('since', '30d')
-            if since not in ('24h', '7d', '30d', '90d', 'all'):
-                since = '30d'
+
+            fmt = request.args.get("format", "json").lower()
+            since = request.args.get("since", "30d")
+            if since not in ("24h", "7d", "30d", "90d", "all"):
+                since = "30d"
             try:
                 result = self._get_tracking_data(since=since, include_detail=True)
-                contacts = result.get('tracking_data', [])
-                if fmt == 'csv':
+                contacts = result.get("tracking_data", [])
+                if fmt == "csv":
                     fields = [
-                        'user_id', 'username', 'role', 'device_type',
-                        'latitude', 'longitude', 'city', 'state', 'country',
-                        'snr', 'hop_count', 'first_heard', 'last_seen',
-                        'advert_count', 'total_messages', 'distance', 'is_starred',
+                        "user_id",
+                        "username",
+                        "role",
+                        "device_type",
+                        "latitude",
+                        "longitude",
+                        "city",
+                        "state",
+                        "country",
+                        "snr",
+                        "hop_count",
+                        "first_heard",
+                        "last_seen",
+                        "advert_count",
+                        "total_messages",
+                        "distance",
+                        "is_starred",
                     ]
                     buf = io.StringIO()
-                    w = csv.DictWriter(buf, fieldnames=fields, extrasaction='ignore')
+                    w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
                     w.writeheader()
                     w.writerows(contacts)
                     return Response(
                         buf.getvalue(),
-                        mimetype='text/csv',
-                        headers={'Content-Disposition': f'attachment; filename="contacts_{since}.csv"'},
+                        mimetype="text/csv",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="contacts_{since}.csv"'
+                        },
                     )
                 else:
                     import json as _json
+
                     body = _json.dumps(contacts, indent=2, default=str)
                     return Response(
                         body,
-                        mimetype='application/json',
-                        headers={'Content-Disposition': f'attachment; filename="contacts_{since}.json"'},
+                        mimetype="application/json",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="contacts_{since}.json"'
+                        },
                     )
             except Exception as e:
                 self.logger.error(f"Error exporting contacts: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/export/paths')
+        @self.app.route("/api/export/paths")
         def api_export_paths():
             """Export observed path data as CSV or JSON.
             Query params: format=csv|json (default json), since=24h|7d|30d|90d|all (default 30d)."""
@@ -3058,15 +3519,17 @@ class BotDataViewer:
             import io
             import json as _json
             import sqlite3
-            fmt = request.args.get('format', 'json').lower()
-            since = request.args.get('since', '30d')
-            if since not in ('24h', '7d', '30d', '90d', 'all'):
-                since = '30d'
+
+            fmt = request.args.get("format", "json").lower()
+            since = request.args.get("since", "30d")
+            if since not in ("24h", "7d", "30d", "90d", "all"):
+                since = "30d"
             try:
-                days_map = {'24h': 1, '7d': 7, '30d': 30, '90d': 90}
+                days_map = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
                 where = (
                     f" AND op.last_seen >= datetime('now', 'localtime', '-{days_map[since]} days')"
-                    if since != 'all' else ''
+                    if since != "all"
+                    else ""
                 )
                 with closing(sqlite3.connect(self.db_path, timeout=60)) as conn:
                     conn.row_factory = sqlite3.Row
@@ -3084,200 +3547,257 @@ class BotDataViewer:
                         LIMIT 10000
                     """)
                     rows = [dict(r) for r in cursor.fetchall()]
-                if fmt == 'csv':
+                if fmt == "csv":
                     fields = [
-                        'public_key', 'contact_name', 'path_hex', 'path_length',
-                        'observation_count', 'last_seen', 'from_prefix', 'to_prefix',
-                        'bytes_per_hop', 'packet_type',
+                        "public_key",
+                        "contact_name",
+                        "path_hex",
+                        "path_length",
+                        "observation_count",
+                        "last_seen",
+                        "from_prefix",
+                        "to_prefix",
+                        "bytes_per_hop",
+                        "packet_type",
                     ]
                     buf = io.StringIO()
-                    w = csv.DictWriter(buf, fieldnames=fields, extrasaction='ignore')
+                    w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
                     w.writeheader()
                     w.writerows(rows)
                     return Response(
                         buf.getvalue(),
-                        mimetype='text/csv',
-                        headers={'Content-Disposition': f'attachment; filename="paths_{since}.csv"'},
+                        mimetype="text/csv",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="paths_{since}.csv"'
+                        },
                     )
                 else:
                     body = _json.dumps(rows, indent=2, default=str)
                     return Response(
                         body,
-                        mimetype='application/json',
-                        headers={'Content-Disposition': f'attachment; filename="paths_{since}.json"'},
+                        mimetype="application/json",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="paths_{since}.json"'
+                        },
                     )
             except Exception as e:
                 self.logger.error(f"Error exporting paths: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/geocode-contact', methods=['POST'])
+        @self.app.route("/api/geocode-contact", methods=["POST"])
         def api_geocode_contact():
             """Manually geocode a contact by public_key"""
             conn = None
             try:
                 data = request.get_json()
-                if not data or 'public_key' not in data:
-                    return jsonify({'error': 'public_key is required'}), 400
+                if not data or "public_key" not in data:
+                    return jsonify({"error": "public_key is required"}), 400
 
-                public_key = data['public_key']
+                public_key = data["public_key"]
 
                 # Get contact data from database
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
 
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT latitude, longitude, name, city, state, country
                     FROM complete_contact_tracking
                     WHERE public_key = ?
-                ''', (public_key,))
+                """,
+                    (public_key,),
+                )
 
                 contact = cursor.fetchone()
                 if not contact:
-                    return jsonify({'error': 'Contact not found'}), 404
+                    return jsonify({"error": "Contact not found"}), 404
 
-                lat = contact['latitude']
-                lon = contact['longitude']
-                name = contact['name']
+                lat = contact["latitude"]
+                lon = contact["longitude"]
+                name = contact["name"]
 
                 # Check if we have valid coordinates
                 if lat is None or lon is None or lat == 0.0 or lon == 0.0:
-                    return jsonify({'error': 'Contact does not have valid coordinates'}), 400
+                    return jsonify(
+                        {"error": "Contact does not have valid coordinates"}
+                    ), 400
 
                 # Perform geocoding
-                self.logger.info(f"Manual geocoding requested for {name} ({public_key[:16]}...) at coordinates {lat}, {lon}")
+                self.logger.info(
+                    f"Manual geocoding requested for {name} ({public_key[:16]}...) at coordinates {lat}, {lon}"
+                )
                 # sqlite3.Row objects use dictionary-style access with []
-                current_city = contact['city']
-                current_state = contact['state']
-                current_country = contact['country']
-                self.logger.debug(f"Current location data - city: {current_city}, state: {current_state}, country: {current_country}")
+                current_city = contact["city"]
+                current_state = contact["state"]
+                current_country = contact["country"]
+                self.logger.debug(
+                    f"Current location data - city: {current_city}, state: {current_state}, country: {current_country}"
+                )
+
+                # Outside the try below: a failure to build the manager is a
+                # setup problem, not a geocoding one, and must not be reported
+                # to the user as "Geocoding exception".
+                repeater_manager = self._get_repeater_manager()
 
                 try:
-                    location_info = self.repeater_manager._get_full_location_from_coordinates(lat, lon)
+                    location_info = (
+                        repeater_manager._get_full_location_from_coordinates(lat, lon)
+                    )
                     self.logger.debug(f"Geocoding result for {name}: {location_info}")
                 except Exception as geocode_error:
-                    self.logger.error(f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}", exc_info=True)
-                    return jsonify({
-                        'success': False,
-                        'error': f'Geocoding exception: {str(geocode_error)}',
-                        'location': {}
-                    }), 500
+                    self.logger.error(
+                        f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}",
+                        exc_info=True,
+                    )
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": f"Geocoding exception: {str(geocode_error)}",
+                            "location": {},
+                        }
+                    ), 500
 
                 # Check if geocoding returned any useful data
-                has_location_data = location_info.get('city') or location_info.get('state') or location_info.get('country')
+                has_location_data = (
+                    location_info.get("city")
+                    or location_info.get("state")
+                    or location_info.get("country")
+                )
 
                 if not has_location_data:
-                    self.logger.warning(f"Geocoding returned no location data for {name} at {lat}, {lon}. Result: {location_info}")
-                    return jsonify({
-                        'success': False,
-                        'error': 'Geocoding returned no location data. The coordinates may be invalid or the geocoding service may be unavailable.',
-                        'location': location_info
-                    }), 500
+                    self.logger.warning(
+                        f"Geocoding returned no location data for {name} at {lat}, {lon}. Result: {location_info}"
+                    )
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": "Geocoding returned no location data. The coordinates may be invalid or the geocoding service may be unavailable.",
+                            "location": location_info,
+                        }
+                    ), 500
 
                 # Update database with new location data
-                cursor.execute('''
+                cursor.execute(
+                    """
                     UPDATE complete_contact_tracking
                     SET city = ?, state = ?, country = ?
                     WHERE public_key = ?
-                ''', (
-                    location_info.get('city'),
-                    location_info.get('state'),
-                    location_info.get('country'),
-                    public_key
-                ))
+                """,
+                    (
+                        location_info.get("city"),
+                        location_info.get("state"),
+                        location_info.get("country"),
+                        public_key,
+                    ),
+                )
 
                 conn.commit()
 
                 # Build success message with what was found
                 found_parts = []
-                if location_info.get('city'):
+                if location_info.get("city"):
                     found_parts.append(f"city: {location_info['city']}")
-                if location_info.get('state'):
+                if location_info.get("state"):
                     found_parts.append(f"state: {location_info['state']}")
-                if location_info.get('country'):
+                if location_info.get("country"):
                     found_parts.append(f"country: {location_info['country']}")
 
-                success_message = f'Successfully geocoded {name} - Found {", ".join(found_parts)}'
+                success_message = (
+                    f"Successfully geocoded {name} - Found {', '.join(found_parts)}"
+                )
                 self.logger.info(f"Successfully geocoded {name}: {location_info}")
 
-                return jsonify({
-                    'success': True,
-                    'location': location_info,
-                    'message': success_message
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "location": location_info,
+                        "message": success_message,
+                    }
+                )
 
             except Exception as e:
                 self.logger.error(f"Error geocoding contact: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/toggle-star-contact', methods=['POST'])
+        @self.app.route("/api/toggle-star-contact", methods=["POST"])
         def api_toggle_star_contact():
             """Toggle star status for any contact by public_key."""
             conn = None
             try:
                 data = request.get_json()
-                if not data or 'public_key' not in data:
-                    return jsonify({'error': 'public_key is required'}), 400
+                if not data or "public_key" not in data:
+                    return jsonify({"error": "public_key is required"}), 400
 
-                public_key = data['public_key']
+                public_key = data["public_key"]
 
                 # Get contact data from database
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
 
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT name, is_starred, role FROM complete_contact_tracking
                     WHERE public_key = ?
-                ''', (public_key,))
+                """,
+                    (public_key,),
+                )
 
                 contact = cursor.fetchone()
                 if not contact:
-                    return jsonify({'error': 'Contact not found'}), 404
+                    return jsonify({"error": "Contact not found"}), 404
 
                 # Toggle star status
-                current_starred = contact['is_starred']
+                current_starred = contact["is_starred"]
                 new_star_status = 1 if not current_starred else 0
-                cursor.execute('''
+                cursor.execute(
+                    """
                     UPDATE complete_contact_tracking
                     SET is_starred = ?
                     WHERE public_key = ?
-                ''', (new_star_status, public_key))
+                """,
+                    (new_star_status, public_key),
+                )
 
                 conn.commit()
 
-                action = 'starred' if new_star_status else 'unstarred'
-                self.logger.info(f"Contact {contact['name']} ({public_key[:16]}...) {action}")
+                action = "starred" if new_star_status else "unstarred"
+                self.logger.info(
+                    f"Contact {contact['name']} ({public_key[:16]}...) {action}"
+                )
 
-                return jsonify({
-                    'success': True,
-                    'is_starred': bool(new_star_status),
-                    'message': f'Contact {action} successfully'
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "is_starred": bool(new_star_status),
+                        "message": f"Contact {action} successfully",
+                    }
+                )
 
             except Exception as e:
                 self.logger.error(f"Error toggling star status: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/decode-path', methods=['POST'])
+        @self.app.route("/api/decode-path", methods=["POST"])
         def api_decode_path():
             """Decode path hex string to repeater names (similar to path command).
             Optional bytes_per_hop (1, 2, or 3): use when path came from a packet with multi-byte hops
             so decoding and graph selection use the correct prefix length."""
             try:
                 data = request.get_json()
-                if not data or 'path_hex' not in data:
-                    return jsonify({'error': 'path_hex is required'}), 400
+                if not data or "path_hex" not in data:
+                    return jsonify({"error": "path_hex is required"}), 400
 
-                path_hex = data['path_hex']
+                path_hex = data["path_hex"]
                 if not path_hex:
-                    return jsonify({'error': 'path_hex cannot be empty'}), 400
+                    return jsonify({"error": "path_hex cannot be empty"}), 400
 
-                bytes_per_hop = data.get('bytes_per_hop')
+                bytes_per_hop = data.get("bytes_per_hop")
                 if bytes_per_hop is not None:
                     try:
                         bytes_per_hop = int(bytes_per_hop)
@@ -3287,158 +3807,203 @@ class BotDataViewer:
                         bytes_per_hop = None
 
                 # Decode the path (use bytes_per_hop when provided, e.g. from packet/contact)
-                decoded_path = self._decode_path_hex(path_hex, bytes_per_hop=bytes_per_hop)
+                decoded_path = self._decode_path_hex(
+                    path_hex, bytes_per_hop=bytes_per_hop
+                )
 
-                return jsonify({
-                    'success': True,
-                    'path': decoded_path
-                })
+                return jsonify({"success": True, "path": decoded_path})
 
             except Exception as e:
                 self.logger.error(f"Error decoding path: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/delete-contact', methods=['POST'])
+        @self.app.route("/api/delete-contact", methods=["POST"])
         def api_delete_contact():
             """Delete a contact from the complete contact tracking database"""
             conn = None
             try:
                 data = request.get_json()
-                if not data or 'public_key' not in data:
-                    return jsonify({'error': 'public_key is required'}), 400
+                if not data or "public_key" not in data:
+                    return jsonify({"error": "public_key is required"}), 400
 
-                public_key = data['public_key']
+                public_key = data["public_key"]
 
                 # Get contact data from database to log what we're deleting
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
 
                 # Check if contact exists
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT name, role, device_type FROM complete_contact_tracking
                     WHERE public_key = ?
-                ''', (public_key,))
+                """,
+                    (public_key,),
+                )
 
                 contact = cursor.fetchone()
                 if not contact:
-                    return jsonify({'error': 'Contact not found'}), 404
+                    return jsonify({"error": "Contact not found"}), 404
 
-                contact_name = contact['name']
-                contact_role = contact['role']
-                contact_device_type = contact['device_type']
+                contact_name = contact["name"]
+                contact_role = contact["role"]
+                contact_device_type = contact["device_type"]
 
                 # Delete from all related tables
                 deleted_counts = {}
 
                 # Delete from complete_contact_tracking
-                cursor.execute('DELETE FROM complete_contact_tracking WHERE public_key = ?', (public_key,))
-                deleted_counts['complete_contact_tracking'] = cursor.rowcount
+                cursor.execute(
+                    "DELETE FROM complete_contact_tracking WHERE public_key = ?",
+                    (public_key,),
+                )
+                deleted_counts["complete_contact_tracking"] = cursor.rowcount
 
                 # Delete from daily_stats
-                cursor.execute('DELETE FROM daily_stats WHERE public_key = ?', (public_key,))
-                deleted_counts['daily_stats'] = cursor.rowcount
+                cursor.execute(
+                    "DELETE FROM daily_stats WHERE public_key = ?", (public_key,)
+                )
+                deleted_counts["daily_stats"] = cursor.rowcount
 
                 # Delete from repeater_contacts if it exists
                 try:
-                    cursor.execute('DELETE FROM repeater_contacts WHERE public_key = ?', (public_key,))
-                    deleted_counts['repeater_contacts'] = cursor.rowcount
+                    cursor.execute(
+                        "DELETE FROM repeater_contacts WHERE public_key = ?",
+                        (public_key,),
+                    )
+                    deleted_counts["repeater_contacts"] = cursor.rowcount
                 except sqlite3.OperationalError:
                     # Table might not exist, that's okay
-                    deleted_counts['repeater_contacts'] = 0
+                    deleted_counts["repeater_contacts"] = 0
 
                 conn.commit()
 
                 # Log the deletion
-                self.logger.info(f"Contact deleted: {contact_name} ({public_key[:16]}...) - Role: {contact_role}, Device: {contact_device_type}")
+                self.logger.info(
+                    f"Contact deleted: {contact_name} ({public_key[:16]}...) - Role: {contact_role}, Device: {contact_device_type}"
+                )
                 self.logger.debug(f"Deleted counts: {deleted_counts}")
 
-                return jsonify({
-                    'success': True,
-                    'message': f'Contact "{contact_name}" has been deleted successfully',
-                    'deleted_counts': deleted_counts
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": f'Contact "{contact_name}" has been deleted successfully',
+                        "deleted_counts": deleted_counts,
+                    }
+                )
 
             except Exception as e:
                 self.logger.error(f"Error deleting contact: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/contacts/purge-preview')
+        @self.app.route("/api/contacts/purge-preview")
         def api_contacts_purge_preview():
             """Return count and sample of contacts not heard within the last N days."""
-            days = request.args.get('days', 30, type=int)
+            days = request.args.get("days", 30, type=int)
             if days < 1:
-                return jsonify({'error': 'days must be >= 1'}), 400
+                return jsonify({"error": "days must be >= 1"}), 400
             conn = None
             try:
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT COUNT(*) AS cnt FROM complete_contact_tracking
                     WHERE last_heard < datetime('now', 'localtime', ? || ' days')
-                ''', (f'-{days}',))
-                count = cursor.fetchone()['cnt']
-                cursor.execute('''
+                """,
+                    (f"-{days}",),
+                )
+                count = cursor.fetchone()["cnt"]
+                cursor.execute(
+                    """
                     SELECT name, role, last_heard FROM complete_contact_tracking
                     WHERE last_heard < datetime('now', 'localtime', ? || ' days')
                     ORDER BY last_heard ASC
                     LIMIT 5
-                ''', (f'-{days}',))
+                """,
+                    (f"-{days}",),
+                )
                 samples = [dict(r) for r in cursor.fetchall()]
-                return jsonify({'count': count, 'days': days, 'samples': samples})
+                return jsonify({"count": count, "days": days, "samples": samples})
             except Exception as e:
                 self.logger.error(f"Error in purge preview: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/contacts/purge', methods=['POST'])
+        @self.app.route("/api/contacts/purge", methods=["POST"])
         def api_contacts_purge():
             """Delete all contacts not heard within the last N days."""
             data = request.get_json(silent=True) or {}
-            days = data.get('days', 30)
+            days = data.get("days", 30)
             try:
                 days = int(days)
             except (TypeError, ValueError):
-                return jsonify({'error': 'days must be an integer'}), 400
+                return jsonify({"error": "days must be an integer"}), 400
             if days < 1:
-                return jsonify({'error': 'days must be >= 1'}), 400
+                return jsonify({"error": "days must be >= 1"}), 400
             conn = None
             try:
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
-                cutoff = f'-{days} days'
+                cutoff = f"-{days} days"
                 # Collect public_keys to purge so we can cascade
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT public_key FROM complete_contact_tracking
                     WHERE last_heard < datetime('now', 'localtime', ?)
-                ''', (cutoff,))
-                keys = [r['public_key'] for r in cursor.fetchall()]
+                """,
+                    (cutoff,),
+                )
+                keys = [r["public_key"] for r in cursor.fetchall()]
                 if not keys:
-                    return jsonify({'success': True, 'deleted': 0, 'message': 'No contacts matched the threshold'})
-                placeholders = ','.join('?' * len(keys))
-                cursor.execute(f'DELETE FROM complete_contact_tracking WHERE public_key IN ({placeholders})', keys)
+                    return jsonify(
+                        {
+                            "success": True,
+                            "deleted": 0,
+                            "message": "No contacts matched the threshold",
+                        }
+                    )
+                placeholders = ",".join("?" * len(keys))
+                cursor.execute(
+                    f"DELETE FROM complete_contact_tracking WHERE public_key IN ({placeholders})",
+                    keys,
+                )
                 deleted = cursor.rowcount
-                cursor.execute(f'DELETE FROM daily_stats WHERE public_key IN ({placeholders})', keys)
+                cursor.execute(
+                    f"DELETE FROM daily_stats WHERE public_key IN ({placeholders})",
+                    keys,
+                )
                 try:
-                    cursor.execute(f'DELETE FROM repeater_contacts WHERE public_key IN ({placeholders})', keys)
+                    cursor.execute(
+                        f"DELETE FROM repeater_contacts WHERE public_key IN ({placeholders})",
+                        keys,
+                    )
                 except sqlite3.OperationalError:
                     pass
                 conn.commit()
-                self.logger.info(f"Purged {deleted} contact(s) not heard in {days}+ days")
-                return jsonify({'success': True, 'deleted': deleted,
-                                'message': f'Purged {deleted} contact(s) not heard in {days}+ days'})
+                self.logger.info(
+                    f"Purged {deleted} contact(s) not heard in {days}+ days"
+                )
+                return jsonify(
+                    {
+                        "success": True,
+                        "deleted": deleted,
+                        "message": f"Purged {deleted} contact(s) not heard in {days}+ days",
+                    }
+                )
             except Exception as e:
                 self.logger.error(f"Error purging contacts: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/greeter')
+        @self.app.route("/api/greeter")
         def api_greeter():
             """Get greeter data including rollout status, settings, and greeted users"""
             conn = None
@@ -3447,18 +4012,22 @@ class BotDataViewer:
                 cursor = conn.cursor()
 
                 # Check if greeter tables exist
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='greeter_rollout'")
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='greeter_rollout'"
+                )
                 if not cursor.fetchone():
-                    return jsonify({
-                        'enabled': False,
-                        'rollout_active': False,
-                        'settings': {},
-                        'greeted_users': [],
-                        'error': 'Greeter tables not found'
-                    })
+                    return jsonify(
+                        {
+                            "enabled": False,
+                            "rollout_active": False,
+                            "settings": {},
+                            "greeted_users": [],
+                            "error": "Greeter tables not found",
+                        }
+                    )
 
                 # Get active rollout status
-                cursor.execute('''
+                cursor.execute("""
                     SELECT id, rollout_started_at, rollout_days, rollout_completed,
                            datetime(rollout_started_at, '+' || rollout_days || ' days') as end_date,
                            datetime('now') as current_time
@@ -3466,7 +4035,7 @@ class BotDataViewer:
                     WHERE rollout_completed = 0
                     ORDER BY rollout_started_at DESC
                     LIMIT 1
-                ''')
+                """)
                 rollout = cursor.fetchone()
 
                 rollout_active = False
@@ -3474,11 +4043,11 @@ class BotDataViewer:
                 time_remaining = None
 
                 if rollout:
-                    rollout_id = rollout['id']
-                    started_at_str = rollout['rollout_started_at']
-                    rollout_days = rollout['rollout_days']
-                    end_date_str = rollout['end_date']
-                    current_time_str = rollout['current_time']
+                    rollout_id = rollout["id"]
+                    started_at_str = rollout["rollout_started_at"]
+                    rollout_days = rollout["rollout_days"]
+                    end_date_str = rollout["end_date"]
+                    current_time_str = rollout["current_time"]
 
                     end_date = datetime.fromisoformat(end_date_str)
                     current_time = datetime.fromisoformat(current_time_str)
@@ -3487,48 +4056,64 @@ class BotDataViewer:
                         rollout_active = True
                         remaining_seconds = (end_date - current_time).total_seconds()
                         time_remaining = {
-                            'days': int(remaining_seconds // 86400),
-                            'hours': int((remaining_seconds % 86400) // 3600),
-                            'minutes': int((remaining_seconds % 3600) // 60),
-                            'seconds': int(remaining_seconds % 60),
-                            'total_seconds': int(remaining_seconds)
+                            "days": int(remaining_seconds // 86400),
+                            "hours": int((remaining_seconds % 86400) // 3600),
+                            "minutes": int((remaining_seconds % 3600) // 60),
+                            "seconds": int(remaining_seconds % 60),
+                            "total_seconds": int(remaining_seconds),
                         }
                         rollout_data = {
-                            'id': rollout_id,
-                            'started_at': started_at_str,
-                            'days': rollout_days,
-                            'end_date': end_date_str
+                            "id": rollout_id,
+                            "started_at": started_at_str,
+                            "days": rollout_days,
+                            "end_date": end_date_str,
                         }
 
                 # Get greeter settings from config
                 settings = {
-                    'enabled': self.config.getboolean('Greeter_Command', 'enabled', fallback=False),
-                    'greeting_message': self.config.get('Greeter_Command', 'greeting_message',
-                                                       fallback='Welcome to the mesh, {sender}!'),
-                    'rollout_days': self.config.getint('Greeter_Command', 'rollout_days', fallback=7),
-                    'include_mesh_info': self.config.getboolean('Greeter_Command', 'include_mesh_info',
-                                                               fallback=True),
-                    'mesh_info_format': self.config.get('Greeter_Command', 'mesh_info_format',
-                                                      fallback='\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters'),
-                    'per_channel_greetings': self.config.getboolean('Greeter_Command', 'per_channel_greetings',
-                                                                   fallback=False)
+                    "enabled": self.config.getboolean(
+                        "Greeter_Command", "enabled", fallback=False
+                    ),
+                    "greeting_message": self.config.get(
+                        "Greeter_Command",
+                        "greeting_message",
+                        fallback="Welcome to the mesh, {sender}!",
+                    ),
+                    "rollout_days": self.config.getint(
+                        "Greeter_Command", "rollout_days", fallback=7
+                    ),
+                    "include_mesh_info": self.config.getboolean(
+                        "Greeter_Command", "include_mesh_info", fallback=True
+                    ),
+                    "mesh_info_format": self.config.get(
+                        "Greeter_Command",
+                        "mesh_info_format",
+                        fallback="\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters",
+                    ),
+                    "per_channel_greetings": self.config.getboolean(
+                        "Greeter_Command", "per_channel_greetings", fallback=False
+                    ),
                 }
 
                 # Generate sample greeting — use str.replace() instead of .format()
                 # to avoid KeyError / info leaks from user-controlled templates
-                sample_greeting = settings['greeting_message'].replace('{sender}', 'SampleUser')
-                if settings['include_mesh_info']:
+                sample_greeting = settings["greeting_message"].replace(
+                    "{sender}", "SampleUser"
+                )
+                if settings["include_mesh_info"]:
                     sample_mesh_info = (
-                        settings['mesh_info_format']
-                        .replace('{total_contacts}', '100')
-                        .replace('{repeaters}', '5')
-                        .replace('{companions}', '95')
-                        .replace('{recent_activity_24h}', '10')
+                        settings["mesh_info_format"]
+                        .replace("{total_contacts}", "100")
+                        .replace("{repeaters}", "5")
+                        .replace("{companions}", "95")
+                        .replace("{recent_activity_24h}", "10")
                     )
                     sample_greeting += sample_mesh_info
 
                 # Check if message_stats table exists for last seen data
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='message_stats'")
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='message_stats'"
+                )
                 has_message_stats = cursor.fetchone() is not None
 
                 # Get greeted users - use GROUP BY to ensure only one entry per (sender_id, channel)
@@ -3536,30 +4121,48 @@ class BotDataViewer:
                 # We use MIN(greeted_at) to get the earliest (first) greeting time
                 # If per_channel_greetings is False, we'll still show one entry per user (channel will be NULL)
                 # If per_channel_greetings is True, we'll show one entry per user per channel
-                cursor.execute('''
+                cursor.execute("""
                     SELECT sender_id, channel, MIN(greeted_at) as greeted_at,
                            MAX(rollout_marked) as rollout_marked
                     FROM greeted_users
                     GROUP BY sender_id, channel
                     ORDER BY MIN(greeted_at) DESC
                     LIMIT 500
-                ''')
+                """)
                 greeted_users_rows = cursor.fetchall()
                 greeted_users = []
 
                 for row in greeted_users_rows:
                     # Access row data - handle both dict-style (Row) and tuple access
                     try:
-                        sender_id = row['sender_id'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[0]
-                        channel_raw = row['channel'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[1]
-                        greeted_at = row['greeted_at'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[2]
-                        rollout_marked = row['rollout_marked'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[3]
+                        sender_id = (
+                            row["sender_id"]
+                            if isinstance(row, dict) or hasattr(row, "__getitem__")
+                            else row[0]
+                        )
+                        channel_raw = (
+                            row["channel"]
+                            if isinstance(row, dict) or hasattr(row, "__getitem__")
+                            else row[1]
+                        )
+                        greeted_at = (
+                            row["greeted_at"]
+                            if isinstance(row, dict) or hasattr(row, "__getitem__")
+                            else row[2]
+                        )
+                        rollout_marked = (
+                            row["rollout_marked"]
+                            if isinstance(row, dict) or hasattr(row, "__getitem__")
+                            else row[3]
+                        )
                     except (KeyError, IndexError, TypeError) as e:
-                        self.logger.error(f"Error accessing row data: {e}, row type: {type(row)}")
+                        self.logger.error(
+                            f"Error accessing row data: {e}, row type: {type(row)}"
+                        )
                         continue
 
-                    sender_id = str(sender_id) if sender_id else ''
-                    channel = str(channel_raw) if channel_raw else '(global)'
+                    sender_id = str(sender_id) if sender_id else ""
+                    channel = str(channel_raw) if channel_raw else "(global)"
 
                     # Get last seen timestamp from message_stats if available
                     last_seen = None
@@ -3567,56 +4170,68 @@ class BotDataViewer:
                         # Get the most recent channel message (not DM) for this user
                         # If per_channel_greetings is enabled, match the specific channel
                         # Otherwise, get the most recent message from any channel
-                        if channel_raw:  # Use the raw channel value, not the formatted one
-                            cursor.execute('''
+                        if (
+                            channel_raw
+                        ):  # Use the raw channel value, not the formatted one
+                            cursor.execute(
+                                """
                                 SELECT MAX(timestamp) as last_seen
                                 FROM message_stats
                                 WHERE sender_id = ?
                                   AND channel = ?
                                   AND is_dm = 0
                                   AND channel IS NOT NULL
-                            ''', (sender_id, channel_raw))
+                            """,
+                                (sender_id, channel_raw),
+                            )
                         else:
                             # Global greeting - get last seen from any channel
-                            cursor.execute('''
+                            cursor.execute(
+                                """
                                 SELECT MAX(timestamp) as last_seen
                                 FROM message_stats
                                 WHERE sender_id = ?
                                   AND is_dm = 0
                                   AND channel IS NOT NULL
-                            ''', (sender_id,))
+                            """,
+                                (sender_id,),
+                            )
 
                         result = cursor.fetchone()
-                        if result and result['last_seen']:
-                            last_seen = result['last_seen']
+                        if result and result["last_seen"]:
+                            last_seen = result["last_seen"]
 
-                    greeted_users.append({
-                        'sender_id': sender_id,
-                        'channel': channel,
-                        'greeted_at': str(greeted_at),
-                        'rollout_marked': bool(rollout_marked),
-                        'last_seen': last_seen
-                    })
+                    greeted_users.append(
+                        {
+                            "sender_id": sender_id,
+                            "channel": channel,
+                            "greeted_at": str(greeted_at),
+                            "rollout_marked": bool(rollout_marked),
+                            "last_seen": last_seen,
+                        }
+                    )
 
-                return jsonify({
-                    'enabled': settings['enabled'],
-                    'rollout_active': rollout_active,
-                    'rollout_data': rollout_data,
-                    'time_remaining': time_remaining,
-                    'settings': settings,
-                    'sample_greeting': sample_greeting,
-                    'greeted_users': greeted_users,
-                    'total_greeted': len(greeted_users)
-                })
+                return jsonify(
+                    {
+                        "enabled": settings["enabled"],
+                        "rollout_active": rollout_active,
+                        "rollout_data": rollout_data,
+                        "time_remaining": time_remaining,
+                        "settings": settings,
+                        "sample_greeting": sample_greeting,
+                        "greeted_users": greeted_users,
+                        "total_greeted": len(greeted_users),
+                    }
+                )
 
             except Exception as e:
                 self.logger.error(f"Error getting greeter data: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/greeter/end-rollout', methods=['POST'])
+        @self.app.route("/api/greeter/end-rollout", methods=["POST"])
         def api_end_rollout():
             """End the active onboarding period"""
             conn = None
@@ -3625,102 +4240,126 @@ class BotDataViewer:
                 cursor = conn.cursor()
 
                 # Find active rollout
-                cursor.execute('''
+                cursor.execute("""
                     SELECT id FROM greeter_rollout
                     WHERE rollout_completed = 0
                     ORDER BY rollout_started_at DESC
                     LIMIT 1
-                ''')
+                """)
                 rollout = cursor.fetchone()
 
                 if not rollout:
-                    return jsonify({'success': False, 'error': 'No active rollout found'}), 404
+                    return jsonify(
+                        {"success": False, "error": "No active rollout found"}
+                    ), 404
 
-                rollout_id = rollout['id']
+                rollout_id = rollout["id"]
 
                 # Mark rollout as completed
-                cursor.execute('''
+                cursor.execute(
+                    """
                     UPDATE greeter_rollout
                     SET rollout_completed = 1
                     WHERE id = ?
-                ''', (rollout_id,))
+                """,
+                    (rollout_id,),
+                )
 
                 conn.commit()
 
-                self.logger.info(f"Greeter rollout {rollout_id} ended manually via web viewer")
+                self.logger.info(
+                    f"Greeter rollout {rollout_id} ended manually via web viewer"
+                )
 
-                return jsonify({
-                    'success': True,
-                    'message': 'Onboarding period ended successfully'
-                })
+                return jsonify(
+                    {"success": True, "message": "Onboarding period ended successfully"}
+                )
 
             except Exception as e:
                 self.logger.error(f"Error ending rollout: {e}", exc_info=True)
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/greeter/ungreet', methods=['POST'])
+        @self.app.route("/api/greeter/ungreet", methods=["POST"])
         def api_ungreet_user():
             """Mark a user as ungreeted (remove from greeted_users table)"""
             conn = None
             try:
                 data = request.get_json()
-                if not data or 'sender_id' not in data:
-                    return jsonify({'error': 'sender_id is required'}), 400
+                if not data or "sender_id" not in data:
+                    return jsonify({"error": "sender_id is required"}), 400
 
-                sender_id = data['sender_id']
-                channel = data.get('channel')  # Optional - if None, removes global greeting
+                sender_id = data["sender_id"]
+                channel = data.get(
+                    "channel"
+                )  # Optional - if None, removes global greeting
 
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
 
                 # Check if user exists
-                if channel and channel != '(global)':
-                    cursor.execute('''
+                if channel and channel != "(global)":
+                    cursor.execute(
+                        """
                         SELECT id FROM greeted_users
                         WHERE sender_id = ? AND channel = ?
-                    ''', (sender_id, channel))
+                    """,
+                        (sender_id, channel),
+                    )
                 else:
-                    cursor.execute('''
+                    cursor.execute(
+                        """
                         SELECT id FROM greeted_users
                         WHERE sender_id = ? AND channel IS NULL
-                    ''', (sender_id,))
+                    """,
+                        (sender_id,),
+                    )
 
                 if not cursor.fetchone():
-                    return jsonify({'error': 'User not found in greeted users'}), 404
+                    return jsonify({"error": "User not found in greeted users"}), 404
 
                 # Delete the record
-                if channel and channel != '(global)':
-                    cursor.execute('''
+                if channel and channel != "(global)":
+                    cursor.execute(
+                        """
                         DELETE FROM greeted_users
                         WHERE sender_id = ? AND channel = ?
-                    ''', (sender_id, channel))
+                    """,
+                        (sender_id, channel),
+                    )
                 else:
-                    cursor.execute('''
+                    cursor.execute(
+                        """
                         DELETE FROM greeted_users
                         WHERE sender_id = ? AND channel IS NULL
-                    ''', (sender_id,))
+                    """,
+                        (sender_id,),
+                    )
 
                 conn.commit()
 
-                self.logger.info(f"User {sender_id} marked as ungreeted (channel: {channel or 'global'})")
+                self.logger.info(
+                    f"User {sender_id} marked as ungreeted (channel: {channel or 'global'})"
+                )
 
-                return jsonify({
-                    'success': True,
-                    'message': f'User {sender_id} marked as ungreeted'
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": f"User {sender_id} marked as ungreeted",
+                    }
+                )
 
             except Exception as e:
                 self.logger.error(f"Error ungreeting user: {e}", exc_info=True)
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
         # Feed management API endpoints
-        @self.app.route('/api/feeds')
+        @self.app.route("/api/feeds")
         def api_feeds():
             """Get all feed subscriptions with statistics"""
             try:
@@ -3728,133 +4367,147 @@ class BotDataViewer:
                 return jsonify(feeds)
             except Exception as e:
                 self.logger.error(f"Error getting feeds: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/<int:feed_id>')
+        @self.app.route("/api/feeds/<int:feed_id>")
         def api_feed_detail(feed_id):
             """Get detailed information about a specific feed"""
             try:
                 feed = self._get_feed_subscription(feed_id)
                 if not feed:
-                    return jsonify({'error': 'Feed not found'}), 404
+                    return jsonify({"error": "Feed not found"}), 404
 
                 # Get activity and errors
                 activity = self._get_feed_activity(feed_id)
                 errors = self._get_feed_errors(feed_id)
 
-                feed['activity'] = activity
-                feed['errors'] = errors
+                feed["activity"] = activity
+                feed["errors"] = errors
 
                 return jsonify(feed)
             except Exception as e:
                 self.logger.error(f"Error getting feed detail: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds', methods=['POST'])
+        @self.app.route("/api/feeds", methods=["POST"])
         def api_create_feed():
             """Create a new feed subscription"""
             try:
                 data = request.get_json()
                 if not data:
-                    return jsonify({'error': 'No data provided'}), 400
+                    return jsonify({"error": "No data provided"}), 400
 
                 feed_id = self._create_feed_subscription(data)
-                return jsonify({'success': True, 'id': feed_id})
+                return jsonify({"success": True, "id": feed_id})
             except Exception as e:
                 self.logger.error(f"Error creating feed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/<int:feed_id>', methods=['PUT'])
+        @self.app.route("/api/feeds/<int:feed_id>", methods=["PUT"])
         def api_update_feed(feed_id):
             """Update an existing feed subscription"""
             try:
                 data = request.get_json()
                 if not data:
-                    return jsonify({'error': 'No data provided'}), 400
+                    return jsonify({"error": "No data provided"}), 400
 
                 success = self._update_feed_subscription(feed_id, data)
                 if not success:
-                    return jsonify({'error': 'Feed not found'}), 404
+                    return jsonify({"error": "Feed not found"}), 404
 
-                return jsonify({'success': True})
+                return jsonify({"success": True})
             except Exception as e:
                 self.logger.error(f"Error updating feed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/<int:feed_id>', methods=['DELETE'])
+        @self.app.route("/api/feeds/<int:feed_id>", methods=["DELETE"])
         def api_delete_feed(feed_id):
             """Delete a feed subscription"""
             try:
                 success = self._delete_feed_subscription(feed_id)
                 if not success:
-                    return jsonify({'error': 'Feed not found'}), 404
+                    return jsonify({"error": "Feed not found"}), 404
 
-                return jsonify({'success': True})
+                return jsonify({"success": True})
             except Exception as e:
                 self.logger.error(f"Error deleting feed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/default-format', methods=['GET'])
+        @self.app.route("/api/feeds/default-format", methods=["GET"])
         def api_get_default_format():
             """Get the default output format from config"""
             try:
-                default_format = self.config.get('Feed_Manager', 'default_output_format',
-                                                fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
-                return jsonify({'default_format': default_format})
+                default_format = self.config.get(
+                    "Feed_Manager",
+                    "default_output_format",
+                    fallback="{emoji} {body|truncate:100} - {date}\n{link|truncate:50}",
+                )
+                return jsonify({"default_format": default_format})
             except Exception as e:
                 self.logger.error(f"Error getting default format: {e}")
-                return jsonify({'default_format': '{emoji} {body|truncate:100} - {date}\n{link|truncate:50}'})
+                return jsonify(
+                    {
+                        "default_format": "{emoji} {body|truncate:100} - {date}\n{link|truncate:50}"
+                    }
+                )
 
-        @self.app.route('/api/feeds/preview', methods=['POST'])
+        @self.app.route("/api/feeds/preview", methods=["POST"])
         def api_preview_feed():
             """Preview feed items with custom output format"""
             try:
                 data = request.get_json()
-                if not data or 'feed_url' not in data:
-                    return jsonify({'error': 'feed_url is required'}), 400
+                if not data or "feed_url" not in data:
+                    return jsonify({"error": "feed_url is required"}), 400
 
-                feed_url = data['feed_url']
-                feed_type = data.get('feed_type', 'rss')
-                output_format = data.get('output_format', '')
-                api_config = data.get('api_config', {})
-                filter_config = data.get('filter_config')
-                sort_config = data.get('sort_config')
+                feed_url = data["feed_url"]
+                feed_type = data.get("feed_type", "rss")
+                output_format = data.get("output_format", "")
+                api_config = data.get("api_config", {})
+                filter_config = data.get("filter_config")
+                sort_config = data.get("sort_config")
 
                 # Get default format from config if not provided
                 if not output_format:
-                    output_format = self.config.get('Feed_Manager', 'default_output_format',
-                                                   fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
+                    output_format = self.config.get(
+                        "Feed_Manager",
+                        "default_output_format",
+                        fallback="{emoji} {body|truncate:100} - {date}\n{link|truncate:50}",
+                    )
 
                 # Fetch and format feed items
                 try:
-                    preview_items = self._preview_feed_items(feed_url, feed_type, output_format, api_config, filter_config, sort_config)
+                    preview_items = self._preview_feed_items(
+                        feed_url,
+                        feed_type,
+                        output_format,
+                        api_config,
+                        filter_config,
+                        sort_config,
+                    )
                 except ValueError as e:
                     # SSRF validation error - return 400
-                    return jsonify({'error': str(e)}), 400
+                    return jsonify({"error": str(e)}), 400
 
-                return jsonify({
-                    'success': True,
-                    'items': preview_items
-                })
+                return jsonify({"success": True, "items": preview_items})
             except Exception as e:
                 self.logger.error(f"Error previewing feed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/test', methods=['POST'])
+        @self.app.route("/api/feeds/test", methods=["POST"])
         def api_test_feed():
             """Test a feed URL and return preview of recent items"""
             try:
                 data = request.get_json()
-                if not data or 'url' not in data:
-                    return jsonify({'error': 'URL is required'}), 400
+                if not data or "url" not in data:
+                    return jsonify({"error": "URL is required"}), 400
 
-                url = data['url']
+                url = data["url"]
 
                 # Validate URL for SSRF protection
-                if self.config.has_section('Feed_Command'):
+                if self.config.has_section("Feed_Command"):
                     try:
                         feed_command_allow_private = self.config.getboolean(
-                            'Feed_Command', 'allow_private_urls', fallback=False
+                            "Feed_Command", "allow_private_urls", fallback=False
                         )
                     except ValueError:
                         feed_command_allow_private = False
@@ -3862,22 +4515,22 @@ class BotDataViewer:
                     feed_command_allow_private = False
                 allow_private_feeds = (
                     self.config.getboolean(
-                        'Feed_Manager',
-                        'allow_private_urls',
+                        "Feed_Manager",
+                        "allow_private_urls",
                         fallback=feed_command_allow_private,
                     )
-                    if self.config.has_section('Feed_Manager')
+                    if self.config.has_section("Feed_Manager")
                     else feed_command_allow_private
                 )
                 if not validate_external_url(url, allow_private=allow_private_feeds):
-                    return jsonify({'error': 'Invalid or unsafe URL'}), 400
+                    return jsonify({"error": "Invalid or unsafe URL"}), 400
 
-                return jsonify({'success': True, 'message': 'URL validated'})
+                return jsonify({"success": True, "message": "URL validated"})
             except Exception as e:
                 self.logger.error(f"Error testing feed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/stats')
+        @self.app.route("/api/feeds/stats")
         def api_feed_stats():
             """Get aggregate feed statistics"""
             try:
@@ -3885,219 +4538,264 @@ class BotDataViewer:
                 return jsonify(stats)
             except Exception as e:
                 self.logger.error(f"Error getting feed stats: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/<int:feed_id>/activity')
+        @self.app.route("/api/feeds/<int:feed_id>/activity")
         def api_feed_activity(feed_id):
             """Get activity log for a specific feed"""
             try:
                 activity = self._get_feed_activity(feed_id, limit=50)
-                return jsonify({'activity': activity})
+                return jsonify({"activity": activity})
             except Exception as e:
                 self.logger.error(f"Error getting feed activity: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/<int:feed_id>/errors')
+        @self.app.route("/api/feeds/<int:feed_id>/errors")
         def api_feed_errors(feed_id):
             """Get error history for a specific feed"""
             try:
                 errors = self._get_feed_errors(feed_id, limit=20)
-                return jsonify({'errors': errors})
+                return jsonify({"errors": errors})
             except Exception as e:
                 self.logger.error(f"Error getting feed errors: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/errors/reset', methods=['POST'])
+        @self.app.route("/api/feeds/errors/reset", methods=["POST"])
         def api_reset_all_feed_errors():
             """Clear recorded errors for every feed"""
             try:
                 deleted = self._reset_feed_errors()
-                return jsonify({'success': True, 'deleted': deleted})
+                return jsonify({"success": True, "deleted": deleted})
             except Exception as e:
                 self.logger.error(f"Error resetting feed errors: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/<int:feed_id>/errors/reset', methods=['POST'])
+        @self.app.route("/api/feeds/<int:feed_id>/errors/reset", methods=["POST"])
         def api_reset_feed_errors(feed_id):
             """Clear recorded errors for a single feed"""
             try:
                 deleted = self._reset_feed_errors(feed_id)
-                return jsonify({'success': True, 'deleted': deleted})
+                return jsonify({"success": True, "deleted": deleted})
             except Exception as e:
                 self.logger.error(f"Error resetting feed errors: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/feeds/<int:feed_id>/refresh', methods=['POST'])
+        @self.app.route("/api/feeds/<int:feed_id>/refresh", methods=["POST"])
         def api_refresh_feed(feed_id):
             """Manually trigger a feed check"""
             try:
                 # This would trigger feed_manager to poll this feed immediately
                 # For now, just acknowledge the request
-                return jsonify({'success': True, 'message': 'Feed refresh queued'})
+                return jsonify({"success": True, "message": "Feed refresh queued"})
             except Exception as e:
                 self.logger.error(f"Error refreshing feed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
         # Channel management API endpoints
-        @self.app.route('/api/channels')
+        @self.app.route("/api/channels")
         def api_channels():
             """Get all configured channels"""
             try:
                 channels = self._get_channels()
-                return jsonify({'channels': channels})
+                return jsonify({"channels": channels})
             except Exception as e:
                 self.logger.error(f"Error getting channels: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/channels', methods=['POST'])
+        @self.app.route("/api/channels", methods=["POST"])
         def api_create_channel():
             """Create a new channel (hashtag or custom)"""
             try:
                 data = request.get_json()
-                if not data or 'name' not in data:
-                    return jsonify({'error': 'Channel name is required'}), 400
+                if not data or "name" not in data:
+                    return jsonify({"error": "Channel name is required"}), 400
 
-                channel_name = data.get('name', '').strip()
-                channel_idx = data.get('channel_idx')
-                channel_key = data.get('channel_key', '').strip()
+                channel_name = data.get("name", "").strip()
+                channel_idx = data.get("channel_idx")
+                channel_key = data.get("channel_key", "").strip()
 
                 if not channel_name:
-                    return jsonify({'error': 'Channel name cannot be empty'}), 400
+                    return jsonify({"error": "Channel name cannot be empty"}), 400
 
                 # If channel_idx not provided, find the lowest available index
                 if channel_idx is None:
                     channel_idx = self._get_lowest_available_channel_index()
                     if channel_idx is None:
-                        max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
-                        return jsonify({'error': f'No available channel slots. All {max_channels} channels are in use.'}), 400
+                        max_channels = self.config.getint(
+                            "Bot", "max_channels", fallback=40
+                        )
+                        return jsonify(
+                            {
+                                "error": f"No available channel slots. All {max_channels} channels are in use."
+                            }
+                        ), 400
 
                 # Determine if it's a hashtag channel
-                is_hashtag = channel_name.startswith('#')
+                is_hashtag = channel_name.startswith("#")
 
                 # Validate custom channel has key
                 if not is_hashtag and not channel_key:
-                    return jsonify({'error': 'Channel key is required for custom channels (channels without # prefix)'}), 400
+                    return jsonify(
+                        {
+                            "error": "Channel key is required for custom channels (channels without # prefix)"
+                        }
+                    ), 400
 
                 # Validate key format if provided
                 if channel_key:
                     if len(channel_key) != 32:
-                        return jsonify({'error': 'Channel key must be exactly 32 hexadecimal characters'}), 400
-                    if not all(c in '0123456789abcdefABCDEF' for c in channel_key):
-                        return jsonify({'error': 'Channel key must contain only hexadecimal characters (0-9, a-f, A-F)'}), 400
+                        return jsonify(
+                            {
+                                "error": "Channel key must be exactly 32 hexadecimal characters"
+                            }
+                        ), 400
+                    if not all(c in "0123456789abcdefABCDEF" for c in channel_key):
+                        return jsonify(
+                            {
+                                "error": "Channel key must contain only hexadecimal characters (0-9, a-f, A-F)"
+                            }
+                        ), 400
 
                 # Try to create channel via bot's channel manager
-                result = self._add_channel_for_web(channel_idx, channel_name, channel_key if not is_hashtag else None)
+                result = self._add_channel_for_web(
+                    channel_idx, channel_name, channel_key if not is_hashtag else None
+                )
 
-                if result.get('success'):
-                    if result.get('pending'):
+                if result.get("success"):
+                    if result.get("pending"):
                         # Operation is queued, return operation_id for polling
-                        return jsonify({
-                            'success': True,
-                            'pending': True,
-                            'operation_id': result.get('operation_id'),
-                            'message': result.get('message', 'Channel operation queued')
-                        })
+                        return jsonify(
+                            {
+                                "success": True,
+                                "pending": True,
+                                "operation_id": result.get("operation_id"),
+                                "message": result.get(
+                                    "message", "Channel operation queued"
+                                ),
+                            }
+                        )
                     else:
-                        return jsonify({'success': True, 'message': 'Channel created successfully'})
+                        return jsonify(
+                            {"success": True, "message": "Channel created successfully"}
+                        )
                 else:
-                    return jsonify({'error': result.get('error', 'Failed to create channel')}), 500
+                    return jsonify(
+                        {"error": result.get("error", "Failed to create channel")}
+                    ), 500
 
             except Exception as e:
                 self.logger.error(f"Error creating channel: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/channels/<int:channel_idx>', methods=['DELETE'])
+        @self.app.route("/api/channels/<int:channel_idx>", methods=["DELETE"])
         def api_delete_channel(channel_idx):
             """Remove a channel"""
             try:
                 result = self._remove_channel_for_web(channel_idx)
-                if result.get('success'):
-                    if result.get('pending'):
+                if result.get("success"):
+                    if result.get("pending"):
                         # Operation is queued, return operation_id for polling
-                        return jsonify({
-                            'success': True,
-                            'pending': True,
-                            'operation_id': result.get('operation_id'),
-                            'message': result.get('message', 'Channel operation queued')
-                        })
+                        return jsonify(
+                            {
+                                "success": True,
+                                "pending": True,
+                                "operation_id": result.get("operation_id"),
+                                "message": result.get(
+                                    "message", "Channel operation queued"
+                                ),
+                            }
+                        )
                     else:
-                        return jsonify({'success': True, 'message': 'Channel deleted successfully'})
+                        return jsonify(
+                            {"success": True, "message": "Channel deleted successfully"}
+                        )
                 else:
-                    return jsonify({'error': result.get('error', 'Failed to delete channel')}), 500
+                    return jsonify(
+                        {"error": result.get("error", "Failed to delete channel")}
+                    ), 500
             except Exception as e:
                 self.logger.error(f"Error deleting channel: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/channel-operations/<int:operation_id>', methods=['GET'])
+        @self.app.route("/api/channel-operations/<int:operation_id>", methods=["GET"])
         def api_get_operation_status(operation_id):
             """Get status of a channel operation"""
             conn = None
             try:
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT status, error_message, result_data, processed_at, claimed_at
                     FROM channel_operations
                     WHERE id = ?
-                ''', (operation_id,))
+                """,
+                    (operation_id,),
+                )
 
                 result = cursor.fetchone()
 
                 if not result:
-                    return jsonify({'error': 'Operation not found'}), 404
+                    return jsonify({"error": "Operation not found"}), 404
 
                 status, error_msg, result_data, processed_at, claimed_at = result
 
-                return jsonify({
-                    'operation_id': operation_id,
-                    'status': status,
-                    'error_message': error_msg,
-                    'claimed_at': claimed_at,
-                    'processed_at': processed_at,
-                    'result_data': json.loads(result_data) if result_data else None
-                })
+                return jsonify(
+                    {
+                        "operation_id": operation_id,
+                        "status": status,
+                        "error_message": error_msg,
+                        "claimed_at": claimed_at,
+                        "processed_at": processed_at,
+                        "result_data": json.loads(result_data) if result_data else None,
+                    }
+                )
             except Exception as e:
                 self.logger.error(f"Error getting operation status: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
             finally:
                 if conn:
                     conn.close()
 
-        @self.app.route('/api/channels/validate', methods=['POST'])
+        @self.app.route("/api/channels/validate", methods=["POST"])
         def api_validate_channel():
             """Validate if a channel exists or can be created"""
             try:
                 data = request.get_json()
-                if not data or 'name' not in data:
-                    return jsonify({'error': 'Channel name is required'}), 400
+                if not data or "name" not in data:
+                    return jsonify({"error": "Channel name is required"}), 400
 
-                channel_name = data['name']
+                channel_name = data["name"]
                 # Check if channel exists
                 channel_num = self._get_channel_number(channel_name)
 
-                return jsonify({
-                    'exists': channel_num is not None,
-                    'channel_num': channel_num
-                })
+                return jsonify(
+                    {"exists": channel_num is not None, "channel_num": channel_num}
+                )
             except Exception as e:
                 self.logger.error(f"Error validating channel: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/channels/<int:channel_idx>', methods=['PUT'])
+        @self.app.route("/api/channels/<int:channel_idx>", methods=["PUT"])
         def api_update_channel(channel_idx):
             """Update channel name or configuration"""
             try:
                 data = request.get_json()
                 if not data:
-                    return jsonify({'error': 'No data provided'}), 400
+                    return jsonify({"error": "No data provided"}), 400
 
                 # This would use channel_manager
-                return jsonify({'success': True, 'message': 'Channel update requires bot connection'})
+                return jsonify(
+                    {
+                        "success": True,
+                        "message": "Channel update requires bot connection",
+                    }
+                )
             except Exception as e:
                 self.logger.error(f"Error updating channel: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/channels/stats')
+        @self.app.route("/api/channels/stats")
         def api_channel_stats():
             """Get channel statistics and usage data"""
             try:
@@ -4105,30 +4803,32 @@ class BotDataViewer:
                 return jsonify(stats)
             except Exception as e:
                 self.logger.error(f"Error getting channel stats: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/channels/<int:channel_idx>/feeds')
+        @self.app.route("/api/channels/<int:channel_idx>/feeds")
         def api_channel_feeds(channel_idx):
             """Get all feed subscriptions for a specific channel"""
             try:
                 feeds = self._get_feeds_by_channel(channel_idx)
-                return jsonify({'feeds': feeds})
+                return jsonify({"feeds": feeds})
             except Exception as e:
                 self.logger.error(f"Error getting channel feeds: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/status')
+        @self.app.route("/api/radio/status")
         def api_radio_status():
             """Current radio connection state from bot_metadata."""
             try:
-                value = self.db_manager.get_metadata('radio_connected')
-                connected = value == '1' if value is not None else None
-                return jsonify({'connected': connected, 'status_known': value is not None})
+                value = self.db_manager.get_metadata("radio_connected")
+                connected = value == "1" if value is not None else None
+                return jsonify(
+                    {"connected": connected, "status_known": value is not None}
+                )
             except Exception as e:
                 self.logger.error(f"Error getting radio status: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/reboot', methods=['POST'])
+        @self.app.route("/api/radio/reboot", methods=["POST"])
         def api_radio_reboot():
             """Queue a radio reboot (disconnect + reconnect)."""
             try:
@@ -4139,34 +4839,44 @@ class BotDataViewer:
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify({'success': True, 'operation_id': op_id, 'message': 'Radio reboot queued'})
+                return jsonify(
+                    {
+                        "success": True,
+                        "operation_id": op_id,
+                        "message": "Radio reboot queued",
+                    }
+                )
             except Exception as e:
                 self.logger.error(f"Error queuing radio reboot: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/connect', methods=['POST'])
+        @self.app.route("/api/radio/connect", methods=["POST"])
         def api_radio_connect():
             """Queue radio connect or disconnect. Body: {'action': 'connect'|'disconnect'}"""
             try:
                 data = request.get_json(silent=True) or {}
-                action = data.get('action', '')
-                if action not in ('connect', 'disconnect'):
-                    return jsonify({'error': "action must be 'connect' or 'disconnect'"}), 400
-                op_type = 'radio_connect' if action == 'connect' else 'radio_disconnect'
+                action = data.get("action", "")
+                if action not in ("connect", "disconnect"):
+                    return jsonify(
+                        {"error": "action must be 'connect' or 'disconnect'"}
+                    ), 400
+                op_type = "radio_connect" if action == "connect" else "radio_disconnect"
                 with self.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
                         "INSERT INTO channel_operations (operation_type, status) VALUES (?, 'pending')",
-                        (op_type,)
+                        (op_type,),
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify({'success': True, 'pending': True, 'operation_id': op_id})
+                return jsonify(
+                    {"success": True, "pending": True, "operation_id": op_id}
+                )
             except Exception as e:
                 self.logger.error(f"Error queuing radio connect/disconnect: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/firmware/config/read', methods=['POST'])
+        @self.app.route("/api/radio/firmware/config/read", methods=["POST"])
         def api_firmware_config_read():
             """Queue a firmware config read (path hash mode). Poll /api/channel-operations/<id>."""
             try:
@@ -4177,40 +4887,46 @@ class BotDataViewer:
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify({'success': True, 'operation_id': op_id})
+                return jsonify({"success": True, "operation_id": op_id})
             except Exception as e:
                 self.logger.error(f"Error queuing firmware read: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/firmware/config/write', methods=['POST'])
+        @self.app.route("/api/radio/firmware/config/write", methods=["POST"])
         def api_firmware_config_write():
             """Queue a firmware config write. Body: {path_hash_mode: int}.
             Poll /api/channel-operations/<id> for result."""
             try:
                 data = request.get_json(silent=True) or {}
-                allowed = {'path_hash_mode'}
+                allowed = {"path_hash_mode"}
                 payload = {k: v for k, v in data.items() if k in allowed}
                 if not payload:
-                    return jsonify({'error': 'No valid fields provided (path_hash_mode)'}), 400
-                if 'path_hash_mode' in payload:
-                    mode = int(payload['path_hash_mode'])
+                    return jsonify(
+                        {"error": "No valid fields provided (path_hash_mode)"}
+                    ), 400
+                if "path_hash_mode" in payload:
+                    mode = int(payload["path_hash_mode"])
                     if not (0 <= mode <= 2):
-                        return jsonify({'error': 'path_hash_mode must be 0-2 (bytes per hop = mode + 1)'}), 400
-                    payload['path_hash_mode'] = mode
+                        return jsonify(
+                            {
+                                "error": "path_hash_mode must be 0-2 (bytes per hop = mode + 1)"
+                            }
+                        ), 400
+                    payload["path_hash_mode"] = mode
                 with self.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
                         "INSERT INTO channel_operations (operation_type, payload_data, status) VALUES ('firmware_write', ?, 'pending')",
-                        (json.dumps(payload),)
+                        (json.dumps(payload),),
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify({'success': True, 'operation_id': op_id})
+                return jsonify({"success": True, "operation_id": op_id})
             except Exception as e:
                 self.logger.error(f"Error queuing firmware write: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/params', methods=['GET'])
+        @self.app.route("/api/radio/params", methods=["GET"])
         def api_radio_params_read():
             """Queue a radio parameter read (freq, bw, sf, cr, tx_power). Poll /api/channel-operations/<id>."""
             try:
@@ -4221,12 +4937,12 @@ class BotDataViewer:
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify({'success': True, 'operation_id': op_id})
+                return jsonify({"success": True, "operation_id": op_id})
             except Exception as e:
                 self.logger.error(f"Error queuing radio params read: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/params', methods=['POST'])
+        @self.app.route("/api/radio/params", methods=["POST"])
         def api_radio_params_write():
             """Queue a radio/node parameter write. Body may mix: freq/bw/sf/cr
             (together), tx_power, name, lat/lon (together), adv_loc_policy,
@@ -4237,128 +4953,162 @@ class BotDataViewer:
             try:
                 data = request.get_json(silent=True) or {}
                 allowed = {
-                    'freq', 'bw', 'sf', 'cr', 'tx_power',
-                    'name', 'lat', 'lon', 'adv_loc_policy',
-                    'multi_acks',
-                    'telemetry_mode_base', 'telemetry_mode_loc', 'telemetry_mode_env',
-                    'rx_delay', 'airtime_factor',
+                    "freq",
+                    "bw",
+                    "sf",
+                    "cr",
+                    "tx_power",
+                    "name",
+                    "lat",
+                    "lon",
+                    "adv_loc_policy",
+                    "multi_acks",
+                    "telemetry_mode_base",
+                    "telemetry_mode_loc",
+                    "telemetry_mode_env",
+                    "rx_delay",
+                    "airtime_factor",
                 }
                 payload = {k: v for k, v in data.items() if k in allowed}
                 if not payload:
-                    return jsonify({'error': f"No valid fields (expected one of: {', '.join(sorted(allowed))})"}), 400
+                    return jsonify(
+                        {
+                            "error": f"No valid fields (expected one of: {', '.join(sorted(allowed))})"
+                        }
+                    ), 400
 
-                if 'freq' in payload:
-                    freq = float(payload['freq'])
+                if "freq" in payload:
+                    freq = float(payload["freq"])
                     if not (100.0 <= freq <= 1700.0):
-                        return jsonify({'error': 'freq must be 100–1700 MHz'}), 400
-                    payload['freq'] = freq
-                if 'bw' in payload:
-                    bw = float(payload['bw'])
+                        return jsonify({"error": "freq must be 100–1700 MHz"}), 400
+                    payload["freq"] = freq
+                if "bw" in payload:
+                    bw = float(payload["bw"])
                     if bw not in (62.5, 125.0, 250.0, 500.0):
-                        return jsonify({'error': 'bw must be 62.5, 125, 250, or 500 kHz'}), 400
-                    payload['bw'] = bw
-                if 'sf' in payload:
-                    sf = int(payload['sf'])
+                        return jsonify(
+                            {"error": "bw must be 62.5, 125, 250, or 500 kHz"}
+                        ), 400
+                    payload["bw"] = bw
+                if "sf" in payload:
+                    sf = int(payload["sf"])
                     if not (5 <= sf <= 12):
-                        return jsonify({'error': 'sf must be 5–12'}), 400
-                    payload['sf'] = sf
-                if 'cr' in payload:
-                    cr = int(payload['cr'])
+                        return jsonify({"error": "sf must be 5–12"}), 400
+                    payload["sf"] = sf
+                if "cr" in payload:
+                    cr = int(payload["cr"])
                     if not (5 <= cr <= 8):
-                        return jsonify({'error': 'cr must be 5–8'}), 400
-                    payload['cr'] = cr
-                if 'tx_power' in payload:
-                    tx = int(payload['tx_power'])
+                        return jsonify({"error": "cr must be 5–8"}), 400
+                    payload["cr"] = cr
+                if "tx_power" in payload:
+                    tx = int(payload["tx_power"])
                     if not (1 <= tx <= 30):
-                        return jsonify({'error': 'tx_power must be 1–30 dBm'}), 400
-                    payload['tx_power'] = tx
-                if 'name' in payload:
-                    name = str(payload['name']).strip()
-                    if not name or len(name.encode('utf-8')) > 32:
-                        return jsonify({'error': 'name must be 1–32 bytes'}), 400
-                    payload['name'] = name
-                if ('lat' in payload) != ('lon' in payload):
-                    return jsonify({'error': 'lat and lon must be provided together'}), 400
-                if 'lat' in payload:
-                    lat = float(payload['lat'])
-                    lon = float(payload['lon'])
+                        return jsonify({"error": "tx_power must be 1–30 dBm"}), 400
+                    payload["tx_power"] = tx
+                if "name" in payload:
+                    name = str(payload["name"]).strip()
+                    if not name or len(name.encode("utf-8")) > 32:
+                        return jsonify({"error": "name must be 1–32 bytes"}), 400
+                    payload["name"] = name
+                if ("lat" in payload) != ("lon" in payload):
+                    return jsonify(
+                        {"error": "lat and lon must be provided together"}
+                    ), 400
+                if "lat" in payload:
+                    lat = float(payload["lat"])
+                    lon = float(payload["lon"])
                     if not (-90.0 <= lat <= 90.0):
-                        return jsonify({'error': 'lat must be -90 to 90'}), 400
+                        return jsonify({"error": "lat must be -90 to 90"}), 400
                     if not (-180.0 <= lon <= 180.0):
-                        return jsonify({'error': 'lon must be -180 to 180'}), 400
-                    payload['lat'] = lat
-                    payload['lon'] = lon
-                if 'adv_loc_policy' in payload:
-                    policy = int(payload['adv_loc_policy'])
+                        return jsonify({"error": "lon must be -180 to 180"}), 400
+                    payload["lat"] = lat
+                    payload["lon"] = lon
+                if "adv_loc_policy" in payload:
+                    policy = int(payload["adv_loc_policy"])
                     if policy not in (0, 1):
-                        return jsonify({'error': 'adv_loc_policy must be 0 (private) or 1 (share)'}), 400
-                    payload['adv_loc_policy'] = policy
-                if 'multi_acks' in payload:
-                    acks = int(payload['multi_acks'])
+                        return jsonify(
+                            {"error": "adv_loc_policy must be 0 (private) or 1 (share)"}
+                        ), 400
+                    payload["adv_loc_policy"] = policy
+                if "multi_acks" in payload:
+                    acks = int(payload["multi_acks"])
                     if not (0 <= acks <= 3):
-                        return jsonify({'error': 'multi_acks must be 0–3'}), 400
-                    payload['multi_acks'] = acks
-                for telem_key in ('telemetry_mode_base', 'telemetry_mode_loc', 'telemetry_mode_env'):
+                        return jsonify({"error": "multi_acks must be 0–3"}), 400
+                    payload["multi_acks"] = acks
+                for telem_key in (
+                    "telemetry_mode_base",
+                    "telemetry_mode_loc",
+                    "telemetry_mode_env",
+                ):
                     if telem_key in payload:
                         mode = int(payload[telem_key])
                         if not (0 <= mode <= 2):
-                            return jsonify({'error': f'{telem_key} must be 0 (deny), 1 (per-contact), or 2 (allow all)'}), 400
+                            return jsonify(
+                                {
+                                    "error": f"{telem_key} must be 0 (deny), 1 (per-contact), or 2 (allow all)"
+                                }
+                            ), 400
                         payload[telem_key] = mode
-                if ('rx_delay' in payload) != ('airtime_factor' in payload):
-                    return jsonify({'error': 'rx_delay and airtime_factor must be provided together'}), 400
-                if 'rx_delay' in payload:
-                    rx_delay = float(payload['rx_delay'])
-                    airtime_factor = float(payload['airtime_factor'])
+                if ("rx_delay" in payload) != ("airtime_factor" in payload):
+                    return jsonify(
+                        {
+                            "error": "rx_delay and airtime_factor must be provided together"
+                        }
+                    ), 400
+                if "rx_delay" in payload:
+                    rx_delay = float(payload["rx_delay"])
+                    airtime_factor = float(payload["airtime_factor"])
                     if not (0.0 <= rx_delay <= 20.0):
-                        return jsonify({'error': 'rx_delay must be 0–20 seconds'}), 400
+                        return jsonify({"error": "rx_delay must be 0–20 seconds"}), 400
                     if not (0.0 <= airtime_factor <= 9.0):
-                        return jsonify({'error': 'airtime_factor must be 0–9'}), 400
-                    payload['rx_delay'] = rx_delay
-                    payload['airtime_factor'] = airtime_factor
+                        return jsonify({"error": "airtime_factor must be 0–9"}), 400
+                    payload["rx_delay"] = rx_delay
+                    payload["airtime_factor"] = airtime_factor
 
-                radio_fields = {'freq', 'bw', 'sf', 'cr'}
+                radio_fields = {"freq", "bw", "sf", "cr"}
                 if radio_fields & set(payload) and not radio_fields <= set(payload):
-                    return jsonify({'error': 'freq, bw, sf, and cr must all be provided together'}), 400
+                    return jsonify(
+                        {"error": "freq, bw, sf, and cr must all be provided together"}
+                    ), 400
 
                 with self.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
                         "INSERT INTO channel_operations (operation_type, payload_data, status) VALUES ('radio_params_write', ?, 'pending')",
-                        (json.dumps(payload),)
+                        (json.dumps(payload),),
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify({'success': True, 'operation_id': op_id})
+                return jsonify({"success": True, "operation_id": op_id})
             except Exception as e:
                 self.logger.error(f"Error queuing radio params write: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/radio/advert', methods=['POST'])
+        @self.app.route("/api/radio/advert", methods=["POST"])
         def api_radio_advert():
             """Queue a self-advertisement. Body: {flood: bool} (default false =
             zero-hop). Poll /api/channel-operations/<id> for result."""
             try:
                 data = request.get_json(silent=True) or {}
-                flood = data.get('flood', False)
+                flood = data.get("flood", False)
                 if not isinstance(flood, bool):
-                    return jsonify({'error': 'flood must be true or false'}), 400
+                    return jsonify({"error": "flood must be true or false"}), 400
                 with self.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
                         "INSERT INTO channel_operations (operation_type, payload_data, status) VALUES ('radio_advert', ?, 'pending')",
-                        (json.dumps({'flood': flood}),)
+                        (json.dumps({"flood": flood}),),
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify({'success': True, 'operation_id': op_id})
+                return jsonify({"success": True, "operation_id": op_id})
             except Exception as e:
                 self.logger.error(f"Error queuing radio advert: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
     def _setup_socketio_handlers(self):
         """Setup SocketIO event handlers using modern patterns"""
 
-        @self.socketio.on('connect')
+        @self.socketio.on("connect")
         def handle_connect():
             """Handle client connection"""
             try:
@@ -4368,8 +5118,10 @@ class BotDataViewer:
                     return False
 
                 # Reject unauthenticated SocketIO connections when auth is enabled (BUG-001)
-                if self.web_viewer_password and not session.get('authenticated'):
-                    self.logger.warning(f"Rejected unauthenticated SocketIO connection from {client_id}")
+                if self.web_viewer_password and not session.get("authenticated"):
+                    self.logger.warning(
+                        f"Rejected unauthenticated SocketIO connection from {client_id}"
+                    )
                     with suppress(Exception):
                         disconnect()
                     return False
@@ -4379,7 +5131,9 @@ class BotDataViewer:
                 with self._clients_lock:
                     # Check client limit
                     if len(self.connected_clients) >= self.max_clients:
-                        self.logger.warning(f"Client limit reached ({self.max_clients}), rejecting connection")
+                        self.logger.warning(
+                            f"Client limit reached ({self.max_clients}), rejecting connection"
+                        )
                         try:
                             disconnect()
                         except Exception as e:
@@ -4388,54 +5142,66 @@ class BotDataViewer:
 
                     # Track client
                     self.connected_clients[client_id] = {
-                        'connected_at': time.time(),
-                        'last_activity': time.time(),
-                        'subscribed_commands': False,
-                        'subscribed_packets': False,
-                        'subscribed_messages': False,
-                        'subscribed_mesh': False,
-                        'subscribed_logs': False,
+                        "connected_at": time.time(),
+                        "last_activity": time.time(),
+                        "subscribed_commands": False,
+                        "subscribed_packets": False,
+                        "subscribed_messages": False,
+                        "subscribed_mesh": False,
+                        "subscribed_logs": False,
                     }
 
                     # Connection status is shown via the green indicator in the navbar, no toast needed
-                    self.logger.info(f"Client {client_id} connected. Total clients: {len(self.connected_clients)}")
+                    self.logger.info(
+                        f"Client {client_id} connected. Total clients: {len(self.connected_clients)}"
+                    )
             except Exception as e:
                 self.logger.error(f"Error in handle_connect: {e}", exc_info=True)
                 return False
 
-        @self.socketio.on('disconnect')
+        @self.socketio.on("disconnect")
         def handle_disconnect(data=None):
             """Handle client disconnection"""
             try:
                 # Safely get client_id - it may be None if disconnect happens during error state
-                client_id = getattr(request, 'sid', None)
+                client_id = getattr(request, "sid", None)
                 with self._clients_lock:
                     if client_id and client_id in self.connected_clients:
                         del self.connected_clients[client_id]
-                        self.logger.info(f"Client {client_id} disconnected. Total clients: {len(self.connected_clients)}")
+                        self.logger.info(
+                            f"Client {client_id} disconnected. Total clients: {len(self.connected_clients)}"
+                        )
                     elif client_id:
                         # Client disconnected but wasn't in our tracking dict (might have been cleaned up)
-                        self.logger.debug(f"Client {client_id} disconnected (not in tracking dict)")
+                        self.logger.debug(
+                            f"Client {client_id} disconnected (not in tracking dict)"
+                        )
                     else:
                         # No client_id available - this can happen during error states
-                        self.logger.debug("Disconnect event received but client_id is None")
+                        self.logger.debug(
+                            "Disconnect event received but client_id is None"
+                        )
             except Exception as e:
                 # Don't emit errors during disconnect as the connection may be broken
                 self.logger.error(f"Error in handle_disconnect: {e}", exc_info=True)
 
-        @self.socketio.on('subscribe_commands')
+        @self.socketio.on("subscribe_commands")
         def handle_subscribe_commands():
             """Handle command stream subscription — also replays recent history to the new subscriber."""
             try:
-                client_id = getattr(request, 'sid', None)
+                client_id = getattr(request, "sid", None)
                 with self._clients_lock:
                     if client_id and client_id in self.connected_clients:
-                        self.connected_clients[client_id]['subscribed_commands'] = True
+                        self.connected_clients[client_id]["subscribed_commands"] = True
                 # Keep connection/subscription success silent; navbar indicator already shows socket state.
                 self.logger.debug(f"Client {client_id} subscribed to commands")
                 # Replay recent command history so the page isn't blank on load (BUG-023 fix)
                 try:
-                    with closing(sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)) as _conn:
+                    with closing(
+                        sqlite3.connect(
+                            self.db_path, timeout=10, check_same_thread=False
+                        )
+                    ) as _conn:
                         _conn.row_factory = sqlite3.Row
                         _cur = _conn.cursor()
                         _cur.execute(
@@ -4446,26 +5212,34 @@ class BotDataViewer:
                         rows = list(reversed(_cur.fetchall()))
                     for row in rows:
                         try:
-                            emit('command_data', json.loads(row['data']))
+                            emit("command_data", json.loads(row["data"]))
                         except (json.JSONDecodeError, KeyError, TypeError):
                             pass
                 except Exception as e:
-                    self.logger.warning(f"Error replaying command history: {e}", exc_info=True)
+                    self.logger.warning(
+                        f"Error replaying command history: {e}", exc_info=True
+                    )
             except Exception as e:
-                self.logger.error(f"Error in handle_subscribe_commands: {e}", exc_info=True)
+                self.logger.error(
+                    f"Error in handle_subscribe_commands: {e}", exc_info=True
+                )
 
-        @self.socketio.on('subscribe_packets')
+        @self.socketio.on("subscribe_packets")
         def handle_subscribe_packets():
             """Handle packet stream subscription — also replays recent history to the new subscriber."""
             try:
-                client_id = getattr(request, 'sid', None)
+                client_id = getattr(request, "sid", None)
                 with self._clients_lock:
                     if client_id and client_id in self.connected_clients:
-                        self.connected_clients[client_id]['subscribed_packets'] = True
+                        self.connected_clients[client_id]["subscribed_packets"] = True
                 self.logger.debug(f"Client {client_id} subscribed to packets")
                 # Replay recent packet/command/routing history so the page isn't blank on load
                 try:
-                    with closing(sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)) as _conn:
+                    with closing(
+                        sqlite3.connect(
+                            self.db_path, timeout=10, check_same_thread=False
+                        )
+                    ) as _conn:
                         _conn.row_factory = sqlite3.Row
                         _cur = _conn.cursor()
                         _cur.execute(
@@ -4476,40 +5250,52 @@ class BotDataViewer:
                         rows = list(reversed(_cur.fetchall()))
                     for row in rows:
                         try:
-                            data = json.loads(row['data'])
-                            evt = 'command_data' if row['type'] == 'command' else 'packet_data'
+                            data = json.loads(row["data"])
+                            evt = (
+                                "command_data"
+                                if row["type"] == "command"
+                                else "packet_data"
+                            )
                             emit(evt, data)
                         except (json.JSONDecodeError, KeyError, TypeError):
                             pass
                 except Exception as e:
-                    self.logger.warning(f"Error replaying packet history: {e}", exc_info=True)
+                    self.logger.warning(
+                        f"Error replaying packet history: {e}", exc_info=True
+                    )
             except Exception as e:
-                self.logger.error(f"Error in handle_subscribe_packets: {e}", exc_info=True)
+                self.logger.error(
+                    f"Error in handle_subscribe_packets: {e}", exc_info=True
+                )
 
-        @self.socketio.on('subscribe_mesh')
+        @self.socketio.on("subscribe_mesh")
         def handle_subscribe_mesh():
             """Handle mesh graph stream subscription"""
             try:
-                client_id = getattr(request, 'sid', None)
+                client_id = getattr(request, "sid", None)
                 with self._clients_lock:
                     if client_id and client_id in self.connected_clients:
-                        self.connected_clients[client_id]['subscribed_mesh'] = True
+                        self.connected_clients[client_id]["subscribed_mesh"] = True
                 self.logger.debug(f"Client {client_id} subscribed to mesh graph")
             except Exception as e:
                 self.logger.error(f"Error in handle_subscribe_mesh: {e}", exc_info=True)
 
-        @self.socketio.on('subscribe_messages')
+        @self.socketio.on("subscribe_messages")
         def handle_subscribe_messages():
             """Handle live channel message stream subscription — also replays recent messages."""
             try:
-                client_id = getattr(request, 'sid', None)
+                client_id = getattr(request, "sid", None)
                 with self._clients_lock:
                     if client_id and client_id in self.connected_clients:
-                        self.connected_clients[client_id]['subscribed_messages'] = True
+                        self.connected_clients[client_id]["subscribed_messages"] = True
                 self.logger.debug(f"Client {client_id} subscribed to messages")
                 # Replay recent channel messages so the page isn't blank on load
                 try:
-                    with closing(sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)) as _conn:
+                    with closing(
+                        sqlite3.connect(
+                            self.db_path, timeout=10, check_same_thread=False
+                        )
+                    ) as _conn:
                         _conn.row_factory = sqlite3.Row
                         _cur = _conn.cursor()
                         _cur.execute(
@@ -4520,51 +5306,61 @@ class BotDataViewer:
                         rows = list(reversed(_cur.fetchall()))
                     for row in rows:
                         try:
-                            emit('message_data', json.loads(row['data']))
+                            emit("message_data", json.loads(row["data"]))
                         except (json.JSONDecodeError, KeyError, TypeError):
                             pass
                 except Exception as e:
-                    self.logger.warning(f"Error replaying message history: {e}", exc_info=True)
+                    self.logger.warning(
+                        f"Error replaying message history: {e}", exc_info=True
+                    )
             except Exception as e:
-                self.logger.error(f"Error in handle_subscribe_messages: {e}", exc_info=True)
+                self.logger.error(
+                    f"Error in handle_subscribe_messages: {e}", exc_info=True
+                )
 
-        @self.socketio.on('subscribe_logs')
+        @self.socketio.on("subscribe_logs")
         def handle_subscribe_logs():
             """Handle live log stream subscription — also sends last 200 log lines to the new subscriber."""
             try:
-                client_id = getattr(request, 'sid', None)
+                client_id = getattr(request, "sid", None)
                 with self._clients_lock:
                     if client_id and client_id in self.connected_clients:
-                        self.connected_clients[client_id]['subscribed_logs'] = True
+                        self.connected_clients[client_id]["subscribed_logs"] = True
                 self.logger.debug(f"Client {client_id} subscribed to logs")
                 # Send recent log history so the page isn't blank on load
-                log_file = ''
+                log_file = ""
                 try:
-                    log_file = self.config.get('Logging', 'log_file', fallback='').strip()
+                    log_file = self.config.get(
+                        "Logging", "log_file", fallback=""
+                    ).strip()
                     if log_file:
                         log_file = str(resolve_path(log_file, self._config_base))
-                except (configparser.Error, OSError, ValueError):  # bad config or inaccessible path
+                except (
+                    configparser.Error,
+                    OSError,
+                    ValueError,
+                ):  # bad config or inaccessible path
                     pass
                 if log_file and os.path.exists(log_file):
                     try:
-                        with open(log_file, encoding='utf-8', errors='replace') as _fh:
+                        with open(log_file, encoding="utf-8", errors="replace") as _fh:
                             recent_lines = _fh.readlines()[-200:]
                         for line in recent_lines:
-                            emit('log_line', {'line': _strip_ansi_codes(line.rstrip())})
+                            emit("log_line", {"line": _strip_ansi_codes(line.rstrip())})
                     except Exception as e:
                         self.logger.debug(f"Error reading log history: {e}")
             except Exception as e:
                 self.logger.error(f"Error in handle_subscribe_logs: {e}", exc_info=True)
 
-        @self.socketio.on('ping')
+        @self.socketio.on("ping")
         def handle_ping():
             """Handle client ping (modern ping/pong pattern)"""
             try:
-                client_id = getattr(request, 'sid', None)
+                client_id = getattr(request, "sid", None)
                 with self._clients_lock:
                     if client_id and client_id in self.connected_clients:
-                        self.connected_clients[client_id]['last_activity'] = time.time()
-                emit('pong')  # Server responds with pong (Flask-SocketIO 5.x pattern)
+                        self.connected_clients[client_id]["last_activity"] = time.time()
+                emit("pong")  # Server responds with pong (Flask-SocketIO 5.x pattern)
             except Exception as e:
                 self.logger.error(f"Error in handle_ping: {e}", exc_info=True)
 
@@ -4574,8 +5370,8 @@ class BotDataViewer:
             try:
                 self.logger.error(f"SocketIO error: {e}", exc_info=True)
                 # Only emit if we have a valid request context
-                if hasattr(request, 'sid') and request.sid:
-                    emit('error', {'message': str(e)})
+                if hasattr(request, "sid") and request.sid:
+                    emit("error", {"message": str(e)})
             except Exception as emit_error:
                 # If we can't emit, just log it
                 self.logger.error(f"Error emitting error message: {emit_error}")
@@ -4586,13 +5382,16 @@ class BotDataViewer:
             # Broadcast to subscribed clients
             with self._clients_lock:
                 subscribed_clients = [
-                    client_id for client_id, client_info in self.connected_clients.items()
-                    if client_info.get('subscribed_commands', False)
+                    client_id
+                    for client_id, client_info in self.connected_clients.items()
+                    if client_info.get("subscribed_commands", False)
                 ]
 
             if subscribed_clients:
-                self.socketio.emit('command_data', command_data, room=None)
-                self.logger.debug(f"Broadcasted command data to {len(subscribed_clients)} clients")
+                self.socketio.emit("command_data", command_data, room=None)
+                self.logger.debug(
+                    f"Broadcasted command data to {len(subscribed_clients)} clients"
+                )
         except Exception as e:
             self.logger.error(f"Error handling command data: {e}")
 
@@ -4602,13 +5401,16 @@ class BotDataViewer:
             # Broadcast to subscribed clients
             with self._clients_lock:
                 subscribed_clients = [
-                    client_id for client_id, client_info in self.connected_clients.items()
-                    if client_info.get('subscribed_packets', False)
+                    client_id
+                    for client_id, client_info in self.connected_clients.items()
+                    if client_info.get("subscribed_packets", False)
                 ]
 
             if subscribed_clients:
-                self.socketio.emit('packet_data', packet_data, room=None)
-                self.logger.debug(f"Broadcasted packet data to {len(subscribed_clients)} clients")
+                self.socketio.emit("packet_data", packet_data, room=None)
+                self.logger.debug(
+                    f"Broadcasted packet data to {len(subscribed_clients)} clients"
+                )
         except Exception as e:
             self.logger.error(f"Error handling packet data: {e}")
 
@@ -4618,12 +5420,17 @@ class BotDataViewer:
             # Broadcast to subscribed clients
             with self._clients_lock:
                 subscribed_clients = [
-                    client_id for client_id, client_info in self.connected_clients.items()
-                    if client_info.get('subscribed_mesh', False)
+                    client_id
+                    for client_id, client_info in self.connected_clients.items()
+                    if client_info.get("subscribed_mesh", False)
                 ]
 
             if subscribed_clients:
-                event_type = 'mesh_edge_added' if edge_data.get('is_new', False) else 'mesh_edge_updated'
+                event_type = (
+                    "mesh_edge_added"
+                    if edge_data.get("is_new", False)
+                    else "mesh_edge_updated"
+                )
                 self.socketio.emit(event_type, edge_data, room=None)
         except Exception as e:
             self.logger.error(f"Error handling mesh edge data: {e}", exc_info=True)
@@ -4634,12 +5441,13 @@ class BotDataViewer:
             # Broadcast to subscribed clients
             with self._clients_lock:
                 subscribed_clients = [
-                    client_id for client_id, client_info in self.connected_clients.items()
-                    if client_info.get('subscribed_mesh', False)
+                    client_id
+                    for client_id, client_info in self.connected_clients.items()
+                    if client_info.get("subscribed_mesh", False)
                 ]
 
             if subscribed_clients:
-                self.socketio.emit('mesh_node_added', node_data, room=None)
+                self.socketio.emit("mesh_node_added", node_data, room=None)
         except Exception as e:
             self.logger.error(f"Error handling mesh node data: {e}", exc_info=True)
 
@@ -4648,11 +5456,12 @@ class BotDataViewer:
         try:
             with self._clients_lock:
                 subscribed_clients = [
-                    client_id for client_id, client_info in self.connected_clients.items()
-                    if client_info.get('subscribed_messages', False)
+                    client_id
+                    for client_id, client_info in self.connected_clients.items()
+                    if client_info.get("subscribed_messages", False)
                 ]
             if subscribed_clients:
-                self.socketio.emit('message_data', msg_data, room=None)
+                self.socketio.emit("message_data", msg_data, room=None)
         except Exception as e:
             self.logger.error(f"Error handling message data: {e}")
 
@@ -4661,12 +5470,13 @@ class BotDataViewer:
         try:
             with self._clients_lock:
                 subscribed = [
-                    cid for cid, info in self.connected_clients.items()
-                    if info.get('subscribed_logs', False)
+                    cid
+                    for cid, info in self.connected_clients.items()
+                    if info.get("subscribed_logs", False)
                 ]
             if subscribed:
                 self.socketio.emit(
-                    'log_line', {'line': _strip_ansi_codes(line.rstrip())}, room=None
+                    "log_line", {"line": _strip_ansi_codes(line.rstrip())}, room=None
                 )
         except Exception as e:
             self.logger.error(f"Error broadcasting log line: {e}")
@@ -4676,9 +5486,9 @@ class BotDataViewer:
         import os
         import threading
 
-        log_file = ''
+        log_file = ""
         try:
-            log_file = self.config.get('Logging', 'log_file', fallback='').strip()
+            log_file = self.config.get("Logging", "log_file", fallback="").strip()
             if log_file:
                 log_file = str(resolve_path(log_file, self._config_base))
         except Exception:
@@ -4690,6 +5500,7 @@ class BotDataViewer:
 
         def tail_log():
             import time as _time
+
             self.logger.info(f"Log tail thread started: {log_file}")
             pos = 0
             # Start at end of file so we only stream new lines
@@ -4707,7 +5518,7 @@ class BotDataViewer:
                         # File rotated — start from beginning
                         pos = 0
                     if current_size > pos:
-                        with open(log_file, encoding='utf-8', errors='replace') as fh:
+                        with open(log_file, encoding="utf-8", errors="replace") as fh:
                             fh.seek(pos)
                             for line in fh:
                                 self._handle_log_line(line)
@@ -4726,7 +5537,10 @@ class BotDataViewer:
 
         def poll_database():
             import time as _time
-            last_timestamp = _time.time() - 300  # start 5 min back; subscribe handlers replay full history
+
+            last_timestamp = (
+                _time.time() - 300
+            )  # start 5 min back; subscribe handlers replay full history
             consecutive_errors = 0
             max_consecutive_errors = 10
 
@@ -4736,34 +5550,60 @@ class BotDataViewer:
                     import sqlite3
                     import time
 
+                    # Subscription handlers replay recent history themselves.
+                    # With no live command/packet/message subscribers there is
+                    # nothing to broadcast, so avoid opening SQLite and decoding
+                    # every packet-stream row merely to discard it.
+                    if not self._has_live_stream_subscribers():
+                        last_timestamp = time.time()
+                        # An idle period is not a failure. Without this, an
+                        # error burst before the last subscriber left would
+                        # still be counted against the first poll after the
+                        # next one arrives, mis-escalating its log level and
+                        # backoff.
+                        consecutive_errors = 0
+                        time.sleep(2.0)
+                        continue
+
                     # Check if database file exists and is accessible
                     db_file = Path(self.db_path)
                     if not db_file.exists():
                         consecutive_errors += 1
                         if consecutive_errors == 1 or consecutive_errors % 10 == 0:
-                            self.logger.warning(f"Database file does not exist: {self.db_path}")
+                            self.logger.warning(
+                                f"Database file does not exist: {self.db_path}"
+                            )
                         time.sleep(5)
                         continue
 
                     if not os.access(self.db_path, os.R_OK):
                         consecutive_errors += 1
                         if consecutive_errors == 1 or consecutive_errors % 10 == 0:
-                            self.logger.warning(f"Database file is not readable: {self.db_path}")
+                            self.logger.warning(
+                                f"Database file is not readable: {self.db_path}"
+                            )
                         time.sleep(5)
                         continue
 
                     # Connect to database with timeout to prevent hanging
                     try:
-                        with closing(sqlite3.connect(self.db_path, timeout=60, check_same_thread=False)) as conn:
+                        with closing(
+                            sqlite3.connect(
+                                self.db_path, timeout=60, check_same_thread=False
+                            )
+                        ) as conn:
                             conn.row_factory = sqlite3.Row
                             cursor = conn.cursor()
 
                             # Get new data since last poll
-                            cursor.execute('''
+                            cursor.execute(
+                                """
                                 SELECT timestamp, data, type FROM packet_stream
                                 WHERE timestamp > ?
                                 ORDER BY timestamp ASC
-                            ''', (last_timestamp,))
+                            """,
+                                (last_timestamp,),
+                            )
 
                             rows = cursor.fetchall()
 
@@ -4776,17 +5616,21 @@ class BotDataViewer:
                                     data = json.loads(data_json)
 
                                     # Broadcast based on type
-                                    if data_type == 'command':
+                                    if data_type == "command":
                                         self._handle_command_data(data)
-                                    elif data_type == 'packet':
+                                    elif data_type == "packet":
                                         self._handle_packet_data(data)
-                                    elif data_type == 'routing':
-                                        self._handle_packet_data(data)  # Treat routing as packet data
-                                    elif data_type == 'message':
+                                    elif data_type == "routing":
+                                        self._handle_packet_data(
+                                            data
+                                        )  # Treat routing as packet data
+                                    elif data_type == "message":
                                         self._handle_message_data(data)
 
                                 except Exception as e:
-                                    self.logger.warning(f"Error processing database data: {e}")
+                                    self.logger.warning(
+                                        f"Error processing database data: {e}"
+                                    )
 
                             # Update last timestamp
                             if rows:
@@ -4796,10 +5640,15 @@ class BotDataViewer:
                             consecutive_errors = 0
                     except sqlite3.OperationalError as conn_error:
                         error_msg = str(conn_error)
-                        if "locked" in error_msg.lower() or "database is locked" in error_msg.lower():
+                        if (
+                            "locked" in error_msg.lower()
+                            or "database is locked" in error_msg.lower()
+                        ):
                             consecutive_errors += 1
                             if consecutive_errors == 1 or consecutive_errors % 10 == 0:
-                                self.logger.warning(f"Database is locked, waiting: {self.db_path}")
+                                self.logger.warning(
+                                    f"Database is locked, waiting: {self.db_path}"
+                                )
                             time.sleep(2)
                             continue
                         raise  # Re-raise non-locked OperationalErrors for outer handler to log/backoff
@@ -4828,31 +5677,66 @@ class BotDataViewer:
                     # Log at appropriate level based on error frequency
                     if consecutive_errors >= max_consecutive_errors:
                         if consecutive_errors == max_consecutive_errors:
-                            self.logger.error(f"Database polling persistent error (attempt {consecutive_errors}): {error_msg}")
+                            self.logger.error(
+                                f"Database polling persistent error (attempt {consecutive_errors}): {error_msg}"
+                            )
                         # Exponential backoff for persistent errors
-                        time.sleep(min(60, 2 ** min(consecutive_errors - max_consecutive_errors, 5)))
+                        time.sleep(
+                            min(
+                                60,
+                                2
+                                ** min(consecutive_errors - max_consecutive_errors, 5),
+                            )
+                        )
                     elif consecutive_errors > 3:
-                        self.logger.warning(f"Database polling error (attempt {consecutive_errors}): {error_msg}")
+                        self.logger.warning(
+                            f"Database polling error (attempt {consecutive_errors}): {error_msg}"
+                        )
                         time.sleep(5)  # Wait longer on repeated errors
                     else:
-                        self.logger.debug(f"Database polling error (attempt {consecutive_errors}): {error_msg}")
+                        self.logger.debug(
+                            f"Database polling error (attempt {consecutive_errors}): {error_msg}"
+                        )
                         time.sleep(1)  # Wait longer on error
 
                 except Exception as e:
                     consecutive_errors += 1
                     if consecutive_errors >= max_consecutive_errors:
                         if consecutive_errors == max_consecutive_errors:
-                            self.logger.error(f"Database polling unexpected error (attempt {consecutive_errors}): {e}", exc_info=True)
-                        time.sleep(min(60, 2 ** min(consecutive_errors - max_consecutive_errors, 5)))
+                            self.logger.error(
+                                f"Database polling unexpected error (attempt {consecutive_errors}): {e}",
+                                exc_info=True,
+                            )
+                        time.sleep(
+                            min(
+                                60,
+                                2
+                                ** min(consecutive_errors - max_consecutive_errors, 5),
+                            )
+                        )
                     else:
-                        self.logger.warning(f"Database polling unexpected error (attempt {consecutive_errors}): {e}")
+                        self.logger.warning(
+                            f"Database polling unexpected error (attempt {consecutive_errors}): {e}"
+                        )
                         time.sleep(2)
-
 
         # Start polling thread
         polling_thread = threading.Thread(target=poll_database, daemon=True)
         polling_thread.start()
         self.logger.info("Database polling started")
+
+    def _has_live_stream_subscribers(self) -> bool:
+        """Return whether any client consumes a DB-backed live stream."""
+        subscription_keys = (
+            "subscribed_commands",
+            "subscribed_packets",
+            "subscribed_messages",
+        )
+        with self._clients_lock:
+            return any(
+                any(client.get(key, False) for key in subscription_keys)
+                for client in self.connected_clients.values()
+            )
 
     def _config_int(self, section: str, option: str, fallback: int) -> int:
         """Read an int config value, falling back on a missing or malformed entry."""
@@ -4865,24 +5749,35 @@ class BotDataViewer:
         """Build the dashboard rollup/snapshot service from config."""
         try:
             self.dashboard_snapshot_enabled = self.config.getboolean(
-                'Web_Viewer', 'dashboard_snapshot_enabled', fallback=True
+                "Web_Viewer", "dashboard_snapshot_enabled", fallback=True
             )
         except (configparser.Error, ValueError, TypeError):
             self.dashboard_snapshot_enabled = True
 
         self.dashboard_snapshot_interval = max(
-            15, self._config_int('Web_Viewer', 'dashboard_snapshot_interval_seconds', 60)
+            15,
+            self._config_int("Web_Viewer", "dashboard_snapshot_interval_seconds", 60),
         )
         self.dashboard_stats = DashboardStatsService(
             self.logger,
-            history_days=self._config_int('Web_Viewer', 'dashboard_snapshot_history_days', 400),
-            packet_backfill_rows=self._config_int('Web_Viewer', 'dashboard_packet_backfill_rows', 2000),
+            history_days=self._config_int(
+                "Web_Viewer", "dashboard_snapshot_history_days", 400
+            ),
+            packet_backfill_rows=self._config_int(
+                "Web_Viewer", "dashboard_packet_backfill_rows", 2000
+            ),
             interval_seconds=self.dashboard_snapshot_interval,
             # Retention drives which window labels the UI is allowed to offer,
             # so read the same keys the cleanup jobs enforce.
-            stats_retention_days=self._config_int('Stats_Command', 'data_retention_days', 7),
-            packet_retention_days=self._config_int('Data_Retention', 'packet_stream_retention_days', 3),
-            adverts_retention_days=self._config_int('Data_Retention', 'daily_stats_retention_days', 90),
+            stats_retention_days=self._config_int(
+                "Stats_Command", "data_retention_days", 7
+            ),
+            packet_retention_days=self._config_int(
+                "Data_Retention", "packet_stream_retention_days", 3
+            ),
+            adverts_retention_days=self._config_int(
+                "Data_Retention", "daily_stats_retention_days", 90
+            ),
             multibyte_contacts_fn=self._count_contacts_7d_multibyte,
         )
 
@@ -4950,9 +5845,7 @@ class BotDataViewer:
         """
         conn = sqlite3.connect(self.db_path, timeout=60, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        with suppress(sqlite3.OperationalError):
-            conn.execute(f"PRAGMA busy_timeout={self._config_int('Web_Viewer', 'sqlite_busy_timeout_ms', 60000)}")
-            conn.execute("PRAGMA journal_mode=WAL")
+        self._configure_db_connection(conn)
         return conn
 
     def _start_dashboard_refresher(self):
@@ -4987,21 +5880,29 @@ class BotDataViewer:
                     consecutive_errors = 0
                     self.logger.debug(
                         "Dashboard snapshot refreshed in %sms (%s days, %s packet rows backfilled)",
-                        result['duration_ms'],
-                        result['days'],
-                        result['backfilled_packet_rows'],
+                        result["duration_ms"],
+                        result["days"],
+                        result["backfilled_packet_rows"],
                     )
                 except Exception as e:
                     consecutive_errors += 1
                     if consecutive_errors == 1:
-                        self.logger.error(f"Dashboard snapshot refresh failed: {e}", exc_info=True)
+                        self.logger.error(
+                            f"Dashboard snapshot refresh failed: {e}", exc_info=True
+                        )
                     else:
                         self.logger.warning(
                             f"Dashboard snapshot refresh failed ({consecutive_errors}): {e}"
                         )
-                    delay = min(600, self.dashboard_snapshot_interval * (2 ** min(consecutive_errors, 5)))
+                    delay = min(
+                        600,
+                        self.dashboard_snapshot_interval
+                        * (2 ** min(consecutive_errors, 5)),
+                    )
 
-        thread = threading.Thread(target=refresher, name="dashboard-snapshot", daemon=True)
+        thread = threading.Thread(
+            target=refresher, name="dashboard-snapshot", daemon=True
+        )
         thread.start()
         self.logger.info(
             f"Dashboard snapshot refresher started (every {self.dashboard_snapshot_interval}s)"
@@ -5013,6 +5914,7 @@ class BotDataViewer:
 
         def cleanup_scheduler():
             import time
+
             while True:
                 try:
                     # Clean up stale clients every 5 minutes
@@ -5040,7 +5942,7 @@ class BotDataViewer:
 
             with self._clients_lock:
                 for client_id, client_info in self.connected_clients.items():
-                    last_activity = client_info.get('last_activity', 0)
+                    last_activity = client_info.get("last_activity", 0)
                     if current_time - last_activity > max_idle_seconds:
                         stale_clients.append(client_id)
 
@@ -5061,21 +5963,25 @@ class BotDataViewer:
 
             if days_to_keep is None:
                 days_to_keep = 3
-                if self.config.has_section('Data_Retention') and self.config.has_option('Data_Retention', 'packet_stream_retention_days'):
+                if self.config.has_section("Data_Retention") and self.config.has_option(
+                    "Data_Retention", "packet_stream_retention_days"
+                ):
                     with suppress(ValueError, TypeError):
-                        days_to_keep = self.config.getint('Data_Retention', 'packet_stream_retention_days')
+                        days_to_keep = self.config.getint(
+                            "Data_Retention", "packet_stream_retention_days"
+                        )
 
             cutoff_time = time.time() - (days_to_keep * 24 * 60 * 60)
             batch_size, pause_seconds = retention_delete_settings(self.config)
             total_deleted = delete_timestamp_rows_in_chunks(
                 self._with_db_connection,
-                'packet_stream',
-                'timestamp',
+                "packet_stream",
+                "timestamp",
                 cutoff_time,
                 batch_size=batch_size,
                 pause_seconds=pause_seconds,
                 logger=self.logger,
-                progress_label='packet stream',
+                progress_label="packet stream",
             )
             if total_deleted > 0:
                 self.logger.info(
@@ -5084,12 +5990,21 @@ class BotDataViewer:
                 )
 
         except sqlite3.OperationalError as e:
-            self.logger.warning(f"Database busy during cleanup (will retry next cycle): {e}")
+            self.logger.warning(
+                f"Database busy during cleanup (will retry next cycle): {e}"
+            )
         except Exception as e:
-            self.logger.error(f"Error cleaning up old packet stream data: {e}", exc_info=True)
+            self.logger.error(
+                f"Error cleaning up old packet stream data: {e}", exc_info=True
+            )
 
-    def _get_database_stats(self, top_users_window='all', top_commands_window='all',
-                           top_paths_window='all', top_channels_window='all'):
+    def _get_database_stats(
+        self,
+        top_users_window="all",
+        top_commands_window="all",
+        top_paths_window="all",
+        top_channels_window="all",
+    ):
         """Get comprehensive database statistics for dashboard"""
         conn = None
         try:
@@ -5107,35 +6022,35 @@ class BotDataViewer:
                 client_count = len(self.connected_clients)
 
             stats = {
-                'timestamp': time.time(),
-                'connected_clients': client_count,
-                'tables': tables
+                "timestamp": time.time(),
+                "connected_clients": client_count,
+                "tables": tables,
             }
 
             # Contact and tracking statistics
-            if 'complete_contact_tracking' in tables:
+            if "complete_contact_tracking" in tables:
                 cursor.execute("SELECT COUNT(*) FROM complete_contact_tracking")
-                stats['total_contacts'] = cursor.fetchone()[0]
+                stats["total_contacts"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(*) FROM complete_contact_tracking
                     WHERE last_heard > datetime('now', 'localtime', '-24 hours')
                 """)
-                stats['contacts_24h'] = cursor.fetchone()[0]
+                stats["contacts_24h"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(*) FROM complete_contact_tracking
                     WHERE last_heard > datetime('now', 'localtime', '-7 days')
                 """)
-                stats['contacts_7d'] = cursor.fetchone()[0]
+                stats["contacts_7d"] = cursor.fetchone()[0]
 
                 # Contacts heard in 7d with multibyte path evidence. Scope observed_paths to 7d so
                 # the pie chart matches "last 7 days" (lifetime paths + stale out_bytes_per_hop
                 # otherwise inflated the percentage).
-                stats['contacts_7d_multibyte_path'] = 0
+                stats["contacts_7d_multibyte_path"] = 0
                 chunk_buckets = self._bucket_hop_chunks(set())
                 mb_advert_pks: set[str] = set()
-                if 'observed_paths' in tables:
+                if "observed_paths" in tables:
                     try:
                         chunk_buckets = self._bucket_hop_chunks(
                             self._get_cached_contact_multibyte_hop_chunks(
@@ -5152,10 +6067,14 @@ class BotDataViewer:
                             """
                         )
                         mb_advert_pks = {
-                            row["public_key"] for row in cursor.fetchall() if row["public_key"]
+                            row["public_key"]
+                            for row in cursor.fetchall()
+                            if row["public_key"]
                         }
                     except Exception as e:
-                        self.logger.debug(f"Could not load multibyte path sets for 7d stats: {e}")
+                        self.logger.debug(
+                            f"Could not load multibyte path sets for 7d stats: {e}"
+                        )
                 try:
                     cursor.execute(
                         """
@@ -5174,48 +6093,50 @@ class BotDataViewer:
                             chunk_buckets,
                         ):
                             mb_7d += 1
-                    stats['contacts_7d_multibyte_path'] = mb_7d
+                    stats["contacts_7d_multibyte_path"] = mb_7d
                 except Exception as e:
-                    self.logger.debug(f"Could not compute contacts_7d_multibyte_path: {e}")
+                    self.logger.debug(
+                        f"Could not compute contacts_7d_multibyte_path: {e}"
+                    )
 
                 cursor.execute("""
                     SELECT COUNT(*) FROM complete_contact_tracking
                     WHERE is_currently_tracked = 1
                 """)
-                stats['tracked_contacts'] = cursor.fetchone()[0]
+                stats["tracked_contacts"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT AVG(hop_count) FROM complete_contact_tracking
                     WHERE hop_count IS NOT NULL
                 """)
                 avg_hops = cursor.fetchone()[0]
-                stats['avg_hop_count'] = round(avg_hops, 1) if avg_hops else 0
+                stats["avg_hop_count"] = round(avg_hops, 1) if avg_hops else 0
 
                 cursor.execute("""
                     SELECT MAX(hop_count) FROM complete_contact_tracking
                     WHERE hop_count IS NOT NULL
                 """)
-                stats['max_hop_count'] = cursor.fetchone()[0] or 0
+                stats["max_hop_count"] = cursor.fetchone()[0] or 0
 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT role) FROM complete_contact_tracking
                     WHERE role IS NOT NULL
                 """)
-                stats['unique_roles'] = cursor.fetchone()[0]
+                stats["unique_roles"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT device_type) FROM complete_contact_tracking
                     WHERE device_type IS NOT NULL
                 """)
-                stats['unique_device_types'] = cursor.fetchone()[0]
+                stats["unique_device_types"] = cursor.fetchone()[0]
 
             # Incoming packets: multibyte path share over whatever packet_stream
             # actually retains.  The key names still say 7d for compatibility,
             # but the window is reported honestly alongside them —
             # packet_stream is pruned at 3 days, so the old label was never true.
-            stats['incoming_packets_7d'] = 0
-            stats['incoming_packets_7d_multibyte_path'] = 0
-            if 'packet_stream' in tables:
+            stats["incoming_packets_7d"] = 0
+            stats["incoming_packets_7d_multibyte_path"] = 0
+            if "packet_stream" in tables:
                 try:
                     cutoff_ts = time.time() - 7 * 86400
                     cursor.execute(
@@ -5229,89 +6150,93 @@ class BotDataViewer:
                         ("packet", cutoff_ts),
                     )
                     row = cursor.fetchone()
-                    stats['incoming_packets_7d'] = row[0] or 0
-                    stats['incoming_packets_7d_multibyte_path'] = row[1] or 0
-                    stats['incoming_packets_from'] = row[2]
-                    stats['incoming_packets_window_label'] = humanize_span(
+                    stats["incoming_packets_7d"] = row[0] or 0
+                    stats["incoming_packets_7d_multibyte_path"] = row[1] or 0
+                    stats["incoming_packets_from"] = row[2]
+                    stats["incoming_packets_window_label"] = humanize_span(
                         time.time() - row[2] if row[2] else None
                     )
                 except Exception as e:
-                    self.logger.debug(f"Could not compute incoming packet multibyte stats: {e}")
+                    self.logger.debug(
+                        f"Could not compute incoming packet multibyte stats: {e}"
+                    )
 
             # Advertisement statistics using daily tracking table
-            if 'daily_stats' in tables:
+            if "daily_stats" in tables:
                 # Total advertisements (all time)
                 cursor.execute("""
                     SELECT SUM(advert_count) FROM daily_stats
                 """)
                 total_adverts = cursor.fetchone()[0]
-                stats['total_advertisements'] = total_adverts or 0
+                stats["total_advertisements"] = total_adverts or 0
 
                 # 24h advertisements
                 cursor.execute("""
                     SELECT SUM(advert_count) FROM daily_stats
                     WHERE date = date('now', 'localtime')
                 """)
-                stats['advertisements_24h'] = cursor.fetchone()[0] or 0
+                stats["advertisements_24h"] = cursor.fetchone()[0] or 0
 
                 # 7d advertisements (last 7 days, excluding today)
                 cursor.execute("""
                     SELECT SUM(advert_count) FROM daily_stats
                     WHERE date >= date('now', 'localtime', '-7 days') AND date < date('now', 'localtime')
                 """)
-                stats['advertisements_7d'] = cursor.fetchone()[0] or 0
+                stats["advertisements_7d"] = cursor.fetchone()[0] or 0
 
                 # Nodes per day statistics
                 cursor.execute("""
                     SELECT COUNT(DISTINCT public_key) FROM daily_stats
                     WHERE date = date('now', 'localtime')
                 """)
-                stats['nodes_24h'] = cursor.fetchone()[0] or 0
+                stats["nodes_24h"] = cursor.fetchone()[0] or 0
 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT public_key) FROM daily_stats
                     WHERE date >= date('now', 'localtime', '-6 days')
                 """)
-                stats['nodes_7d'] = cursor.fetchone()[0] or 0
+                stats["nodes_7d"] = cursor.fetchone()[0] or 0
 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT public_key) FROM daily_stats
                 """)
-                stats['nodes_all'] = cursor.fetchone()[0] or 0
+                stats["nodes_all"] = cursor.fetchone()[0] or 0
             else:
                 # Fallback to old method if daily table doesn't exist yet
-                if 'complete_contact_tracking' in tables:
+                if "complete_contact_tracking" in tables:
                     cursor.execute("""
                         SELECT SUM(advert_count) FROM complete_contact_tracking
                     """)
                     total_adverts = cursor.fetchone()[0]
-                    stats['total_advertisements'] = total_adverts or 0
+                    stats["total_advertisements"] = total_adverts or 0
 
                     cursor.execute("""
                         SELECT SUM(advert_count) FROM complete_contact_tracking
                         WHERE last_heard > datetime('now', 'localtime', '-24 hours')
                     """)
-                    stats['advertisements_24h'] = cursor.fetchone()[0] or 0
+                    stats["advertisements_24h"] = cursor.fetchone()[0] or 0
 
                     cursor.execute("""
                         SELECT SUM(advert_count) FROM complete_contact_tracking
                         WHERE last_heard > datetime('now', 'localtime', '-7 days')
                     """)
-                    stats['advertisements_7d'] = cursor.fetchone()[0] or 0
+                    stats["advertisements_7d"] = cursor.fetchone()[0] or 0
 
             # Repeater contacts (if exists)
-            if 'repeater_contacts' in tables:
+            if "repeater_contacts" in tables:
                 cursor.execute("SELECT COUNT(*) FROM repeater_contacts")
-                stats['repeater_contacts'] = cursor.fetchone()[0]
+                stats["repeater_contacts"] = cursor.fetchone()[0]
 
-                cursor.execute("SELECT COUNT(*) FROM repeater_contacts WHERE is_active = 1")
-                stats['active_repeater_contacts'] = cursor.fetchone()[0]
+                cursor.execute(
+                    "SELECT COUNT(*) FROM repeater_contacts WHERE is_active = 1"
+                )
+                stats["active_repeater_contacts"] = cursor.fetchone()[0]
 
             # Cache statistics
-            cache_tables = [t for t in tables if 'cache' in t]
-            stats['cache_tables'] = cache_tables
-            stats['total_cache_entries'] = 0
-            stats['active_cache_entries'] = 0
+            cache_tables = [t for t in tables if "cache" in t]
+            stats["cache_tables"] = cache_tables
+            stats["total_cache_entries"] = 0
+            stats["active_cache_entries"] = 0
 
             for table in cache_tables:
                 try:
@@ -5321,45 +6246,49 @@ class BotDataViewer:
                     raise
                 cursor.execute(f"SELECT COUNT(*) FROM {table}")
                 count = cursor.fetchone()[0]
-                stats['total_cache_entries'] += count
-                stats[f'{table}_count'] = count
+                stats["total_cache_entries"] += count
+                stats[f"{table}_count"] = count
 
                 # Get active entries (not expired)
-                cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE expires_at > datetime('now')")
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE expires_at > datetime('now')"
+                )
                 active_count = cursor.fetchone()[0]
-                stats['active_cache_entries'] += active_count
-                stats[f'{table}_active'] = active_count
+                stats["active_cache_entries"] += active_count
+                stats[f"{table}_active"] = active_count
 
             # Message and command statistics (if stats tables exist)
-            if 'message_stats' in tables:
+            if "message_stats" in tables:
                 cursor.execute("SELECT COUNT(*) FROM message_stats")
-                stats['total_messages'] = cursor.fetchone()[0]
+                stats["total_messages"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(*) FROM message_stats
                     WHERE timestamp > strftime('%s', 'now', '-24 hours')
                 """)
-                stats['messages_24h'] = cursor.fetchone()[0]
+                stats["messages_24h"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT sender_id) FROM message_stats
                     WHERE timestamp > strftime('%s', 'now', '-24 hours')
                 """)
-                stats['unique_senders_24h'] = cursor.fetchone()[0]
+                stats["unique_senders_24h"] = cursor.fetchone()[0]
 
                 # Total unique users and channels
                 cursor.execute("SELECT COUNT(DISTINCT sender_id) FROM message_stats")
-                stats['unique_users_total'] = cursor.fetchone()[0]
+                stats["unique_users_total"] = cursor.fetchone()[0]
 
-                cursor.execute("SELECT COUNT(DISTINCT channel) FROM message_stats WHERE channel IS NOT NULL")
-                stats['unique_channels_total'] = cursor.fetchone()[0]
+                cursor.execute(
+                    "SELECT COUNT(DISTINCT channel) FROM message_stats WHERE channel IS NOT NULL"
+                )
+                stats["unique_channels_total"] = cursor.fetchone()[0]
 
                 # Top users (most frequent message senders) - filter by time window
-                if top_users_window == '24h':
+                if top_users_window == "24h":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-24 hours')"
-                elif top_users_window == '7d':
+                elif top_users_window == "7d":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-7 days')"
-                elif top_users_window == '30d':
+                elif top_users_window == "30d":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-30 days')"
                 else:  # 'all'
                     time_filter = ""
@@ -5373,14 +6302,16 @@ class BotDataViewer:
                     LIMIT 15
                 """
                 cursor.execute(query)
-                stats['top_users'] = [{'user': row[0], 'count': row[1]} for row in cursor.fetchall()]
+                stats["top_users"] = [
+                    {"user": row[0], "count": row[1]} for row in cursor.fetchall()
+                ]
 
                 # Top channels by message count - filter by time window
-                if top_channels_window == '24h':
+                if top_channels_window == "24h":
                     time_filter = "AND timestamp > strftime('%s', 'now', '-24 hours')"
-                elif top_channels_window == '7d':
+                elif top_channels_window == "7d":
                     time_filter = "AND timestamp > strftime('%s', 'now', '-7 days')"
-                elif top_channels_window == '30d':
+                elif top_channels_window == "30d":
                     time_filter = "AND timestamp > strftime('%s', 'now', '-30 days')"
                 else:  # 'all'
                     time_filter = ""
@@ -5394,27 +6325,27 @@ class BotDataViewer:
                     LIMIT 10
                 """
                 cursor.execute(query)
-                stats['top_channels'] = [
-                    {'channel': row[0], 'messages': row[1], 'users': row[2]}
+                stats["top_channels"] = [
+                    {"channel": row[0], "messages": row[1], "users": row[2]}
                     for row in cursor.fetchall()
                 ]
 
-            if 'command_stats' in tables:
+            if "command_stats" in tables:
                 cursor.execute("SELECT COUNT(*) FROM command_stats")
-                stats['total_commands'] = cursor.fetchone()[0]
+                stats["total_commands"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(*) FROM command_stats
                     WHERE timestamp > strftime('%s', 'now', '-24 hours')
                 """)
-                stats['commands_24h'] = cursor.fetchone()[0]
+                stats["commands_24h"] = cursor.fetchone()[0]
 
                 # Top commands - filter by time window
-                if top_commands_window == '24h':
+                if top_commands_window == "24h":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-24 hours')"
-                elif top_commands_window == '7d':
+                elif top_commands_window == "7d":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-7 days')"
-                elif top_commands_window == '30d':
+                elif top_commands_window == "30d":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-30 days')"
                 else:  # 'all'
                     time_filter = ""
@@ -5428,7 +6359,9 @@ class BotDataViewer:
                     LIMIT 15
                 """
                 cursor.execute(query)
-                stats['top_commands'] = [{'command': row[0], 'count': row[1]} for row in cursor.fetchall()]
+                stats["top_commands"] = [
+                    {"command": row[0], "count": row[1]} for row in cursor.fetchall()
+                ]
 
                 # Bot reply rates (commands that got responses) - calculate for different time windows
                 # 24 hour reply rate
@@ -5443,9 +6376,11 @@ class BotDataViewer:
                 """)
                 total_24h = cursor.fetchone()[0]
                 if total_24h > 0:
-                    stats['bot_reply_rate_24h'] = round((replied_24h / total_24h) * 100, 1)
+                    stats["bot_reply_rate_24h"] = round(
+                        (replied_24h / total_24h) * 100, 1
+                    )
                 else:
-                    stats['bot_reply_rate_24h'] = 0
+                    stats["bot_reply_rate_24h"] = 0
 
                 # 7 day reply rate
                 cursor.execute("""
@@ -5459,9 +6394,9 @@ class BotDataViewer:
                 """)
                 total_7d = cursor.fetchone()[0]
                 if total_7d > 0:
-                    stats['bot_reply_rate_7d'] = round((replied_7d / total_7d) * 100, 1)
+                    stats["bot_reply_rate_7d"] = round((replied_7d / total_7d) * 100, 1)
                 else:
-                    stats['bot_reply_rate_7d'] = 0
+                    stats["bot_reply_rate_7d"] = 0
 
                 # 30 day reply rate
                 cursor.execute("""
@@ -5475,12 +6410,14 @@ class BotDataViewer:
                 """)
                 total_30d = cursor.fetchone()[0]
                 if total_30d > 0:
-                    stats['bot_reply_rate_30d'] = round((replied_30d / total_30d) * 100, 1)
+                    stats["bot_reply_rate_30d"] = round(
+                        (replied_30d / total_30d) * 100, 1
+                    )
                 else:
-                    stats['bot_reply_rate_30d'] = 0
+                    stats["bot_reply_rate_30d"] = 0
 
             # Path statistics (if path_stats table exists)
-            if 'path_stats' in tables:
+            if "path_stats" in tables:
                 cursor.execute("""
                     SELECT sender_id, path_length, path_string, timestamp
                     FROM path_stats
@@ -5489,19 +6426,19 @@ class BotDataViewer:
                 """)
                 longest_path = cursor.fetchone()
                 if longest_path:
-                    stats['longest_path'] = {
-                        'user': longest_path[0],
-                        'path_length': longest_path[1],
-                        'path_string': longest_path[2],
-                        'timestamp': longest_path[3]
+                    stats["longest_path"] = {
+                        "user": longest_path[0],
+                        "path_length": longest_path[1],
+                        "path_string": longest_path[2],
+                        "timestamp": longest_path[3],
                     }
 
                 # Top paths (longest paths) - filter by time window
-                if top_paths_window == '24h':
+                if top_paths_window == "24h":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-24 hours')"
-                elif top_paths_window == '7d':
+                elif top_paths_window == "7d":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-7 days')"
-                elif top_paths_window == '30d':
+                elif top_paths_window == "30d":
                     time_filter = "WHERE timestamp > strftime('%s', 'now', '-30 days')"
                 else:  # 'all'
                     time_filter = ""
@@ -5514,35 +6451,37 @@ class BotDataViewer:
                     LIMIT 5
                 """
                 cursor.execute(query)
-                stats['top_paths'] = [
+                stats["top_paths"] = [
                     {
-                        'user': row[0],
-                        'path_length': row[1],
-                        'path_string': row[2],
-                        'timestamp': row[3]
+                        "user": row[0],
+                        "path_length": row[1],
+                        "path_string": row[2],
+                        "timestamp": row[3],
                     }
                     for row in cursor.fetchall()
                 ]
 
             # Network health metrics
-            if 'complete_contact_tracking' in tables:
+            if "complete_contact_tracking" in tables:
                 cursor.execute("""
                     SELECT AVG(snr) FROM complete_contact_tracking
                     WHERE snr IS NOT NULL AND last_heard > datetime('now', 'localtime', '-24 hours')
                 """)
                 avg_snr = cursor.fetchone()[0]
-                stats['avg_snr_24h'] = round(avg_snr, 1) if avg_snr else 0
+                stats["avg_snr_24h"] = round(avg_snr, 1) if avg_snr else 0
 
                 cursor.execute("""
                     SELECT AVG(signal_strength) FROM complete_contact_tracking
                     WHERE signal_strength IS NOT NULL AND last_heard > datetime('now', 'localtime', '-24 hours')
                 """)
                 avg_signal = cursor.fetchone()[0]
-                stats['avg_signal_strength_24h'] = round(avg_signal, 1) if avg_signal else 0
+                stats["avg_signal_strength_24h"] = (
+                    round(avg_signal, 1) if avg_signal else 0
+                )
 
             # Geographic distribution - only count currently tracked contacts heard in the last 30 days
             # Normalize country names to avoid duplicates (e.g., "United States" vs "United States of America")
-            if 'complete_contact_tracking' in tables:
+            if "complete_contact_tracking" in tables:
                 cursor.execute("""
                     SELECT COUNT(DISTINCT
                         CASE
@@ -5555,7 +6494,7 @@ class BotDataViewer:
                     AND last_heard > datetime('now', 'localtime', '-30 days')
                     AND is_currently_tracked = 1
                 """)
-                stats['countries'] = cursor.fetchone()[0]
+                stats["countries"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT state) FROM complete_contact_tracking
@@ -5563,7 +6502,7 @@ class BotDataViewer:
                     AND last_heard > datetime('now', 'localtime', '-30 days')
                     AND is_currently_tracked = 1
                 """)
-                stats['states'] = cursor.fetchone()[0]
+                stats["states"] = cursor.fetchone()[0]
 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT city) FROM complete_contact_tracking
@@ -5571,13 +6510,13 @@ class BotDataViewer:
                     AND last_heard > datetime('now', 'localtime', '-30 days')
                     AND is_currently_tracked = 1
                 """)
-                stats['cities'] = cursor.fetchone()[0]
+                stats["cities"] = cursor.fetchone()[0]
 
             return stats
 
         except Exception as e:
             self.logger.error(f"Error getting database stats: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
         finally:
             if conn:
                 conn.close()
@@ -5590,14 +6529,13 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             # Get all tables
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            )
             table_names = [row[0] for row in cursor.fetchall()]
 
             # Filter tables by ALLOWED_TABLES whitelist for security
-            table_names = [
-                name for name in table_names
-                if name in self.ALLOWED_TABLES
-            ]
+            table_names = [name for name in table_names if name in self.ALLOWED_TABLES]
 
             # Get table information
             tables = []
@@ -5616,56 +6554,65 @@ class BotDataViewer:
 
                     # Estimate size (rough calculation)
                     estimated_size = record_count * len(columns) * 50  # Rough estimate
-                    size_str = f"{estimated_size:,} bytes" if estimated_size < 1024 else f"{estimated_size/1024:.1f} KB"
+                    size_str = (
+                        f"{estimated_size:,} bytes"
+                        if estimated_size < 1024
+                        else f"{estimated_size / 1024:.1f} KB"
+                    )
 
                     # Get table description based on name
                     description = self._get_table_description(table_name)
 
-                    tables.append({
-                        'name': table_name,
-                        'record_count': record_count,
-                        'size': size_str,
-                        'description': description
-                    })
+                    tables.append(
+                        {
+                            "name": table_name,
+                            "record_count": record_count,
+                            "size": size_str,
+                            "description": description,
+                        }
+                    )
 
                 except Exception as e:
                     self.logger.debug(f"Error getting info for table {table_name}: {e}")
-                    tables.append({
-                        'name': table_name,
-                        'record_count': 0,
-                        'size': 'Unknown',
-                        'description': 'Error reading table'
-                    })
+                    tables.append(
+                        {
+                            "name": table_name,
+                            "record_count": 0,
+                            "size": "Unknown",
+                            "description": "Error reading table",
+                        }
+                    )
 
             # Get database file size
             import os
+
             try:
                 db_size_bytes = os.path.getsize(self.db_path)
                 if db_size_bytes < 1024:
                     db_size = f"{db_size_bytes} bytes"
                 elif db_size_bytes < 1024 * 1024:
-                    db_size = f"{db_size_bytes/1024:.1f} KB"
+                    db_size = f"{db_size_bytes / 1024:.1f} KB"
                 else:
-                    db_size = f"{db_size_bytes/(1024*1024):.1f} MB"
+                    db_size = f"{db_size_bytes / (1024 * 1024):.1f} MB"
             except:
                 db_size = "Unknown"
 
             return {
-                'total_tables': len(table_names),
-                'total_records': total_records,
-                'last_updated': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'db_size': db_size,
-                'tables': tables
+                "total_tables": len(table_names),
+                "total_records": total_records,
+                "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "db_size": db_size,
+                "tables": tables,
             }
 
         except Exception as e:
             self.logger.error(f"Error getting database info: {e}")
             return {
-                'total_tables': 0,
-                'total_records': 0,
-                'last_updated': 'Error',
-                'db_size': 'Unknown',
-                'tables': []
+                "total_tables": 0,
+                "total_records": 0,
+                "last_updated": "Error",
+                "db_size": "Unknown",
+                "tables": [],
             }
         finally:
             if conn:
@@ -5687,16 +6634,16 @@ class BotDataViewer:
     def _get_table_description(self, table_name):
         """Get human-readable description for table"""
         descriptions = {
-            'packet_stream': 'Real-time packet and command data stream',
-            'complete_contact_tracking': 'Contact tracking and device information',
-            'repeater_contacts': 'Repeater contact management',
-            'message_stats': 'Message statistics and analytics',
-            'command_stats': 'Command execution statistics',
-            'path_stats': 'Network path statistics',
-            'geocoding_cache': 'Geocoding service cache',
-            'generic_cache': 'General purpose cache storage'
+            "packet_stream": "Real-time packet and command data stream",
+            "complete_contact_tracking": "Contact tracking and device information",
+            "repeater_contacts": "Repeater contact management",
+            "message_stats": "Message statistics and analytics",
+            "command_stats": "Command execution statistics",
+            "path_stats": "Network path statistics",
+            "geocoding_cache": "Geocoding service cache",
+            "generic_cache": "General purpose cache storage",
         }
-        return descriptions.get(table_name, 'Database table')
+        return descriptions.get(table_name, "Database table")
 
     def _optimize_database(self):
         """Optimize database using VACUUM, ANALYZE, and REINDEX"""
@@ -5707,6 +6654,7 @@ class BotDataViewer:
 
             # Get initial database size
             import os
+
             initial_size = os.path.getsize(self.db_path)
 
             # Perform VACUUM to reclaim unused space
@@ -5745,28 +6693,25 @@ class BotDataViewer:
                 if size_bytes < 1024:
                     return f"{size_bytes} bytes"
                 elif size_bytes < 1024 * 1024:
-                    return f"{size_bytes/1024:.1f} KB"
+                    return f"{size_bytes / 1024:.1f} KB"
                 else:
-                    return f"{size_bytes/(1024*1024):.1f} MB"
+                    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
             return {
-                'success': True,
-                'vacuum_result': f"VACUUM completed - saved {format_size(vacuum_saved)}",
-                'analyze_result': f"ANALYZE completed - updated statistics for {len(tables)} tables",
-                'reindex_result': f"REINDEX completed - rebuilt indexes for {len(reindexed_tables)} tables",
-                'initial_size': format_size(initial_size),
-                'final_size': format_size(final_size),
-                'total_saved': format_size(total_saved),
-                'tables_processed': len(tables),
-                'tables_reindexed': len(reindexed_tables)
+                "success": True,
+                "vacuum_result": f"VACUUM completed - saved {format_size(vacuum_saved)}",
+                "analyze_result": f"ANALYZE completed - updated statistics for {len(tables)} tables",
+                "reindex_result": f"REINDEX completed - rebuilt indexes for {len(reindexed_tables)} tables",
+                "initial_size": format_size(initial_size),
+                "final_size": format_size(final_size),
+                "total_saved": format_size(total_saved),
+                "tables_processed": len(tables),
+                "tables_reindexed": len(reindexed_tables),
             }
 
         except Exception as e:
             self.logger.error(f"Error optimizing database: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            return {"success": False, "error": str(e)}
         finally:
             if conn:
                 conn.close()
@@ -5853,11 +6798,11 @@ class BotDataViewer:
             self.logger.debug(f"Could not fingerprint multibyte hop chunks: {e}")
             return self._collect_multibyte_hop_chunks(cursor, recent_days=recent_days)
 
-        lock = getattr(self, '_contacts_badge_cache_lock', None)
+        lock = getattr(self, "_contacts_badge_cache_lock", None)
         if lock is None:
             lock = self._contacts_badge_cache_lock = threading.Lock()
         with lock:
-            cache = getattr(self, '_contacts_badge_cache', None)
+            cache = getattr(self, "_contacts_badge_cache", None)
             if cache is None:
                 cache = self._contacts_badge_cache = {}
             cached = cache.get(recent_days)
@@ -5933,9 +6878,7 @@ class BotDataViewer:
                 return "multibyte"
 
         # One-byte: positive signal and no multibyte observation
-        has_signal = bool(
-            advert_count > 0 or len(all_paths) > 0 or out_path_len >= 0
-        )
+        has_signal = bool(advert_count > 0 or len(all_paths) > 0 or out_path_len >= 0)
         if not has_signal:
             return None
 
@@ -6000,7 +6943,7 @@ class BotDataViewer:
                 AND public_key IS NOT NULL {path_time_cond}
                 """
             )
-            mb_senders: set[str] = {r['public_key'] for r in cursor.fetchall()}
+            mb_senders: set[str] = {r["public_key"] for r in cursor.fetchall()}
 
             cursor.execute(
                 f"""
@@ -6013,28 +6956,32 @@ class BotDataViewer:
 
             metrics: dict[str, dict] = {}
             for row in cursor.fetchall():
-                if row['public_key'] in mb_senders:
+                if row["public_key"] in mb_senders:
                     continue
-                ph = (row['path_hex'] or '').lower()
+                ph = (row["path_hex"] or "").lower()
                 if not ph:
                     continue
-                obs = row['observation_count'] or 1
+                obs = row["observation_count"] or 1
                 for i in range(0, len(ph) - 1, 2):
-                    chunk = ph[i:i + 2]
+                    chunk = ph[i : i + 2]
                     if len(chunk) != 2:
                         continue
                     if chunk not in metrics:
-                        metrics[chunk] = {'relay_score': 0, 'sources': set(), 'to_prefixes': set()}
-                    metrics[chunk]['relay_score'] += obs
-                    metrics[chunk]['sources'].add(row['public_key'])
-                    if row['to_prefix']:
-                        metrics[chunk]['to_prefixes'].add(row['to_prefix'])
+                        metrics[chunk] = {
+                            "relay_score": 0,
+                            "sources": set(),
+                            "to_prefixes": set(),
+                        }
+                    metrics[chunk]["relay_score"] += obs
+                    metrics[chunk]["sources"].add(row["public_key"])
+                    if row["to_prefix"]:
+                        metrics[chunk]["to_prefixes"].add(row["to_prefix"])
 
             return {
                 pfx: {
-                    'relay_score':    v['relay_score'],
-                    'unique_sources': len(v['sources']),
-                    'unique_dests':   len(v['to_prefixes']),
+                    "relay_score": v["relay_score"],
+                    "unique_sources": len(v["sources"]),
+                    "unique_dests": len(v["to_prefixes"]),
                 }
                 for pfx, v in metrics.items()
             }
@@ -6061,7 +7008,7 @@ class BotDataViewer:
             )
             degree: dict[str, int] = {}
             for row in cursor.fetchall():
-                fk, tk = row['from_public_key'], row['to_public_key']
+                fk, tk = row["from_public_key"], row["to_public_key"]
                 if fk in unupgraded_pks and tk in unupgraded_pks:
                     degree[fk] = degree.get(fk, 0) + 1
                     degree[tk] = degree.get(tk, 0) + 1
@@ -6070,7 +7017,9 @@ class BotDataViewer:
             self.logger.debug(f"Could not compute legacy degree: {e}")
             return {}
 
-    def _get_multibyte_rollout_data(self, since: str = '30d', node_type: str = 'all') -> dict:
+    def _get_multibyte_rollout_data(
+        self, since: str = "30d", node_type: str = "all"
+    ) -> dict:
         """Return multibyte hash rollout analytics for repeaters and/or room servers.
 
         since: 24h | 7d | 30d | 90d | all — window applied to last_heard in complete_contact_tracking.
@@ -6083,9 +7032,9 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             # Role filter based on node_type
-            if node_type == 'repeater':
+            if node_type == "repeater":
                 role_filter = "c.role = 'repeater'"
-            elif node_type == 'roomserver':
+            elif node_type == "roomserver":
                 role_filter = "c.role = 'roomserver'"
             else:
                 role_filter = "c.role IN ('repeater', 'roomserver')"
@@ -6094,10 +7043,10 @@ class BotDataViewer:
             # (e.g. '2026-05-17 10:30:00.123456').  Use SQLite's datetime() so the comparison
             # is ISO-text vs ISO-text, which sorts correctly lexicographically.
             datetime_offsets = {
-                '24h': "'-24 hours'",
-                '7d':  "'-7 days'",
-                '30d': "'-30 days'",
-                '90d': "'-90 days'",
+                "24h": "'-24 hours'",
+                "7d": "'-7 days'",
+                "30d": "'-30 days'",
+                "90d": "'-90 days'",
             }
             if since in datetime_offsets:
                 where_clause = (
@@ -6115,7 +7064,7 @@ class BotDataViewer:
 
             # Collect multibyte hop chunks for prefix matching, scoped to the same window as the
             # contact filter so the rollout numbers are consistent with the dashboard's 7d stats.
-            _since_to_days = {'24h': 1, '7d': 7, '30d': 30, '90d': 90}
+            _since_to_days = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
             _chunk_recent_days = _since_to_days.get(since)  # None → all-time for 'all'
             multibyte_hop_chunks: set[str] = set()
             if has_observed_paths:
@@ -6139,10 +7088,10 @@ class BotDataViewer:
                     """
                 )
                 for pt_row in cursor.fetchall():
-                    path_traffic[pt_row['public_key']] = {
-                        'total_traffic': pt_row['total_traffic'] or 0,
-                        'mb_traffic':    pt_row['mb_traffic'] or 0,
-                        'latest_path_seen': pt_row['latest_path_seen'],
+                    path_traffic[pt_row["public_key"]] = {
+                        "total_traffic": pt_row["total_traffic"] or 0,
+                        "mb_traffic": pt_row["mb_traffic"] or 0,
+                        "latest_path_seen": pt_row["latest_path_seen"],
                     }
 
             # Scope the path history to the same window so badge evidence matches the since filter.
@@ -6189,74 +7138,86 @@ class BotDataViewer:
                     """
                 )
                 for prow in cursor.fetchall():
-                    ph = prow['path_hex']
+                    ph = prow["path_hex"]
                     if not ph:
                         continue
                     bph = 1
-                    if prow['bytes_per_hop'] is not None:
+                    if prow["bytes_per_hop"] is not None:
                         try:
-                            bph = int(prow['bytes_per_hop'])
+                            bph = int(prow["bytes_per_hop"])
                             if bph not in (1, 2, 3):
                                 bph = 1
                         except (TypeError, ValueError):
                             bph = 1
-                    paths_by_key.setdefault(prow['public_key'], []).append({
-                        'path_hex': ph,
-                        'bytes_per_hop': bph,
-                        'observation_count': int(prow['observation_count']) if prow['observation_count'] is not None else 1,
-                        'last_seen': prow['last_seen'] if prow['last_seen'] is not None else None,
-                    })
+                    paths_by_key.setdefault(prow["public_key"], []).append(
+                        {
+                            "path_hex": ph,
+                            "bytes_per_hop": bph,
+                            "observation_count": int(prow["observation_count"])
+                            if prow["observation_count"] is not None
+                            else 1,
+                            "last_seen": prow["last_seen"]
+                            if prow["last_seen"] is not None
+                            else None,
+                        }
+                    )
 
             # Classify each repeater
             status_counts: dict[str, int] = {
-                'multibyte_direct': 0,
-                'multibyte_relayed': 0,
-                'single_byte': 0,
-                'unknown': 0,
+                "multibyte_direct": 0,
+                "multibyte_relayed": 0,
+                "single_byte": 0,
+                "unknown": 0,
             }
             all_repeaters: list[dict] = []
 
             for row in main_rows:
-                pk = row['public_key']
+                pk = row["public_key"]
 
                 # Recent advert paths for this contact (grouped from the path query above)
                 all_paths = paths_by_key.get(pk, [])
 
                 badge = self._compute_path_encoding_badge(row, all_paths, chunk_buckets)
 
-                obph_raw = row['out_bytes_per_hop']
+                obph_raw = row["out_bytes_per_hop"]
                 try:
                     obph: int | None = int(obph_raw) if obph_raw is not None else None
                 except (TypeError, ValueError):
                     obph = None
 
-                if badge == 'multibyte':
-                    status = 'multibyte_direct' if obph in (2, 3) else 'multibyte_relayed'
-                elif badge == 'one_byte':
-                    status = 'single_byte'
+                if badge == "multibyte":
+                    status = (
+                        "multibyte_direct" if obph in (2, 3) else "multibyte_relayed"
+                    )
+                elif badge == "one_byte":
+                    status = "single_byte"
                 else:
-                    status = 'unknown'
+                    status = "unknown"
 
                 status_counts[status] += 1
 
-                loc_parts = [p for p in [row['city'], row['state'], row['country']] if p]
+                loc_parts = [
+                    p for p in [row["city"], row["state"], row["country"]] if p
+                ]
 
-                pt = path_traffic.get(pk or '', {})
-                all_repeaters.append({
-                    'public_key':      pk,
-                    'name':            row['name'],
-                    'role':            row['role'],
-                    'device_type':     row['device_type'],
-                    'status':          status,
-                    'out_bytes_per_hop': obph,
-                    'advert_count':    row['advert_count'] or 0,
-                    'total_traffic':   pt.get('total_traffic', 0),
-                    'last_seen':       row['last_heard'],
-                    'first_heard':     row['first_heard'],
-                    'location':        ', '.join(loc_parts),
-                    'latitude':        row['latitude'],
-                    'longitude':       row['longitude'],
-                })
+                pt = path_traffic.get(pk or "", {})
+                all_repeaters.append(
+                    {
+                        "public_key": pk,
+                        "name": row["name"],
+                        "role": row["role"],
+                        "device_type": row["device_type"],
+                        "status": status,
+                        "out_bytes_per_hop": obph,
+                        "advert_count": row["advert_count"] or 0,
+                        "total_traffic": pt.get("total_traffic", 0),
+                        "last_seen": row["last_heard"],
+                        "first_heard": row["first_heard"],
+                        "location": ", ".join(loc_parts),
+                        "latitude": row["latitude"],
+                        "longitude": row["longitude"],
+                    }
+                )
 
             # ── Priority scoring ──────────────────────────────────────────────────
             unupgraded_pks: set[str] = set()
@@ -6265,15 +7226,17 @@ class BotDataViewer:
             # in those paths, so surfacing them in the tooltip is important.
             all_by_prefix: dict[str, list[dict]] = {}
             for r in all_repeaters:
-                if r['public_key']:
-                    pfx = r['public_key'][:2].lower()
+                if r["public_key"]:
+                    pfx = r["public_key"][:2].lower()
                     all_by_prefix.setdefault(pfx, []).append(r)
-                if r['status'] == 'single_byte' and r['public_key']:
-                    unupgraded_pks.add(r['public_key'])
+                if r["status"] == "single_byte" and r["public_key"]:
+                    unupgraded_pks.add(r["public_key"])
 
             sb_metrics: dict[str, dict] = {}
             if has_observed_paths and unupgraded_pks:
-                sb_metrics = self._compute_single_byte_relay_metrics(cursor, path_time_cond)
+                sb_metrics = self._compute_single_byte_relay_metrics(
+                    cursor, path_time_cond
+                )
 
             legacy_degree: dict[str, int] = {}
             try:
@@ -6283,9 +7246,7 @@ class BotDataViewer:
                 if cursor.fetchone() is not None and unupgraded_pks:
                     mc_since_cond = ""
                     if since in datetime_offsets:
-                        mc_since_cond = (
-                            f"AND last_seen >= datetime('now', 'localtime', {datetime_offsets[since]})"
-                        )
+                        mc_since_cond = f"AND last_seen >= datetime('now', 'localtime', {datetime_offsets[since]})"
                     legacy_degree = self._compute_legacy_degree(
                         cursor, unupgraded_pks, mc_since_cond
                     )
@@ -6293,26 +7254,30 @@ class BotDataViewer:
                 self.logger.debug(f"Legacy degree skipped: {e}")
 
             for r in all_repeaters:
-                if r['status'] == 'single_byte' and r['public_key']:
-                    pfx = r['public_key'][:2].lower()
+                if r["status"] == "single_byte" and r["public_key"]:
+                    pfx = r["public_key"][:2].lower()
                     m = sb_metrics.get(pfx, {})
-                    r['relay_score']    = m.get('relay_score', 0)
-                    r['unique_sources'] = m.get('unique_sources', 0)
-                    r['unique_dests']   = m.get('unique_dests', 0)
-                    r['legacy_degree']  = legacy_degree.get(r['public_key'], 0)
+                    r["relay_score"] = m.get("relay_score", 0)
+                    r["unique_sources"] = m.get("unique_sources", 0)
+                    r["unique_dests"] = m.get("unique_dests", 0)
+                    r["legacy_degree"] = legacy_degree.get(r["public_key"], 0)
                     # prefix_peers: ALL other nodes (any status) sharing this 1-byte prefix.
                     # Confirmed-multibyte peers explain inflated scores on low-traffic nodes.
-                    r['prefix_peers']   = [
-                        {'public_key': r2['public_key'], 'name': r2['name'], 'status': r2['status']}
+                    r["prefix_peers"] = [
+                        {
+                            "public_key": r2["public_key"],
+                            "name": r2["name"],
+                            "status": r2["status"],
+                        }
                         for r2 in all_by_prefix.get(pfx, [])
-                        if r2['public_key'] != r['public_key']
+                        if r2["public_key"] != r["public_key"]
                     ]
                 else:
-                    r['relay_score']    = 0
-                    r['unique_sources'] = 0
-                    r['unique_dests']   = 0
-                    r['legacy_degree']  = 0
-                    r['prefix_peers']   = []
+                    r["relay_score"] = 0
+                    r["unique_sources"] = 0
+                    r["unique_dests"] = 0
+                    r["legacy_degree"] = 0
+                    r["prefix_peers"] = []
 
             # ── Name-based suppression ────────────────────────────────────────────
             # A single_byte record that shares a name with a confirmed-multibyte
@@ -6320,30 +7285,35 @@ class BotDataViewer:
             # entry reflects stale traffic from before the firmware upgrade.
             # Suppress it so it doesn't appear as an upgrade target or inflate counts.
             multibyte_names: set[str] = {
-                r['name'].strip().lower()
+                r["name"].strip().lower()
                 for r in all_repeaters
-                if r['status'] in ('multibyte_direct', 'multibyte_relayed') and r['name']
+                if r["status"] in ("multibyte_direct", "multibyte_relayed")
+                and r["name"]
             }
             if multibyte_names:
                 kept: list[dict] = []
                 for r in all_repeaters:
-                    if (r['status'] == 'single_byte'
-                            and r['name']
-                            and r['name'].strip().lower() in multibyte_names):
-                        status_counts['single_byte'] -= 1
+                    if (
+                        r["status"] == "single_byte"
+                        and r["name"]
+                        and r["name"].strip().lower() in multibyte_names
+                    ):
+                        status_counts["single_byte"] -= 1
                     else:
                         kept.append(r)
                 all_repeaters = kept
 
             # Priority list: single_byte nodes ranked by relay_score desc
             priority_list = sorted(
-                [r for r in all_repeaters if r['status'] == 'single_byte'],
-                key=lambda r: (-(r['relay_score'] or 0), -(r['unique_sources'] or 0)),
+                [r for r in all_repeaters if r["status"] == "single_byte"],
+                key=lambda r: (-(r["relay_score"] or 0), -(r["unique_sources"] or 0)),
             )
 
             # Summary
             total = len(all_repeaters)
-            mb_total = status_counts['multibyte_direct'] + status_counts['multibyte_relayed']
+            mb_total = (
+                status_counts["multibyte_direct"] + status_counts["multibyte_relayed"]
+            )
             adoption_pct = round(mb_total / total * 100, 1) if total > 0 else 0.0
 
             # Overall path observation traffic breakdown (advert paths, within the since window,
@@ -6352,9 +7322,9 @@ class BotDataViewer:
             traffic_mb_pct = 0.0
             if has_observed_paths:
                 # observed_paths.last_seen is an ISO timestamp → use datetime() comparison
-                if node_type == 'repeater':
+                if node_type == "repeater":
                     obs_role_filter = "c.role = 'repeater'"
-                elif node_type == 'roomserver':
+                elif node_type == "roomserver":
                     obs_role_filter = "c.role = 'roomserver'"
                 else:
                     obs_role_filter = "c.role IN ('repeater', 'roomserver')"
@@ -6373,9 +7343,9 @@ class BotDataViewer:
                     """
                 )
                 for tr in cursor.fetchall():
-                    n = tr['n'] or 0
+                    n = tr["n"] or 0
                     total_path_obs += n
-                    bph = tr['bytes_per_hop'] or 1
+                    bph = tr["bytes_per_hop"] or 1
                     try:
                         bph = int(bph)
                     except (TypeError, ValueError):
@@ -6391,9 +7361,9 @@ class BotDataViewer:
             # Daily trend: last 30 days, filtered by node_type
             daily_trend: list[dict] = []
             if has_observed_paths:
-                if node_type == 'repeater':
+                if node_type == "repeater":
                     trend_role_filter = "c.role = 'repeater'"
-                elif node_type == 'roomserver':
+                elif node_type == "roomserver":
                     trend_role_filter = "c.role = 'roomserver'"
                 else:
                     trend_role_filter = "c.role IN ('repeater', 'roomserver')"
@@ -6415,47 +7385,54 @@ class BotDataViewer:
                     """
                 )
                 for tr in cursor.fetchall():
-                    daily_trend.append({
-                        'date':        tr['obs_date'],
-                        'multibyte':   tr['mb_obs'] or 0,
-                        'single_byte': tr['sb_obs'] or 0,
-                    })
+                    daily_trend.append(
+                        {
+                            "date": tr["obs_date"],
+                            "multibyte": tr["mb_obs"] or 0,
+                            "single_byte": tr["sb_obs"] or 0,
+                        }
+                    )
 
             return {
-                'since': since,
-                'node_type': node_type,
-                'summary': {
-                    'total_repeaters':      total,
-                    'multibyte_direct':     status_counts['multibyte_direct'],
-                    'multibyte_relayed':    status_counts['multibyte_relayed'],
-                    'single_byte':          status_counts['single_byte'],
-                    'unknown':              status_counts['unknown'],
-                    'adoption_pct':         adoption_pct,
-                    'total_path_obs':       total_path_obs,
-                    'multibyte_path_obs':   multibyte_path_obs,
-                    'single_byte_path_obs': single_byte_path_obs,
-                    'traffic_multibyte_pct': traffic_mb_pct,
+                "since": since,
+                "node_type": node_type,
+                "summary": {
+                    "total_repeaters": total,
+                    "multibyte_direct": status_counts["multibyte_direct"],
+                    "multibyte_relayed": status_counts["multibyte_relayed"],
+                    "single_byte": status_counts["single_byte"],
+                    "unknown": status_counts["unknown"],
+                    "adoption_pct": adoption_pct,
+                    "total_path_obs": total_path_obs,
+                    "multibyte_path_obs": multibyte_path_obs,
+                    "single_byte_path_obs": single_byte_path_obs,
+                    "traffic_multibyte_pct": traffic_mb_pct,
                 },
-                'priority_list': priority_list,
-                'all_repeaters': all_repeaters,
-                'daily_trend':   daily_trend,
+                "priority_list": priority_list,
+                "all_repeaters": all_repeaters,
+                "daily_trend": daily_trend,
             }
 
         except Exception as e:
             self.logger.error(f"Error getting multibyte rollout data: {e}")
             return {
-                'since': since,
-                'error': str(e),
-                'summary': {
-                    'total_repeaters': 0, 'multibyte_direct': 0,
-                    'multibyte_relayed': 0, 'single_byte': 0, 'unknown': 0,
-                    'adoption_pct': 0.0, 'total_path_obs': 0,
-                    'multibyte_path_obs': 0, 'single_byte_path_obs': 0,
-                    'traffic_multibyte_pct': 0.0,
+                "since": since,
+                "error": str(e),
+                "summary": {
+                    "total_repeaters": 0,
+                    "multibyte_direct": 0,
+                    "multibyte_relayed": 0,
+                    "single_byte": 0,
+                    "unknown": 0,
+                    "adoption_pct": 0.0,
+                    "total_path_obs": 0,
+                    "multibyte_path_obs": 0,
+                    "single_byte_path_obs": 0,
+                    "traffic_multibyte_pct": 0.0,
                 },
-                'priority_list': [],
-                'all_repeaters': [],
-                'daily_trend': [],
+                "priority_list": [],
+                "all_repeaters": [],
+                "daily_trend": [],
             }
         finally:
             if conn:
@@ -6476,71 +7453,88 @@ class BotDataViewer:
             # Recent advert paths (most-recent 50). The idx_observed_paths_advert_pk_seen covering
             # index serves WHERE public_key=? AND packet_type='advert' ORDER BY last_seen DESC directly.
             all_paths: list[dict[str, Any]] = []
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='observed_paths'")
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='observed_paths'"
+            )
             if cursor.fetchone():
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT path_hex, path_length, bytes_per_hop, observation_count, last_seen
                     FROM observed_paths
                     WHERE packet_type = 'advert' AND public_key = ?
                     ORDER BY last_seen DESC
                     LIMIT 50
-                """, (public_key,))
+                """,
+                    (public_key,),
+                )
                 for prow in cursor.fetchall():
-                    if not prow['path_hex']:
+                    if not prow["path_hex"]:
                         continue
                     bph = None
-                    if prow['bytes_per_hop'] is not None:
+                    if prow["bytes_per_hop"] is not None:
                         try:
-                            bph = int(prow['bytes_per_hop'])
+                            bph = int(prow["bytes_per_hop"])
                             if bph not in (1, 2, 3):
                                 bph = 1
                         except (TypeError, ValueError):
                             bph = 1
-                    all_paths.append({
-                        'path_hex': prow['path_hex'],
-                        'path_length': int(prow['path_length']) if prow['path_length'] is not None else 0,
-                        'bytes_per_hop': bph,
-                        'observation_count': int(prow['observation_count']) if prow['observation_count'] is not None else 1,
-                        'last_seen': prow['last_seen'] if prow['last_seen'] is not None else None,
-                    })
+                    all_paths.append(
+                        {
+                            "path_hex": prow["path_hex"],
+                            "path_length": int(prow["path_length"])
+                            if prow["path_length"] is not None
+                            else 0,
+                            "bytes_per_hop": bph,
+                            "observation_count": int(prow["observation_count"])
+                            if prow["observation_count"] is not None
+                            else 1,
+                            "last_seen": prow["last_seen"]
+                            if prow["last_seen"] is not None
+                            else None,
+                        }
+                    )
 
             # Raw advertisement data for the "Advertisement Data" modal.
             raw_advert_data = None
             raw_advert_data_parsed = None
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT raw_advert_data FROM complete_contact_tracking
                 WHERE public_key = ? ORDER BY last_heard DESC LIMIT 1
-            """, (public_key,))
+            """,
+                (public_key,),
+            )
             rad_row = cursor.fetchone()
-            if rad_row and rad_row['raw_advert_data']:
-                raw_advert_data = rad_row['raw_advert_data']
+            if rad_row and rad_row["raw_advert_data"]:
+                raw_advert_data = rad_row["raw_advert_data"]
                 try:
                     import json
+
                     raw_advert_data_parsed = json.loads(raw_advert_data)
                 except Exception:
                     raw_advert_data_parsed = None
 
             return {
-                'all_paths': all_paths,
-                'raw_advert_data': raw_advert_data,
-                'raw_advert_data_parsed': raw_advert_data_parsed,
+                "all_paths": all_paths,
+                "raw_advert_data": raw_advert_data,
+                "raw_advert_data_parsed": raw_advert_data_parsed,
             }
         except Exception as e:
             self.logger.error(f"Error getting contact detail: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
         finally:
             if conn:
                 conn.close()
 
     def _get_tracking_data(
         self,
-        since='30d',
+        since="30d",
         include_detail=False,
         page: int | None = None,
         page_size: int | None = None,
-        search: str = '',
-        sort: str = 'last_seen',
-        direction: str = 'desc',
+        search: str = "",
+        sort: str = "last_seen",
+        direction: str = "desc",
     ):
         """Get contact tracking data. since: 24h, 7d, 30d, 90d, or all (heard in that window).
 
@@ -6556,8 +7550,8 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             # Get bot location from config
-            bot_lat = self.config.getfloat('Bot', 'bot_latitude', fallback=None)
-            bot_lon = self.config.getfloat('Bot', 'bot_longitude', fallback=None)
+            bot_lat = self.config.getfloat("Bot", "bot_latitude", fallback=None)
+            bot_lon = self.config.getfloat("Bot", "bot_longitude", fallback=None)
 
             # Filter by last_heard (default: last 30 days). last_heard is stored as ISO-text
             # datetime in LOCAL time (e.g. '2026-06-16 09:03:49.606966', written by datetime.now()),
@@ -6565,10 +7559,10 @@ class BotDataViewer:
             # datetime('now', ...) computes the cutoff in UTC and shaves the local UTC offset off
             # the window (e.g. a "24h" filter only returns ~17h of data in US/Pacific).
             datetime_offsets = {
-                '24h': "'-24 hours'",
-                '7d':  "'-7 days'",
-                '30d': "'-30 days'",
-                '90d': "'-90 days'",
+                "24h": "'-24 hours'",
+                "7d": "'-7 days'",
+                "30d": "'-30 days'",
+                "90d": "'-90 days'",
             }
             where_parts = []
             where_params: list[Any] = []
@@ -6577,11 +7571,13 @@ class BotDataViewer:
                     f"c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
                 )
 
-            search = (search or '').strip().lower()[:100]
+            search = (search or "").strip().lower()[:100]
             if search and not include_detail:
                 # Match the former client-side behavior: public keys are prefix-only,
                 # while names, roles, device types, and locations match anywhere.
-                escaped = search.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                escaped = (
+                    search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
                 where_parts.append(
                     "("
                     "LOWER(COALESCE(c.public_key, '')) LIKE ? ESCAPE '\\' OR "
@@ -6593,9 +7589,11 @@ class BotDataViewer:
                     "LOWER(COALESCE(c.country, '')) LIKE ? ESCAPE '\\'"
                     ")"
                 )
-                where_params.extend([f'{escaped}%'] + [f'%{escaped}%'] * 6)
+                where_params.extend([f"{escaped}%"] + [f"%{escaped}%"] * 6)
 
-            where_clause = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
+            where_clause = (
+                (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+            )
 
             pagination = None
             filtered_stats = None
@@ -6616,28 +7614,29 @@ class BotDataViewer:
                                   AND (LOWER(COALESCE(c.device_type, '')) LIKE '%room%'
                                        OR LOWER(COALESCE(c.device_type, '')) LIKE '%server%') THEN 1 ELSE 0 END) AS new_room_servers
                     FROM complete_contact_tracking c
-                    """ + where_clause,
+                    """
+                    + where_clause,
                     tuple(where_params),
                 )
                 aggregate = cursor.fetchone()
-                total_items = int(aggregate['total_items'] or 0)
+                total_items = int(aggregate["total_items"] or 0)
                 total_pages = max(1, (total_items + page_size - 1) // page_size)
                 page = min(page, total_pages)
                 pagination = {
-                    'page': page,
-                    'page_size': page_size,
-                    'total_items': total_items,
-                    'total_pages': total_pages,
-                    'has_previous': page > 1,
-                    'has_next': page < total_pages,
+                    "page": page,
+                    "page_size": page_size,
+                    "total_items": total_items,
+                    "total_pages": total_pages,
+                    "has_previous": page > 1,
+                    "has_next": page < total_pages,
                 }
                 filtered_stats = {
-                    'contacts_24h': int(aggregate['contacts_24h'] or 0),
-                    'contacts_7d': int(aggregate['contacts_7d'] or 0),
-                    'contacts_total': total_items,
-                    'new_companions': int(aggregate['new_companions'] or 0),
-                    'new_repeaters': int(aggregate['new_repeaters'] or 0),
-                    'new_room_servers': int(aggregate['new_room_servers'] or 0),
+                    "contacts_24h": int(aggregate["contacts_24h"] or 0),
+                    "contacts_7d": int(aggregate["contacts_7d"] or 0),
+                    "contacts_total": total_items,
+                    "new_companions": int(aggregate["new_companions"] or 0),
+                    "new_repeaters": int(aggregate["new_repeaters"] or 0),
+                    "new_room_servers": int(aggregate["new_room_servers"] or 0),
                 }
 
             # Fetch contacts directly (no join/group-by). The recent paths per contact are
@@ -6647,9 +7646,9 @@ class BotDataViewer:
             # the per-contact value, so it matches the old MAX(...) over a single contact's rows.
             detail_cols = "c.raw_advert_data," if include_detail else ""
             sort_expressions = {
-                'username': "LOWER(COALESCE(c.name, ''))",
-                'device_type': "LOWER(COALESCE(c.device_type, ''))",
-                'location': (
+                "username": "LOWER(COALESCE(c.name, ''))",
+                "device_type": "LOWER(COALESCE(c.device_type, ''))",
+                "location": (
                     "LOWER(CASE "
                     "WHEN c.city IS NOT NULL AND c.city != '' AND c.state IS NOT NULL AND c.state != '' "
                     "THEN c.city || ', ' || c.state "
@@ -6658,45 +7657,60 @@ class BotDataViewer:
                     "AND c.latitude != 0 AND c.longitude != 0 THEN printf('%s, %s', c.latitude, c.longitude) "
                     "ELSE '' END)"
                 ),
-                'snr': 'COALESCE(c.snr, 0)',
-                'hop_count': 'COALESCE(c.hop_count, 0)',
-                'first_heard': "COALESCE(c.first_heard, '')",
-                'last_seen': "COALESCE(c.last_heard, '')",
-                'advert_count': 'COALESCE(c.advert_count, 0)',
+                "snr": "COALESCE(c.snr, 0)",
+                "hop_count": "COALESCE(c.hop_count, 0)",
+                "first_heard": "COALESCE(c.first_heard, '')",
+                "last_seen": "COALESCE(c.last_heard, '')",
+                "advert_count": "COALESCE(c.advert_count, 0)",
             }
-            sort = sort if sort in (*sort_expressions.keys(), 'distance') else 'last_seen'
-            direction = 'asc' if direction == 'asc' else 'desc'
-            if sort == 'distance':
+            sort = (
+                sort if sort in (*sort_expressions.keys(), "distance") else "last_seen"
+            )
+            direction = "asc" if direction == "asc" else "desc"
+            if sort == "distance":
                 if bot_lat is None or bot_lon is None:
-                    sort_expression = '0'
+                    sort_expression = "0"
                 else:
-                    conn.create_function('contacts_distance_km', 2, lambda lat, lon: (
-                        self._calculate_distance(bot_lat, bot_lon, lat, lon)
-                        if lat is not None and lon is not None else 0
-                    ))
-                    sort_expression = 'contacts_distance_km(c.latitude, c.longitude)'
+                    conn.create_function(
+                        "contacts_distance_km",
+                        2,
+                        lambda lat, lon: (
+                            self._calculate_distance(bot_lat, bot_lon, lat, lon)
+                            if lat is not None and lon is not None
+                            else 0
+                        ),
+                    )
+                    sort_expression = "contacts_distance_km(c.latitude, c.longitude)"
             else:
                 sort_expression = sort_expressions[sort]
 
             query_params = list(where_params)
-            limit_clause = ''
+            limit_clause = ""
             if pagination is not None:
-                limit_clause = ' LIMIT ? OFFSET ?'
+                limit_clause = " LIMIT ? OFFSET ?"
                 query_params.extend([page_size, (page - 1) * page_size])
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT
                     c.public_key, c.name, c.role, c.device_type,
                     c.latitude, c.longitude, c.city, c.state, c.country,
                     c.snr, c.hop_count, c.first_heard, c.last_heard,
                     c.advert_count, c.is_currently_tracked,
-                    """ + detail_cols + """
+                    """
+                + detail_cols
+                + """
                     c.signal_strength,
                     c.is_starred, c.out_path, c.out_path_len, c.out_bytes_per_hop,
                     c.last_advert_timestamp as last_message
                 FROM complete_contact_tracking c
-                """ + where_clause + """
-                ORDER BY """ + sort_expression + f" {direction.upper()}, c.public_key ASC" + limit_clause,
+                """
+                + where_clause
+                + """
+                ORDER BY """
+                + sort_expression
+                + f" {direction.upper()}, c.public_key ASC"
+                + limit_clause,
                 tuple(query_params),
             )
 
@@ -6706,48 +7720,61 @@ class BotDataViewer:
             path_rows = []
             if main_rows:
                 path_params: list[Any] = []
-                page_key_clause = ''
+                page_key_clause = ""
                 if pagination is not None:
                     # The interactive list enriches only the visible page.  At most 200 keys are
                     # supplied, staying comfortably below SQLite's parameter limit and turning
                     # the former all-history window scan into targeted index lookups.
-                    page_keys = [row['public_key'] for row in main_rows]
-                    placeholders = ','.join('?' for _ in page_keys)
-                    page_key_clause = f' AND public_key IN ({placeholders})'
+                    page_keys = [row["public_key"] for row in main_rows]
+                    placeholders = ",".join("?" for _ in page_keys)
+                    page_key_clause = f" AND public_key IN ({placeholders})"
                     path_params.extend(page_keys)
-                cursor.execute("""
+                cursor.execute(
+                    """
                     WITH recent_paths AS (
                         SELECT public_key, path_hex, path_length, bytes_per_hop,
                                observation_count, last_seen,
                                ROW_NUMBER() OVER (PARTITION BY public_key ORDER BY last_seen DESC) as rn
                         FROM observed_paths
                         WHERE packet_type = 'advert' AND public_key IS NOT NULL
-                    """ + page_key_clause + """
+                    """
+                    + page_key_clause
+                    + """
                     )
                     SELECT public_key, path_hex, path_length, bytes_per_hop, observation_count, last_seen
                     FROM recent_paths WHERE rn <= 50
                     ORDER BY public_key, last_seen DESC
-                """, tuple(path_params))
+                """,
+                    tuple(path_params),
+                )
                 path_rows = cursor.fetchall()
 
             for prow in path_rows:
-                if not prow['path_hex']:  # Skip empty paths
+                if not prow["path_hex"]:  # Skip empty paths
                     continue
                 bph = None
-                if prow['bytes_per_hop'] is not None:
+                if prow["bytes_per_hop"] is not None:
                     try:
-                        bph = int(prow['bytes_per_hop'])
+                        bph = int(prow["bytes_per_hop"])
                         if bph not in (1, 2, 3):
                             bph = 1
                     except (TypeError, ValueError):
                         bph = 1
-                paths_by_key.setdefault(prow['public_key'], []).append({
-                    'path_hex': prow['path_hex'],
-                    'path_length': int(prow['path_length']) if prow['path_length'] is not None else 0,
-                    'bytes_per_hop': bph,
-                    'observation_count': int(prow['observation_count']) if prow['observation_count'] is not None else 1,
-                    'last_seen': prow['last_seen'] if prow['last_seen'] is not None else None
-                })
+                paths_by_key.setdefault(prow["public_key"], []).append(
+                    {
+                        "path_hex": prow["path_hex"],
+                        "path_length": int(prow["path_length"])
+                        if prow["path_length"] is not None
+                        else 0,
+                        "bytes_per_hop": bph,
+                        "observation_count": int(prow["observation_count"])
+                        if prow["observation_count"] is not None
+                        else 1,
+                        "last_seen": prow["last_seen"]
+                        if prow["last_seen"] is not None
+                        else None,
+                    }
+                )
 
             multibyte_hop_chunks = self._get_cached_contact_multibyte_hop_chunks(cursor)
             chunk_buckets = self._bucket_hop_chunks(multibyte_hop_chunks)
@@ -6756,15 +7783,21 @@ class BotDataViewer:
             for row in main_rows:
                 # Calculate distance if both bot and contact have coordinates
                 distance = None
-                if (bot_lat is not None and bot_lon is not None and
-                    row['latitude'] is not None and row['longitude'] is not None):
-                    distance = self._calculate_distance(bot_lat, bot_lon, row['latitude'], row['longitude'])
+                if (
+                    bot_lat is not None
+                    and bot_lon is not None
+                    and row["latitude"] is not None
+                    and row["longitude"] is not None
+                ):
+                    distance = self._calculate_distance(
+                        bot_lat, bot_lon, row["latitude"], row["longitude"]
+                    )
 
                 # Recent paths for this contact (grouped from the second query above). The full
                 # path objects are NOT sent in the list payload (they were ~70% of its size and
                 # are only used in the per-contact modal); the UI fetches them on demand via
                 # /api/contact-detail. The list only needs the count and the badge.
-                all_paths = paths_by_key.get(row['public_key'], [])
+                all_paths = paths_by_key.get(row["public_key"], [])
                 paths_count = len(all_paths)
 
                 # Preserve the legacy total_messages value: it was COUNT(*) over the LEFT-JOINed
@@ -6780,80 +7813,93 @@ class BotDataViewer:
                 # path), which makes a multi-byte path render as twice/three-times as many 1-byte
                 # hops. Index the encoding on the primary observed path itself, which carries the
                 # authoritative bytes_per_hop, falling back to the contact column when unmatched.
-                out_path_val = row['out_path'] if row['out_path'] is not None else ''
-                out_bytes_per_hop_val = row['out_bytes_per_hop'] if row['out_bytes_per_hop'] is not None else None
+                out_path_val = row["out_path"] if row["out_path"] is not None else ""
+                out_bytes_per_hop_val = (
+                    row["out_bytes_per_hop"]
+                    if row["out_bytes_per_hop"] is not None
+                    else None
+                )
                 if out_path_val:
-                    primary_path = next((p for p in all_paths if p['path_hex'] == out_path_val), None)
-                    if primary_path and primary_path.get('bytes_per_hop') in (1, 2, 3):
-                        out_bytes_per_hop_val = primary_path['bytes_per_hop']
+                    primary_path = next(
+                        (p for p in all_paths if p["path_hex"] == out_path_val), None
+                    )
+                    if primary_path and primary_path.get("bytes_per_hop") in (1, 2, 3):
+                        out_bytes_per_hop_val = primary_path["bytes_per_hop"]
 
                 entry = {
-                    'user_id': row['public_key'],
-                    'username': row['name'],
-                    'role': row['role'],
-                    'device_type': row['device_type'],
-                    'latitude': row['latitude'],
-                    'longitude': row['longitude'],
-                    'city': row['city'],
-                    'state': row['state'],
-                    'country': row['country'],
-                    'snr': row['snr'],
-                    'hop_count': row['hop_count'],
-                    'first_heard': row['first_heard'],
-                    'last_seen': row['last_heard'],
-                    'advert_count': row['advert_count'],
-                    'is_currently_tracked': row['is_currently_tracked'],
-                    'signal_strength': row['signal_strength'],
-                    'total_messages': total_messages,
-                    'last_message': row['last_message'],
-                    'distance': distance,
-                    'is_starred': bool(row['is_starred'] if row['is_starred'] is not None else 0),
-                    'out_path': out_path_val,
-                    'out_path_len': row['out_path_len'] if row['out_path_len'] is not None else -1,
-                    'out_bytes_per_hop': out_bytes_per_hop_val,
-                    'paths_count': paths_count,
-                    'path_encoding_badge': path_encoding_badge,
+                    "user_id": row["public_key"],
+                    "username": row["name"],
+                    "role": row["role"],
+                    "device_type": row["device_type"],
+                    "latitude": row["latitude"],
+                    "longitude": row["longitude"],
+                    "city": row["city"],
+                    "state": row["state"],
+                    "country": row["country"],
+                    "snr": row["snr"],
+                    "hop_count": row["hop_count"],
+                    "first_heard": row["first_heard"],
+                    "last_seen": row["last_heard"],
+                    "advert_count": row["advert_count"],
+                    "is_currently_tracked": row["is_currently_tracked"],
+                    "signal_strength": row["signal_strength"],
+                    "total_messages": total_messages,
+                    "last_message": row["last_message"],
+                    "distance": distance,
+                    "is_starred": bool(
+                        row["is_starred"] if row["is_starred"] is not None else 0
+                    ),
+                    "out_path": out_path_val,
+                    "out_path_len": row["out_path_len"]
+                    if row["out_path_len"] is not None
+                    else -1,
+                    "out_bytes_per_hop": out_bytes_per_hop_val,
+                    "paths_count": paths_count,
+                    "path_encoding_badge": path_encoding_badge,
                 }
                 if include_detail:
                     # Full fidelity for the export endpoint (size-tolerant, infrequent download).
-                    raw_advert_data = row['raw_advert_data']
+                    raw_advert_data = row["raw_advert_data"]
                     raw_advert_data_parsed = None
                     if raw_advert_data:
                         try:
                             import json
+
                             raw_advert_data_parsed = json.loads(raw_advert_data)
                         except Exception:
                             raw_advert_data_parsed = None
-                    entry['all_paths'] = all_paths
-                    entry['raw_advert_data'] = raw_advert_data
-                    entry['raw_advert_data_parsed'] = raw_advert_data_parsed
+                    entry["all_paths"] = all_paths
+                    entry["raw_advert_data"] = raw_advert_data
+                    entry["raw_advert_data_parsed"] = raw_advert_data_parsed
                 tracking.append(entry)
 
             # Get server statistics for daily tracking using direct database queries
             server_stats = {}
             try:
                 # Check if daily_stats table exists
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_stats'")
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='daily_stats'"
+                )
                 if cursor.fetchone():
                     # 24h: Last 24 hours of advertisements
                     cursor.execute("""
                         SELECT SUM(advert_count) FROM daily_stats
                         WHERE date >= date('now', 'localtime', '-1 day')
                     """)
-                    server_stats['advertisements_24h'] = cursor.fetchone()[0] or 0
+                    server_stats["advertisements_24h"] = cursor.fetchone()[0] or 0
 
                     # 7d: Previous 6 days (excluding today)
                     cursor.execute("""
                         SELECT SUM(advert_count) FROM daily_stats
                         WHERE date >= date('now', 'localtime', '-7 days') AND date < date('now', 'localtime')
                     """)
-                    server_stats['advertisements_7d'] = cursor.fetchone()[0] or 0
+                    server_stats["advertisements_7d"] = cursor.fetchone()[0] or 0
 
                     # All: Everything
                     cursor.execute("""
                         SELECT SUM(advert_count) FROM daily_stats
                     """)
-                    server_stats['total_advertisements'] = cursor.fetchone()[0] or 0
+                    server_stats["total_advertisements"] = cursor.fetchone()[0] or 0
 
                     # Nodes per day statistics
                     # Calculate today's unique nodes from complete_contact_tracking
@@ -6862,7 +7908,7 @@ class BotDataViewer:
                         SELECT COUNT(DISTINCT public_key) FROM complete_contact_tracking
                         WHERE last_heard >= datetime('now', 'localtime', '-24 hours')
                     """)
-                    server_stats['nodes_24h'] = cursor.fetchone()[0] or 0
+                    server_stats["nodes_24h"] = cursor.fetchone()[0] or 0
 
                     # Get today's unique nodes by role for the stacked chart
                     cursor.execute("""
@@ -6874,23 +7920,28 @@ class BotDataViewer:
                     """)
                     today_by_role = {}
                     for row in cursor.fetchall():
-                        role = row[0].lower() if row[0] else 'unknown'
+                        role = row[0].lower() if row[0] else "unknown"
                         count = row[1]
                         today_by_role[role] = count
 
-                    server_stats['nodes_24h_by_role'] = {
-                        'companion': today_by_role.get('companion', 0),
-                        'repeater': today_by_role.get('repeater', 0),
-                        'roomserver': today_by_role.get('roomserver', 0),
-                        'sensor': today_by_role.get('sensor', 0),
-                        'other': sum(v for k, v in today_by_role.items() if k not in ['companion', 'repeater', 'roomserver', 'sensor'])
+                    server_stats["nodes_24h_by_role"] = {
+                        "companion": today_by_role.get("companion", 0),
+                        "repeater": today_by_role.get("repeater", 0),
+                        "roomserver": today_by_role.get("roomserver", 0),
+                        "sensor": today_by_role.get("sensor", 0),
+                        "other": sum(
+                            v
+                            for k, v in today_by_role.items()
+                            if k
+                            not in ["companion", "repeater", "roomserver", "sensor"]
+                        ),
                     }
 
                     cursor.execute("""
                         SELECT COUNT(DISTINCT public_key) FROM daily_stats
                         WHERE date >= date('now', 'localtime', '-7 days') AND date < date('now', 'localtime')
                     """)
-                    server_stats['nodes_7d'] = cursor.fetchone()[0] or 0
+                    server_stats["nodes_7d"] = cursor.fetchone()[0] or 0
 
                     # Calculate day-over-day and period-over-period comparisons
                     # Today vs 7 days ago (single day comparison)
@@ -6899,7 +7950,9 @@ class BotDataViewer:
                         WHERE date = date('now', 'localtime', '-7 days')
                     """)
                     result = cursor.fetchone()
-                    server_stats['nodes_7d_ago'] = result[0] if result and result[0] else 0
+                    server_stats["nodes_7d_ago"] = (
+                        result[0] if result and result[0] else 0
+                    )
 
                     # Last 7 days vs previous 7 days (days 8-14 ago)
                     cursor.execute("""
@@ -6907,7 +7960,9 @@ class BotDataViewer:
                         WHERE date >= date('now', 'localtime', '-14 days') AND date < date('now', 'localtime', '-7 days')
                     """)
                     result = cursor.fetchone()
-                    server_stats['nodes_prev_7d'] = result[0] if result and result[0] else 0
+                    server_stats["nodes_prev_7d"] = (
+                        result[0] if result and result[0] else 0
+                    )
 
                     # Last 30 days vs previous 30 days (days 31-60 ago)
                     cursor.execute("""
@@ -6915,25 +7970,27 @@ class BotDataViewer:
                         WHERE date >= date('now', 'localtime', '-60 days') AND date < date('now', 'localtime', '-30 days')
                     """)
                     result = cursor.fetchone()
-                    server_stats['nodes_prev_30d'] = result[0] if result and result[0] else 0
+                    server_stats["nodes_prev_30d"] = (
+                        result[0] if result and result[0] else 0
+                    )
 
                     # Also get current period totals for comparison
                     cursor.execute("""
                         SELECT COUNT(DISTINCT public_key) FROM daily_stats
                         WHERE date >= date('now', 'localtime', '-7 days')
                     """)
-                    server_stats['nodes_7d'] = cursor.fetchone()[0] or 0
+                    server_stats["nodes_7d"] = cursor.fetchone()[0] or 0
 
                     cursor.execute("""
                         SELECT COUNT(DISTINCT public_key) FROM daily_stats
                         WHERE date >= date('now', 'localtime', '-30 days')
                     """)
-                    server_stats['nodes_30d'] = cursor.fetchone()[0] or 0
+                    server_stats["nodes_30d"] = cursor.fetchone()[0] or 0
 
                     cursor.execute("""
                         SELECT COUNT(DISTINCT public_key) FROM daily_stats
                     """)
-                    server_stats['nodes_all'] = cursor.fetchone()[0] or 0
+                    server_stats["nodes_all"] = cursor.fetchone()[0] or 0
 
                     # Get daily unique node counts by role for the last 30 days for the stacked graph
                     # Join daily_stats with complete_contact_tracking to get role information
@@ -6953,7 +8010,7 @@ class BotDataViewer:
                     daily_by_role = {}
                     for row in daily_data_by_role:
                         date_str = row[0]
-                        role = (row[1] or 'unknown').lower()
+                        role = (row[1] or "unknown").lower()
                         count = row[2]
 
                         if date_str not in daily_by_role:
@@ -6961,17 +8018,29 @@ class BotDataViewer:
                         daily_by_role[date_str][role] = count
 
                     # Convert to array format with all roles for each date
-                    server_stats['daily_nodes_30d_by_role'] = []
+                    server_stats["daily_nodes_30d_by_role"] = []
                     for date_str in sorted(daily_by_role.keys()):
                         roles_data = daily_by_role[date_str]
-                        server_stats['daily_nodes_30d_by_role'].append({
-                            'date': date_str,
-                            'companion': roles_data.get('companion', 0),
-                            'repeater': roles_data.get('repeater', 0),
-                            'roomserver': roles_data.get('roomserver', 0),
-                            'sensor': roles_data.get('sensor', 0),
-                            'other': sum(v for k, v in roles_data.items() if k not in ['companion', 'repeater', 'roomserver', 'sensor'])
-                        })
+                        server_stats["daily_nodes_30d_by_role"].append(
+                            {
+                                "date": date_str,
+                                "companion": roles_data.get("companion", 0),
+                                "repeater": roles_data.get("repeater", 0),
+                                "roomserver": roles_data.get("roomserver", 0),
+                                "sensor": roles_data.get("sensor", 0),
+                                "other": sum(
+                                    v
+                                    for k, v in roles_data.items()
+                                    if k
+                                    not in [
+                                        "companion",
+                                        "repeater",
+                                        "roomserver",
+                                        "sensor",
+                                    ]
+                                ),
+                            }
+                        )
 
                     # Also keep the total count for backward compatibility
                     cursor.execute("""
@@ -6982,25 +8051,21 @@ class BotDataViewer:
                         ORDER BY date ASC
                     """)
                     daily_data = cursor.fetchall()
-                    server_stats['daily_nodes_30d'] = [
-                        {'date': row[0], 'count': row[1]}
-                        for row in daily_data
+                    server_stats["daily_nodes_30d"] = [
+                        {"date": row[0], "count": row[1]} for row in daily_data
                     ]
 
             except Exception as e:
                 self.logger.debug(f"Could not get server stats: {e}")
 
-            result = {
-                'tracking_data': tracking,
-                'server_stats': server_stats
-            }
+            result = {"tracking_data": tracking, "server_stats": server_stats}
             if pagination is not None:
-                result['pagination'] = pagination
-                result['filtered_stats'] = filtered_stats
+                result["pagination"] = pagination
+                result["filtered_stats"] = filtered_stats
             return result
         except Exception as e:
             self.logger.error(f"Error getting tracking data: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
         finally:
             if conn:
                 conn.close()
@@ -7015,7 +8080,10 @@ class BotDataViewer:
         # Haversine formula
         dlat = lat2 - lat1
         dlon = lon2 - lon1
-        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        )
         c = 2 * math.asin(math.sqrt(a))
 
         # Radius of earth in kilometers
@@ -7047,22 +8115,22 @@ class BotDataViewer:
             active_users = cursor.fetchone()[0]
 
             return {
-                'total_adverts': total_adverts,
-                'recent_adverts_1h': recent_adverts,
-                'active_users_24h': active_users,
-                'timestamp': time.time()
+                "total_adverts": total_adverts,
+                "recent_adverts_1h": recent_adverts,
+                "active_users_24h": active_users,
+                "timestamp": time.time(),
             }
         except Exception as e:
             self.logger.error(f"Error getting cache data: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
         finally:
             if conn:
                 conn.close()
 
-
     def _get_feed_subscriptions(self, channel_filter=None):
         """Get all feed subscriptions, optionally filtered by channel"""
         import sqlite3
+
         conn = None
         try:
             conn = self._get_db_connection()
@@ -7070,41 +8138,50 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             if channel_filter:
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT * FROM feed_subscriptions
                     WHERE channel_name = ?
                     ORDER BY id
-                ''', (channel_filter,))
+                """,
+                    (channel_filter,),
+                )
             else:
-                cursor.execute('''
+                cursor.execute("""
                     SELECT * FROM feed_subscriptions
                     ORDER BY id
-                ''')
+                """)
 
             rows = cursor.fetchall()
             feeds = []
             for row in rows:
                 feed = dict(row)
                 # Get feed count for this channel
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT COUNT(*) FROM feed_activity
                     WHERE feed_id = ?
-                ''', (feed['id'],))
-                feed['item_count'] = cursor.fetchone()[0]
+                """,
+                    (feed["id"],),
+                )
+                feed["item_count"] = cursor.fetchone()[0]
 
                 # Get error count
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT COUNT(*) FROM feed_errors
                     WHERE feed_id = ? AND resolved_at IS NULL
-                ''', (feed['id'],))
-                feed['error_count'] = cursor.fetchone()[0]
+                """,
+                    (feed["id"],),
+                )
+                feed["error_count"] = cursor.fetchone()[0]
 
                 feeds.append(feed)
 
-            return {'feeds': feeds, 'total': len(feeds)}
+            return {"feeds": feeds, "total": len(feeds)}
         except Exception as e:
             self.logger.error(f"Error getting feed subscriptions: {e}")
-            return {'feeds': [], 'total': 0, 'error': str(e)}
+            return {"feeds": [], "total": 0, "error": str(e)}
         finally:
             if conn:
                 conn.close()
@@ -7112,12 +8189,13 @@ class BotDataViewer:
     def _get_feed_subscription(self, feed_id):
         """Get a single feed subscription by ID"""
         import sqlite3
+
         conn = None
         try:
             conn = self._get_db_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM feed_subscriptions WHERE id = ?', (feed_id,))
+            cursor.execute("SELECT * FROM feed_subscriptions WHERE id = ?", (feed_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
         except Exception as e:
@@ -7130,18 +8208,21 @@ class BotDataViewer:
     def _create_feed_subscription(self, data):
         """Create a new feed subscription"""
         import json
+
         conn = None
         try:
-            feed_type = data.get('feed_type')
-            feed_url = data.get('feed_url')
-            channel_name = data.get('channel_name')
-            feed_name = data.get('feed_name')
-            check_interval = _validate_feed_interval(data.get('check_interval_seconds', 300))
-            api_config = data.get('api_config')
-            output_format = data.get('output_format')
-            message_send_interval = data.get('message_send_interval_seconds')
-            filter_config = data.get('filter_config')
-            sort_config = data.get('sort_config')
+            feed_type = data.get("feed_type")
+            feed_url = data.get("feed_url")
+            channel_name = data.get("channel_name")
+            feed_name = data.get("feed_name")
+            check_interval = _validate_feed_interval(
+                data.get("check_interval_seconds", 300)
+            )
+            api_config = data.get("api_config")
+            output_format = data.get("output_format")
+            message_send_interval = data.get("message_send_interval_seconds")
+            filter_config = data.get("filter_config")
+            sort_config = data.get("sort_config")
 
             if not all([feed_type, feed_url, channel_name]):
                 raise ValueError("feed_type, feed_url, and channel_name are required")
@@ -7153,11 +8234,25 @@ class BotDataViewer:
             filter_config_str = json.dumps(filter_config) if filter_config else None
             sort_config_str = json.dumps(sort_config) if sort_config else None
 
-            cursor.execute('''
+            cursor.execute(
+                """
                 INSERT INTO feed_subscriptions
                 (feed_type, feed_url, channel_name, feed_name, check_interval_seconds, api_config, output_format, message_send_interval_seconds, filter_config, sort_config)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (feed_type, feed_url, channel_name, feed_name, check_interval, api_config_str, output_format, message_send_interval, filter_config_str, sort_config_str))
+            """,
+                (
+                    feed_type,
+                    feed_url,
+                    channel_name,
+                    feed_name,
+                    check_interval,
+                    api_config_str,
+                    output_format,
+                    message_send_interval,
+                    filter_config_str,
+                    sort_config_str,
+                ),
+            )
 
             conn.commit()
             return cursor.lastrowid
@@ -7172,6 +8267,7 @@ class BotDataViewer:
     def _update_feed_subscription(self, feed_id, data):
         """Update a feed subscription"""
         import json
+
         conn = None
         try:
             conn = self._get_db_connection()
@@ -7180,52 +8276,66 @@ class BotDataViewer:
             updates = []
             params = []
 
-            if 'channel_name' in data:
-                channel_name = str(data['channel_name']).strip() if data['channel_name'] is not None else ''
+            if "channel_name" in data:
+                channel_name = (
+                    str(data["channel_name"]).strip()
+                    if data["channel_name"] is not None
+                    else ""
+                )
                 if not channel_name:
                     raise ValueError("channel_name cannot be empty")
-                updates.append('channel_name = ?')
+                updates.append("channel_name = ?")
                 params.append(channel_name)
 
-            if 'feed_name' in data:
-                updates.append('feed_name = ?')
-                params.append(data['feed_name'])
+            if "feed_name" in data:
+                updates.append("feed_name = ?")
+                params.append(data["feed_name"])
 
-            if 'check_interval_seconds' in data:
-                updates.append('check_interval_seconds = ?')
-                params.append(_validate_feed_interval(data['check_interval_seconds']))
+            if "check_interval_seconds" in data:
+                updates.append("check_interval_seconds = ?")
+                params.append(_validate_feed_interval(data["check_interval_seconds"]))
 
-            if 'enabled' in data:
-                updates.append('enabled = ?')
-                params.append(1 if data['enabled'] else 0)
+            if "enabled" in data:
+                updates.append("enabled = ?")
+                params.append(1 if data["enabled"] else 0)
 
-            if 'api_config' in data:
-                updates.append('api_config = ?')
-                params.append(json.dumps(data['api_config']) if data['api_config'] else None)
+            if "api_config" in data:
+                updates.append("api_config = ?")
+                params.append(
+                    json.dumps(data["api_config"]) if data["api_config"] else None
+                )
 
-            if 'output_format' in data:
-                updates.append('output_format = ?')
-                params.append(data['output_format'] if data['output_format'] else None)
+            if "output_format" in data:
+                updates.append("output_format = ?")
+                params.append(data["output_format"] if data["output_format"] else None)
 
-            if 'message_send_interval_seconds' in data:
-                updates.append('message_send_interval_seconds = ?')
-                params.append(float(data['message_send_interval_seconds']) if data['message_send_interval_seconds'] else None)
+            if "message_send_interval_seconds" in data:
+                updates.append("message_send_interval_seconds = ?")
+                params.append(
+                    float(data["message_send_interval_seconds"])
+                    if data["message_send_interval_seconds"]
+                    else None
+                )
 
-            if 'filter_config' in data:
-                updates.append('filter_config = ?')
-                params.append(json.dumps(data['filter_config']) if data['filter_config'] else None)
+            if "filter_config" in data:
+                updates.append("filter_config = ?")
+                params.append(
+                    json.dumps(data["filter_config"]) if data["filter_config"] else None
+                )
 
-            if 'sort_config' in data:
-                updates.append('sort_config = ?')
-                params.append(json.dumps(data['sort_config']) if data['sort_config'] else None)
+            if "sort_config" in data:
+                updates.append("sort_config = ?")
+                params.append(
+                    json.dumps(data["sort_config"]) if data["sort_config"] else None
+                )
 
             if not updates:
                 return True  # Nothing to update
 
-            updates.append('updated_at = CURRENT_TIMESTAMP')
+            updates.append("updated_at = CURRENT_TIMESTAMP")
             params.append(feed_id)
 
-            query = f'UPDATE feed_subscriptions SET {", ".join(updates)} WHERE id = ?'
+            query = f"UPDATE feed_subscriptions SET {', '.join(updates)} WHERE id = ?"
             cursor.execute(query, params)
             conn.commit()
 
@@ -7244,7 +8354,7 @@ class BotDataViewer:
         try:
             conn = self._get_db_connection()
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM feed_subscriptions WHERE id = ?', (feed_id,))
+            cursor.execute("DELETE FROM feed_subscriptions WHERE id = ?", (feed_id,))
             conn.commit()
             return cursor.rowcount > 0
         except Exception:
@@ -7265,9 +8375,9 @@ class BotDataViewer:
             conn = self._get_db_connection()
             cursor = conn.cursor()
             if feed_id is None:
-                cursor.execute('DELETE FROM feed_errors')
+                cursor.execute("DELETE FROM feed_errors")
             else:
-                cursor.execute('DELETE FROM feed_errors WHERE feed_id = ?', (feed_id,))
+                cursor.execute("DELETE FROM feed_errors WHERE feed_id = ?", (feed_id,))
             conn.commit()
             return cursor.rowcount
         except Exception:
@@ -7281,17 +8391,21 @@ class BotDataViewer:
     def _get_feed_activity(self, feed_id, limit=50):
         """Get activity log for a feed"""
         import sqlite3
+
         conn = None
         try:
             conn = self._get_db_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT * FROM feed_activity
                 WHERE feed_id = ?
                 ORDER BY processed_at DESC
                 LIMIT ?
-            ''', (feed_id, limit))
+            """,
+                (feed_id, limit),
+            )
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
         except Exception as e:
@@ -7304,17 +8418,21 @@ class BotDataViewer:
     def _get_feed_errors(self, feed_id, limit=20):
         """Get error history for a feed"""
         import sqlite3
+
         conn = None
         try:
             conn = self._get_db_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT * FROM feed_errors
                 WHERE feed_id = ?
                 ORDER BY occurred_at DESC
                 LIMIT ?
-            ''', (feed_id, limit))
+            """,
+                (feed_id, limit),
+            )
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
         except Exception as e:
@@ -7334,49 +8452,51 @@ class BotDataViewer:
             stats = {}
 
             # Total subscriptions
-            cursor.execute('SELECT COUNT(*) FROM feed_subscriptions')
-            stats['total_subscriptions'] = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM feed_subscriptions")
+            stats["total_subscriptions"] = cursor.fetchone()[0]
 
             # Enabled subscriptions
-            cursor.execute('SELECT COUNT(*) FROM feed_subscriptions WHERE enabled = 1')
-            stats['enabled_subscriptions'] = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM feed_subscriptions WHERE enabled = 1")
+            stats["enabled_subscriptions"] = cursor.fetchone()[0]
 
             # Items processed in last 24h
-            cursor.execute('''
+            cursor.execute("""
                 SELECT COUNT(*) FROM feed_activity
                 WHERE processed_at > datetime('now', '-24 hours')
-            ''')
-            stats['items_24h'] = cursor.fetchone()[0]
+            """)
+            stats["items_24h"] = cursor.fetchone()[0]
 
             # Items processed in last 7d
-            cursor.execute('''
+            cursor.execute("""
                 SELECT COUNT(*) FROM feed_activity
                 WHERE processed_at > datetime('now', '-7 days')
-            ''')
-            stats['items_7d'] = cursor.fetchone()[0]
+            """)
+            stats["items_7d"] = cursor.fetchone()[0]
 
             # Error count
-            cursor.execute('''
+            cursor.execute("""
                 SELECT COUNT(*) FROM feed_errors
                 WHERE resolved_at IS NULL
-            ''')
-            stats['active_errors'] = cursor.fetchone()[0]
+            """)
+            stats["active_errors"] = cursor.fetchone()[0]
 
             # Most active channels
-            cursor.execute('''
+            cursor.execute("""
                 SELECT channel_name, COUNT(*) as feed_count
                 FROM feed_subscriptions
                 WHERE enabled = 1
                 GROUP BY channel_name
                 ORDER BY feed_count DESC
                 LIMIT 10
-            ''')
-            stats['top_channels'] = [{'channel': row[0], 'count': row[1]} for row in cursor.fetchall()]
+            """)
+            stats["top_channels"] = [
+                {"channel": row[0], "count": row[1]} for row in cursor.fetchall()
+            ]
 
             return stats
         except Exception as e:
             self.logger.error(f"Error getting feed statistics: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
         finally:
             if conn:
                 conn.close()
@@ -7391,53 +8511,64 @@ class BotDataViewer:
     def _get_channels(self):
         """Get all configured channels from database plus additional decode-only channels"""
         import sqlite3
+
         conn = None
         try:
             conn = self._get_db_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute('''
+            cursor.execute("""
                 SELECT channel_idx, channel_name, channel_type, channel_key_hex, last_updated
                 FROM channels
                 ORDER BY channel_idx
-            ''')
+            """)
 
             rows = cursor.fetchall()
             channels = []
             existing_names = set()
 
             for row in rows:
-                name = row['channel_name']
-                channels.append({
-                    'channel_idx': row['channel_idx'],
-                    'index': row['channel_idx'],  # Alias for compatibility
-                    'name': name,
-                    'channel_name': name,  # Alias for compatibility
-                    'type': row['channel_type'] or 'hashtag',
-                    'key_hex': row['channel_key_hex'],
-                    'last_updated': row['last_updated']
-                })
+                name = row["channel_name"]
+                channels.append(
+                    {
+                        "channel_idx": row["channel_idx"],
+                        "index": row["channel_idx"],  # Alias for compatibility
+                        "name": name,
+                        "channel_name": name,  # Alias for compatibility
+                        "type": row["channel_type"] or "hashtag",
+                        "key_hex": row["channel_key_hex"],
+                        "last_updated": row["last_updated"],
+                    }
+                )
                 # Track names for deduplication (normalize to lowercase with #)
-                normalized = name.lower() if name.startswith('#') else f'#{name.lower()}'
+                normalized = (
+                    name.lower() if name.startswith("#") else f"#{name.lower()}"
+                )
                 existing_names.add(normalized)
 
             # Add additional decode-only hashtag channels from config
             additional_channels = self._get_additional_decode_channels()
             for channel_name in additional_channels:
                 # Normalize name
-                normalized = channel_name.lower() if channel_name.startswith('#') else f'#{channel_name.lower()}'
+                normalized = (
+                    channel_name.lower()
+                    if channel_name.startswith("#")
+                    else f"#{channel_name.lower()}"
+                )
                 if normalized not in existing_names:
-                    channels.append({
-                        'channel_idx': None,  # Not a real radio channel
-                        'index': None,
-                        'name': normalized,
-                        'channel_name': normalized,
-                        'type': 'hashtag',
-                        'key_hex': None,  # Key will be derived client-side
-                        'last_updated': None,
-                        'decode_only': True  # Flag to indicate this is decode-only
-                    })
+                    channels.append(
+                        {
+                            "channel_idx": None,  # Not a real radio channel
+                            "index": None,
+                            "name": normalized,
+                            "channel_name": normalized,
+                            "type": "hashtag",
+                            "key_hex": None,  # Key will be derived client-side
+                            "last_updated": None,
+                            "decode_only": True,  # Flag to indicate this is decode-only
+                        }
+                    )
                     existing_names.add(normalized)
 
             return channels
@@ -7454,23 +8585,27 @@ class BotDataViewer:
 
         try:
             # 1. Get channels from decode_hashtag_channels in [Web_Viewer]
-            if self.config and self.config.has_option('Web_Viewer', 'decode_hashtag_channels'):
-                channels_str = self.config.get('Web_Viewer', 'decode_hashtag_channels', fallback='')
+            if self.config and self.config.has_option(
+                "Web_Viewer", "decode_hashtag_channels"
+            ):
+                channels_str = self.config.get(
+                    "Web_Viewer", "decode_hashtag_channels", fallback=""
+                )
                 if channels_str:
-                    for c in channels_str.split(','):
+                    for c in channels_str.split(","):
                         c = c.strip().lower()
                         if c:
                             # Remove # prefix if present for normalization
-                            if c.startswith('#'):
+                            if c.startswith("#"):
                                 c = c[1:]
                             channels.add(c)
 
             # 2. Import channels from [Channels_List] section
-            if self.config and self.config.has_section('Channels_List'):
-                for key in self.config.options('Channels_List'):
+            if self.config and self.config.has_section("Channels_List"):
+                for key in self.config.options("Channels_List"):
                     # Handle categorized channels like "sports.sounders" -> "sounders"
-                    if '.' in key:
-                        channel_name = key.split('.')[-1]  # Get part after last dot
+                    if "." in key:
+                        channel_name = key.split(".")[-1]  # Get part after last dot
                     else:
                         channel_name = key
 
@@ -7492,10 +8627,10 @@ class BotDataViewer:
         """Get the lowest available channel index (0 to max_channels-1)"""
         try:
             channels = self._get_channels()
-            used_indices = {c['channel_idx'] for c in channels}
+            used_indices = {c["channel_idx"] for c in channels}
 
             # Get max_channels from config (default 40)
-            max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
+            max_channels = self.config.getint("Bot", "max_channels", fallback=40)
 
             # Find the lowest available index
             for i in range(max_channels):
@@ -7516,31 +8651,39 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             # Get feed count per channel
-            cursor.execute('''
+            cursor.execute("""
                 SELECT channel_name, COUNT(*) as feed_count
                 FROM feed_subscriptions
                 WHERE enabled = 1
                 GROUP BY channel_name
-            ''')
+            """)
 
             channel_feeds = {row[0]: row[1] for row in cursor.fetchall()}
 
             # Get max_channels from config (default 40)
-            max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
+            max_channels = self.config.getint("Bot", "max_channels", fallback=40)
 
             return {
-                'channels_with_feeds': len(channel_feeds),
-                'channel_feed_counts': channel_feeds,
-                'max_channels': max_channels
+                "channels_with_feeds": len(channel_feeds),
+                "channel_feed_counts": channel_feeds,
+                "max_channels": max_channels,
             }
         except Exception as e:
             self.logger.error(f"Error getting channel statistics: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
         finally:
             if conn:
                 conn.close()
 
-    def _preview_feed_items(self, feed_url: str, feed_type: str, output_format: str, api_config: dict[str, Any] | None = None, filter_config: dict[str, Any] | None = None, sort_config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def _preview_feed_items(
+        self,
+        feed_url: str,
+        feed_type: str,
+        output_format: str,
+        api_config: dict[str, Any] | None = None,
+        filter_config: dict[str, Any] | None = None,
+        sort_config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Preview feed items with custom output format (standalone, doesn't require bot)"""
         from datetime import datetime
 
@@ -7550,10 +8693,10 @@ class BotDataViewer:
             items = []
 
             # Validate URL for SSRF protection
-            if self.config.has_section('Feed_Command'):
+            if self.config.has_section("Feed_Command"):
                 try:
                     feed_command_allow_private = self.config.getboolean(
-                        'Feed_Command', 'allow_private_urls', fallback=False
+                        "Feed_Command", "allow_private_urls", fallback=False
                     )
                 except ValueError:
                     feed_command_allow_private = False
@@ -7561,11 +8704,11 @@ class BotDataViewer:
                 feed_command_allow_private = False
             allow_private_feeds = (
                 self.config.getboolean(
-                    'Feed_Manager',
-                    'allow_private_urls',
+                    "Feed_Manager",
+                    "allow_private_urls",
                     fallback=feed_command_allow_private,
                 )
-                if self.config.has_section('Feed_Manager')
+                if self.config.has_section("Feed_Manager")
                 else feed_command_allow_private
             )
             url_policy = SafeUrlPolicy(allow_private=allow_private_feeds)
@@ -7574,42 +8717,42 @@ class BotDataViewer:
             max_response_bytes = max(
                 1024,
                 self.config.getint(
-                    'Feed_Manager',
-                    'max_response_bytes',
+                    "Feed_Manager",
+                    "max_response_bytes",
                     fallback=DEFAULT_MAX_FEED_RESPONSE_BYTES,
                 )
-                if self.config.has_section('Feed_Manager')
+                if self.config.has_section("Feed_Manager")
                 else DEFAULT_MAX_FEED_RESPONSE_BYTES,
             )
             max_parsed_items = max(
                 1,
                 self.config.getint(
-                    'Feed_Manager',
-                    'max_parsed_items',
+                    "Feed_Manager",
+                    "max_parsed_items",
                     fallback=DEFAULT_MAX_PARSED_FEED_ITEMS,
                 )
-                if self.config.has_section('Feed_Manager')
+                if self.config.has_section("Feed_Manager")
                 else DEFAULT_MAX_PARSED_FEED_ITEMS,
             )
             preview_parse_limit = min(20, max_parsed_items)
 
-            if feed_type == 'rss':
+            if feed_type == "rss":
                 # Fetch RSS feed
                 with create_safe_requests_session(url_policy) as http_session:
                     response = safe_requests_request(
                         http_session,
-                        'GET',
+                        "GET",
                         feed_url,
                         policy=url_policy,
                         timeout=30,
-                        headers={'User-Agent': 'MeshCoreBot/1.0 FeedManager'},
+                        headers={"User-Agent": "MeshCoreBot/1.0 FeedManager"},
                         stream=True,
                     )
                     with closing(response):
                         content = _read_limited_requests_response(
                             response,
                             max_bytes=max_response_bytes,
-                            feed_type='rss',
+                            feed_type="rss",
                         )
                 parsed = feedparser.parse(content)
 
@@ -7617,27 +8760,37 @@ class BotDataViewer:
                 for entry in parsed.entries[:preview_parse_limit]:
                     # Parse published date
                     published = None
-                    if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                    if hasattr(entry, "published_parsed") and entry.published_parsed:
                         with suppress(Exception):
                             pt = entry.published_parsed
-                            published = datetime(pt[0], pt[1], pt[2], pt[3], pt[4], pt[5], tzinfo=timezone.utc)
+                            published = datetime(
+                                pt[0],
+                                pt[1],
+                                pt[2],
+                                pt[3],
+                                pt[4],
+                                pt[5],
+                                tzinfo=timezone.utc,
+                            )
 
-                    items.append({
-                        'title': entry.get('title', 'Untitled'),
-                        'description': entry.get('description', ''),
-                        'link': entry.get('link', ''),
-                        'published': published
-                    })
+                    items.append(
+                        {
+                            "title": entry.get("title", "Untitled"),
+                            "description": entry.get("description", ""),
+                            "link": entry.get("link", ""),
+                            "published": published,
+                        }
+                    )
 
-            elif feed_type == 'api':
+            elif feed_type == "api":
                 # Fetch API feed
                 if api_config is None:
                     raise ValueError("api_config is required for API feed type")
-                method = api_config.get('method', 'GET').upper()
-                headers = api_config.get('headers', {})
-                params = api_config.get('params', {})
-                body = api_config.get('body')
-                parser_config = api_config.get('response_parser', {})
+                method = api_config.get("method", "GET").upper()
+                headers = api_config.get("headers", {})
+                params = api_config.get("params", {})
+                body = api_config.get("body")
+                parser_config = api_config.get("response_parser", {})
 
                 with create_safe_requests_session(url_policy) as http_session:
                     response = safe_requests_request(
@@ -7647,7 +8800,7 @@ class BotDataViewer:
                         policy=url_policy,
                         headers=headers,
                         params=params,
-                        json=body if method == 'POST' else None,
+                        json=body if method == "POST" else None,
                         timeout=30,
                         stream=True,
                     )
@@ -7655,7 +8808,7 @@ class BotDataViewer:
                         content = _read_limited_requests_response(
                             response,
                             max_bytes=max_response_bytes,
-                            feed_type='api',
+                            feed_type="api",
                         )
 
                 # Try to parse JSON, handle cases where response might be a string
@@ -7663,7 +8816,7 @@ class BotDataViewer:
                     data = json.loads(content)
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     # If JSON parsing fails, try to get text and see if it's an error message
-                    text = content[:200].decode('utf-8', errors='replace')
+                    text = content[:200].decode("utf-8", errors="replace")
                     raise Exception(f"API returned non-JSON response: {text[:200]}")
 
                 # Check if response is an error message (string)
@@ -7672,26 +8825,32 @@ class BotDataViewer:
 
                 # Ensure data is a dict or list
                 if not isinstance(data, (dict, list)):
-                    raise Exception(f"API response is not a valid JSON object or array: {type(data).__name__} - {str(data)[:200]}")
+                    raise Exception(
+                        f"API response is not a valid JSON object or array: {type(data).__name__} - {str(data)[:200]}"
+                    )
 
                 # Extract items using parser config
-                items_path = parser_config.get('items_path', '')
+                items_path = parser_config.get("items_path", "")
                 items_data: dict[Any, Any] | list[Any]
                 if items_path:
-                    parts = items_path.split('.')
+                    parts = items_path.split(".")
                     items_data = data
                     for part in parts:
                         if isinstance(items_data, dict):
                             items_data = items_data.get(part, [])
                         else:
-                            raise Exception(f"Cannot navigate path '{items_path}': expected dict at '{part}', got {type(items_data).__name__}")
+                            raise Exception(
+                                f"Cannot navigate path '{items_path}': expected dict at '{part}', got {type(items_data).__name__}"
+                            )
                 else:
                     # If no items_path, data should be a list or we wrap it
                     if isinstance(data, list):
                         items_data = data
                     elif isinstance(data, dict):
                         # If it's a dict, try to find common array fields
-                        _found = data.get('items') or data.get('data') or data.get('results')
+                        _found = (
+                            data.get("items") or data.get("data") or data.get("results")
+                        )
                         items_data = _found if _found is not None else [data]
                     else:
                         items_data = [data]
@@ -7701,17 +8860,19 @@ class BotDataViewer:
                     items_data = [items_data]
 
                 # Get items (we'll filter and limit later)
-                parser_config.get('id_field', 'id')
-                title_field = parser_config.get('title_field', 'title')
-                description_field = parser_config.get('description_field', 'description')
-                timestamp_field = parser_config.get('timestamp_field', 'created_at')
-                emoji_field = parser_config.get('emoji_field', 'emoji')
+                parser_config.get("id_field", "id")
+                title_field = parser_config.get("title_field", "title")
+                description_field = parser_config.get(
+                    "description_field", "description"
+                )
+                timestamp_field = parser_config.get("timestamp_field", "created_at")
+                emoji_field = parser_config.get("emoji_field", "emoji")
 
                 # Helper function to get nested values
-                def get_nested_value(data, path, default=''):
+                def get_nested_value(data, path, default=""):
                     if not path or not data:
                         return default
-                    parts = path.split('.')
+                    parts = path.split(".")
                     value = data
                     for part in parts:
                         if isinstance(value, dict):
@@ -7737,7 +8898,7 @@ class BotDataViewer:
                         # If it's not a dict, try to convert or skip
                         if isinstance(item_data, str):
                             # If it's a string, create a simple dict
-                            item_data = {'title': item_data, 'description': item_data}
+                            item_data = {"title": item_data, "description": item_data}
                         else:
                             # Try to convert to dict or skip
                             continue
@@ -7749,22 +8910,34 @@ class BotDataViewer:
                         if ts_value:
                             try:
                                 if isinstance(ts_value, (int, float)):
-                                    published = datetime.fromtimestamp(ts_value, tz=timezone.utc)
+                                    published = datetime.fromtimestamp(
+                                        ts_value, tz=timezone.utc
+                                    )
                                 elif isinstance(ts_value, str):
                                     # Try Microsoft date format first
-                                    if ts_value.startswith('/Date('):
+                                    if ts_value.startswith("/Date("):
                                         published = self._parse_microsoft_date(ts_value)
                                     else:
                                         # Try ISO format
                                         try:
-                                            published = datetime.fromisoformat(ts_value.replace('Z', '+00:00'))
+                                            published = datetime.fromisoformat(
+                                                ts_value.replace("Z", "+00:00")
+                                            )
                                         except ValueError:
                                             # Try common formats
-                                            for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                                            for fmt in [
+                                                "%Y-%m-%dT%H:%M:%S",
+                                                "%Y-%m-%d %H:%M:%S",
+                                                "%Y-%m-%d",
+                                            ]:
                                                 try:
-                                                    published = datetime.strptime(ts_value, fmt)
+                                                    published = datetime.strptime(
+                                                        ts_value, fmt
+                                                    )
                                                     if published.tzinfo is None:
-                                                        published = published.replace(tzinfo=timezone.utc)
+                                                        published = published.replace(
+                                                            tzinfo=timezone.utc
+                                                        )
                                                     break
                                                 except ValueError:
                                                     continue
@@ -7772,20 +8945,26 @@ class BotDataViewer:
                                 pass
 
                     # Get description - support nested paths
-                    description = ''
+                    description = ""
                     if description_field:
                         desc_value = get_nested_value(item_data, description_field)
                         if desc_value:
                             description = str(desc_value)
 
-                    items.append({
-                        'title': get_nested_value(item_data, title_field, 'Untitled'),
-                        'emoji': get_nested_value(item_data, emoji_field, ''),
-                        'description': description,
-                        'link': item_data.get('link', '') if isinstance(item_data, dict) else '',
-                        'published': published,
-                        'raw': item_data  # Store raw data for format string access
-                    })
+                    items.append(
+                        {
+                            "title": get_nested_value(
+                                item_data, title_field, "Untitled"
+                            ),
+                            "emoji": get_nested_value(item_data, emoji_field, ""),
+                            "description": description,
+                            "link": item_data.get("link", "")
+                            if isinstance(item_data, dict)
+                            else "",
+                            "published": published,
+                            "raw": item_data,  # Store raw data for format string access
+                        }
+                    )
 
             # Apply sorting if configured
             if sort_config:
@@ -7793,7 +8972,11 @@ class BotDataViewer:
 
             # Apply filter if configured
             if filter_config:
-                items = [item for item in items if self._should_include_item(item, filter_config)]
+                items = [
+                    item
+                    for item in items
+                    if self._should_include_item(item, filter_config)
+                ]
 
             # Limit to first 3 items after filtering
             items = items[:3]
@@ -7801,11 +8984,8 @@ class BotDataViewer:
             # Format items using output format
             formatted_items = []
             for item in items:
-                formatted = self._format_feed_item(item, output_format, feed_name='')
-                formatted_items.append({
-                    'original': item,
-                    'formatted': formatted
-                })
+                formatted = self._format_feed_item(item, output_format, feed_name="")
+                formatted_items.append({"original": item, "formatted": formatted})
 
             return formatted_items
 
@@ -7827,10 +9007,10 @@ class BotDataViewer:
             return None
 
         # Match /Date(timestamp-offset)/ format
-        match = re.match(r'/Date\((\d+)([+-]\d+)?\)/', date_str)
+        match = re.match(r"/Date\((\d+)([+-]\d+)?\)/", date_str)
         if match:
             timestamp_ms = int(match.group(1))
-            offset_str = match.group(2) if match.group(2) else '+0000'
+            offset_str = match.group(2) if match.group(2) else "+0000"
 
             # Convert milliseconds to seconds
             timestamp = timestamp_ms / 1000.0
@@ -7840,13 +9020,14 @@ class BotDataViewer:
                 offset_hours = int(offset_str[:3])
                 offset_mins = int(offset_str[3:5])
                 offset_seconds = (offset_hours * 3600) + (offset_mins * 60)
-                if offset_str[0] == '-':
+                if offset_str[0] == "-":
                     offset_seconds = -offset_seconds
 
                 # Create timezone-aware datetime
                 tz = timezone.utc
                 if offset_seconds != 0:
                     from datetime import timedelta
+
                     tz = timezone(timedelta(seconds=offset_seconds))
 
                 return datetime.fromtimestamp(timestamp, tz=tz)
@@ -7856,22 +9037,24 @@ class BotDataViewer:
 
         return None
 
-    def _sort_items_preview(self, items: list[dict[str, Any]], sort_config: dict) -> list[dict[str, Any]]:
+    def _sort_items_preview(
+        self, items: list[dict[str, Any]], sort_config: dict
+    ) -> list[dict[str, Any]]:
         """Sort items based on sort configuration (standalone version for preview)"""
         if not sort_config or not items:
             return items
 
-        field_path = sort_config.get('field')
-        order = sort_config.get('order', 'desc').lower()
+        field_path = sort_config.get("field")
+        order = sort_config.get("order", "desc").lower()
 
         if not field_path:
             return items
 
         # Helper to get nested values
-        def get_nested_value(data, path, default=''):
+        def get_nested_value(data, path, default=""):
             if not path or not data:
                 return default
-            parts = path.split('.')
+            parts = path.split(".")
             value = data
             for part in parts:
                 if isinstance(value, dict):
@@ -7894,17 +9077,17 @@ class BotDataViewer:
         def get_sort_value(item):
             """Get the sort value for an item"""
             # Try raw data first
-            raw_data = item.get('raw', {})
-            value = get_nested_value(raw_data, field_path, '')
+            raw_data = item.get("raw", {})
+            value = get_nested_value(raw_data, field_path, "")
 
-            if not value and field_path.startswith('raw.'):
-                value = get_nested_value(raw_data, field_path[4:], '')
+            if not value and field_path.startswith("raw."):
+                value = get_nested_value(raw_data, field_path[4:], "")
 
             if not value:
-                value = get_nested_value(item, field_path, '')
+                value = get_nested_value(item, field_path, "")
 
             # Handle Microsoft date format
-            if isinstance(value, str) and value.startswith('/Date('):
+            if isinstance(value, str) and value.startswith("/Date("):
                 dt = self._parse_microsoft_date(value)
                 if dt:
                     return dt.timestamp()
@@ -7921,13 +9104,13 @@ class BotDataViewer:
             if isinstance(value, str):
                 # Try to parse as ISO format
                 try:
-                    dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
                     return dt.timestamp()
                 except ValueError:
                     pass
 
                 # Try common date formats
-                for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
                     try:
                         dt = datetime.strptime(value, fmt)
                         return dt.timestamp()
@@ -7939,42 +9122,48 @@ class BotDataViewer:
 
         # Sort items
         try:
-            sorted_items = sorted(items, key=get_sort_value, reverse=(order == 'desc'))
+            sorted_items = sorted(items, key=get_sort_value, reverse=(order == "desc"))
             return sorted_items
         except Exception as e:
             self.logger.warning(f"Error sorting items in preview: {e}")
             return items
 
-    def _format_feed_item(self, item: dict[str, Any], format_str: str, feed_name: str = '') -> str:
+    def _format_feed_item(
+        self, item: dict[str, Any], format_str: str, feed_name: str = ""
+    ) -> str:
         """Format a feed item using the output format (standalone version)"""
         import html
         import re
         from datetime import datetime
 
         # Extract field values (NULL/missing fields must not become None for str ops)
-        title = item.get('title') or 'Untitled'
-        body = item.get('description', '') or item.get('body', '')
+        title = item.get("title") or "Untitled"
+        body = item.get("description", "") or item.get("body", "")
 
         # Clean HTML from body if present
         if body:
             body = html.unescape(body)
             # Convert line break tags to newlines before stripping other HTML
             # Handle <br>, <br/>, <br />, <BR>, etc.
-            body = re.sub(r'<br\s*/?>', '\n', body, flags=re.IGNORECASE)
+            body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
             # Convert paragraph tags to newlines (with spacing)
-            body = re.sub(r'</p>', '\n\n', body, flags=re.IGNORECASE)
-            body = re.sub(r'<p[^>]*>', '', body, flags=re.IGNORECASE)
+            body = re.sub(r"</p>", "\n\n", body, flags=re.IGNORECASE)
+            body = re.sub(r"<p[^>]*>", "", body, flags=re.IGNORECASE)
             # Remove remaining HTML tags
-            body = re.sub(r'<[^>]+>', '', body)
+            body = re.sub(r"<[^>]+>", "", body)
             # Clean up whitespace (preserve intentional line breaks)
             # Replace multiple newlines with double newline, then normalize spaces within lines
-            body = re.sub(r'\n\s*\n\s*\n+', '\n\n', body)  # Multiple newlines -> double newline
-            lines = body.split('\n')
-            body = '\n'.join(' '.join(line.split()) for line in lines)  # Normalize spaces per line
+            body = re.sub(
+                r"\n\s*\n\s*\n+", "\n\n", body
+            )  # Multiple newlines -> double newline
+            lines = body.split("\n")
+            body = "\n".join(
+                " ".join(line.split()) for line in lines
+            )  # Normalize spaces per line
             body = body.strip()
 
-        link_original = _coerce_url_string(item.get('link', ''))
-        published = item.get('published')
+        link_original = _coerce_url_string(item.get("link", ""))
+        published = item.get("published")
 
         # Format timestamp
         date_str = ""
@@ -8001,34 +9190,34 @@ class BotDataViewer:
 
         # Choose emoji: a per-item emoji (e.g. from API emoji_field) wins; otherwise
         # fall back to a heuristic based on the feed name.
-        emoji = item.get('emoji')
+        emoji = item.get("emoji")
         if not emoji:
             emoji = "📢"
-            feed_name_lower = (feed_name or '').lower()
-            if 'emergency' in feed_name_lower or 'alert' in feed_name_lower:
+            feed_name_lower = (feed_name or "").lower()
+            if "emergency" in feed_name_lower or "alert" in feed_name_lower:
                 emoji = "🚨"
-            elif 'warning' in feed_name_lower:
+            elif "warning" in feed_name_lower:
                 emoji = "⚠️"
-            elif 'info' in feed_name_lower or 'news' in feed_name_lower:
+            elif "info" in feed_name_lower or "news" in feed_name_lower:
                 emoji = "ℹ️"
 
         # Build replacements
         replacements = {
-            'title': title,
-            'body': body,
-            'date': date_str,
-            'link': link_original,
-            'emoji': emoji
+            "title": title,
+            "body": body,
+            "date": date_str,
+            "link": link_original,
+            "emoji": emoji,
         }
 
         # Get raw API data if available (for preview, we don't have raw data, so this will be empty)
-        raw_data = item.get('raw', {})
+        raw_data = item.get("raw", {})
 
         # Helper to get nested values
-        def get_nested_value(data, path, default=''):
+        def get_nested_value(data, path, default=""):
             if not path or not data:
                 return default
-            parts = path.split('.')
+            parts = path.split(".")
             value = data
             for part in parts:
                 if isinstance(value, dict):
@@ -8051,75 +9240,72 @@ class BotDataViewer:
         # Apply shortening, parsing, and conditional functions
         def apply_shortening(text: str, function: str) -> str:
             fn = (function or "").strip()
-            if fn == 'shorten' or fn.startswith('shorten|'):
+            if fn == "shorten" or fn.startswith("shorten|"):
                 from modules.url_shortener import shorten_url_sync
+
                 if not (text or "").strip():
                     return ""
-                if fn == 'shorten':
-                    out = shorten_url_sync(
-                        text, config=self.config, logger=self.logger
-                    )
+                if fn == "shorten":
+                    out = shorten_url_sync(text, config=self.config, logger=self.logger)
                     return out if out else text
-                rest = fn.split('|', 1)[1].strip()
-                out = shorten_url_sync(
-                    text, config=self.config, logger=self.logger
-                )
+                rest = fn.split("|", 1)[1].strip()
+                out = shorten_url_sync(text, config=self.config, logger=self.logger)
                 base = out if out else text
                 return apply_shortening(base, rest)
 
             if not text:
                 return ""
 
-            if function.startswith('truncate:'):
+            if function.startswith("truncate:"):
                 try:
-                    max_len = int(function.split(':', 1)[1])
+                    max_len = int(function.split(":", 1)[1])
                     if len(text) <= max_len:
                         return text
                     return text[:max_len] + "..."
                 except (ValueError, IndexError):
                     return text
-            elif function.startswith('truncate_hard:'):
+            elif function.startswith("truncate_hard:"):
                 # Like truncate:N but never appends an ellipsis
                 try:
-                    max_len = int(function.split(':', 1)[1])
+                    max_len = int(function.split(":", 1)[1])
                     if len(text) <= max_len:
                         return text
                     return text[:max_len]
                 except (ValueError, IndexError):
                     return text
-            elif function.startswith('substr:'):
+            elif function.startswith("substr:"):
                 # substr:START[,LENGTH] - JS-style: START offset, optional LENGTH chars
                 try:
-                    args = function.split(':', 1)[1].split(',')
+                    args = function.split(":", 1)[1].split(",")
                     start = int(args[0])
-                    if len(args) > 1 and args[1].strip() != '':
+                    if len(args) > 1 and args[1].strip() != "":
                         length = int(args[1])
-                        return text[start:start + length]
+                        return text[start : start + length]
                     return text[start:]
                 except (ValueError, IndexError):
                     return text
-            elif function.startswith('word_wrap:'):
+            elif function.startswith("word_wrap:"):
                 try:
-                    max_len = int(function.split(':', 1)[1])
+                    max_len = int(function.split(":", 1)[1])
                     if len(text) <= max_len:
                         return text
                     truncated = text[:max_len]
-                    last_space = truncated.rfind(' ')
+                    last_space = truncated.rfind(" ")
                     if last_space > max_len * 0.7:
                         return truncated[:last_space] + "..."
                     return truncated + "..."
                 except (ValueError, IndexError):
                     return text
-            elif function.startswith('first_words:'):
+            elif function.startswith("first_words:"):
                 try:
-                    num_words = int(function.split(':', 1)[1])
+                    num_words = int(function.split(":", 1)[1])
                     words = text.split()
                     if len(words) <= num_words:
                         return text
-                    return ' '.join(words[:num_words]) + "..."
+                    return " ".join(words[:num_words]) + "..."
                 except (ValueError, IndexError):
                     return text
-            elif function.startswith('regex:'):
+            elif function.startswith("regex:"):
                 try:
                     # Parse regex pattern and optional group number
                     # Format: regex:pattern:group or regex:pattern
@@ -8128,13 +9314,13 @@ class BotDataViewer:
 
                     # Try to find the last colon that's followed by a number (the group number)
                     # Look for pattern like :N at the end
-                    last_colon_idx = remaining.rfind(':')
+                    last_colon_idx = remaining.rfind(":")
                     pattern = remaining
                     group_num = None
 
                     if last_colon_idx > 0:
                         # Check if what's after the last colon is a number
-                        potential_group = remaining[last_colon_idx + 1:]
+                        potential_group = remaining[last_colon_idx + 1 :]
                         if potential_group.isdigit():
                             pattern = remaining[:last_colon_idx]
                             group_num = int(potential_group)
@@ -8148,7 +9334,11 @@ class BotDataViewer:
                         if group_num is not None:
                             # Use specified group (0 = whole match, 1 = first group, etc.)
                             if 0 <= group_num <= len(match.groups()):
-                                return match.group(group_num) if group_num > 0 else match.group(0)
+                                return (
+                                    match.group(group_num)
+                                    if group_num > 0
+                                    else match.group(0)
+                                )
                         else:
                             # Use first capture group if available, otherwise whole match
                             if match.groups():
@@ -8159,11 +9349,13 @@ class BotDataViewer:
                 except (ValueError, IndexError, re.error):
                     # Silently fail on regex errors in preview
                     return text
-            elif function.startswith('if_regex:'):
+            elif function.startswith("if_regex:"):
                 try:
                     # Parse: if_regex:pattern:then:else
                     # Split by ':' but need to handle regex patterns that contain ':'
-                    parts = function[9:].split(':', 2)  # Skip 'if_regex:' prefix, split into [pattern, then, else]
+                    parts = function[9:].split(
+                        ":", 2
+                    )  # Skip 'if_regex:' prefix, split into [pattern, then, else]
                     if len(parts) < 3:
                         return text
 
@@ -8183,11 +9375,11 @@ class BotDataViewer:
                 except (ValueError, IndexError, re.error):
                     # Silently fail on regex errors in preview
                     return text
-            elif function.startswith('switch:'):
+            elif function.startswith("switch:"):
                 try:
                     # Parse: switch:value1:result1:value2:result2:...:default
                     # Example: switch:highest:🔴:high:🟠:medium:🟡:low:⚪:⚪
-                    parts = function[7:].split(':')  # Skip 'switch:' prefix
+                    parts = function[7:].split(":")  # Skip 'switch:' prefix
                     if len(parts) < 2:
                         return text
 
@@ -8205,10 +9397,10 @@ class BotDataViewer:
                 except (ValueError, IndexError):
                     # Silently fail on switch errors in preview
                     return text
-            elif function.startswith('regex_cond:'):
+            elif function.startswith("regex_cond:"):
                 try:
                     # Parse: regex_cond:extract_pattern:check_pattern:then:group
-                    parts = function[11:].split(':', 3)  # Skip 'regex_cond:' prefix
+                    parts = function[11:].split(":", 3)  # Skip 'regex_cond:' prefix
                     if len(parts) < 4:
                         return text
 
@@ -8225,7 +9417,11 @@ class BotDataViewer:
                     if match:
                         # Get the captured group
                         if match.groups():
-                            extracted = match.group(else_group) if else_group <= len(match.groups()) else match.group(1)
+                            extracted = (
+                                match.group(else_group)
+                                if else_group <= len(match.groups())
+                                else match.group(1)
+                            )
                             # Strip whitespace from extracted text
                             extracted = extracted.strip()
                         else:
@@ -8234,7 +9430,9 @@ class BotDataViewer:
                         # Check if extracted text matches check_pattern (exact match or contains)
                         if check_pattern:
                             # Try exact match first, then substring match
-                            if extracted.lower() == check_pattern.lower() or re.search(check_pattern, extracted, re.IGNORECASE):
+                            if extracted.lower() == check_pattern.lower() or re.search(
+                                check_pattern, extracted, re.IGNORECASE
+                            ):
                                 return then_value
 
                         return extracted
@@ -8245,59 +9443,60 @@ class BotDataViewer:
             return text
 
         def _preview_auto_base_value(field_name: str) -> str:
-            if field_name.startswith('raw.'):
-                value = get_nested_value(raw_data, field_name[4:], '')
+            if field_name.startswith("raw."):
+                value = get_nested_value(raw_data, field_name[4:], "")
                 if value is None:
-                    return ''
+                    return ""
                 if isinstance(value, (dict, list)):
                     try:
                         return json.dumps(value)
                     except Exception:
                         return str(value)
                 return str(value)
-            if field_name == 'link':
-                return link_original or ''
-            return str(replacements.get(field_name, '') or '')
+            if field_name == "link":
+                return link_original or ""
+            return str(replacements.get(field_name, "") or "")
 
         # Process format string
         def replace_placeholder(match):
             content = match.group(1)
-            if '|' in content:
-                field_name, function = content.split('|', 1)
+            if "|" in content:
+                field_name, function = content.split("|", 1)
                 field_name = field_name.strip()
                 function = function.strip()
-                if function == 'auto':
-                    return ''
+                if function == "auto":
+                    return ""
 
                 # Check if it's a raw field access
-                if field_name.startswith('raw.'):
-                    value = str(get_nested_value(raw_data, field_name[4:], ''))
+                if field_name.startswith("raw."):
+                    value = str(get_nested_value(raw_data, field_name[4:], ""))
                 else:
-                    value = replacements.get(field_name, '')
+                    value = replacements.get(field_name, "")
 
                 return apply_shortening(value, function)
             else:
                 field_name = content.strip()
 
                 # Check if it's a raw field access
-                if field_name.startswith('raw.'):
-                    value = get_nested_value(raw_data, field_name[4:], '')
+                if field_name.startswith("raw."):
+                    value = get_nested_value(raw_data, field_name[4:], "")
                     if value is None:
-                        return ''
+                        return ""
                     elif isinstance(value, (dict, list)):
                         try:
                             import json
+
                             return json.dumps(value)
                         except Exception:
                             return str(value)
                     else:
                         return str(value)
                 else:
-                    return replacements.get(field_name, '')
+                    return replacements.get(field_name, "")
 
         try:
             max_length = self.config.getint(
-                'Feed_Manager', 'max_message_length', fallback=130
+                "Feed_Manager", "max_message_length", fallback=130
             )
         except Exception:
             max_length = 130
@@ -8305,36 +9504,36 @@ class BotDataViewer:
         auto_slots = FeedManager._feed_format_auto_slots(format_str)
         if len(auto_slots) > 1:
             self.logger.warning(
-                'Multiple {field|auto} placeholders in feed output format; '
-                'only the first expands. Others render empty.'
+                "Multiple {field|auto} placeholders in feed output format; "
+                "only the first expands. Others render empty."
             )
 
         if len(auto_slots) >= 1:
             start, end, auto_field = auto_slots[0]
             prefix = format_str[:start]
             suffix = format_str[end:]
-            prefix_r = re.sub(r'\{([^}]+)\}', replace_placeholder, prefix)
-            suffix_r = re.sub(r'\{([^}]+)\}', replace_placeholder, suffix)
+            prefix_r = re.sub(r"\{([^}]+)\}", replace_placeholder, prefix)
+            suffix_r = re.sub(r"\{([^}]+)\}", replace_placeholder, suffix)
             budget = max_length - len(prefix_r) - len(suffix_r)
             raw_auto = _preview_auto_base_value(auto_field)
             auto_text = FeedManager._truncate_to_budget(raw_auto, budget)
             message = prefix_r + auto_text + suffix_r
         else:
-            message = re.sub(r'\{([^}]+)\}', replace_placeholder, format_str)
+            message = re.sub(r"\{([^}]+)\}", replace_placeholder, format_str)
 
         # Final truncation (mesh limit)
         if len(message) > max_length:
-            lines = message.split('\n')
+            lines = message.split("\n")
             if len(lines) > 1:
                 total_length = sum(len(line) + 1 for line in lines[:-1])
                 remaining = max_length - total_length - 3
                 if remaining > 20:
                     lines[-1] = lines[-1][:remaining] + "..."
-                    message = '\n'.join(lines)
+                    message = "\n".join(lines)
                 else:
-                    message = message[:max_length - 3] + "..."
+                    message = message[: max_length - 3] + "..."
             else:
-                message = message[:max_length - 3] + "..."
+                message = message[: max_length - 3] + "..."
 
         return message
 
@@ -8381,32 +9580,34 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             # Insert operation into queue
-            cursor.execute('''
+            cursor.execute(
+                """
                 INSERT INTO channel_operations
                 (operation_type, channel_idx, channel_name, channel_key_hex, status)
                 VALUES (?, ?, ?, ?, 'pending')
-            ''', ('add', channel_idx, channel_name, channel_key_hex))
+            """,
+                ("add", channel_idx, channel_name, channel_key_hex),
+            )
 
             operation_id = cursor.lastrowid
             conn.commit()
             conn.close()
 
-            self.logger.info(f"Queued channel add operation: {channel_name} at index {channel_idx} (operation_id: {operation_id})")
+            self.logger.info(
+                f"Queued channel add operation: {channel_name} at index {channel_idx} (operation_id: {operation_id})"
+            )
 
             # Return immediately with operation_id - let frontend poll for status
             return {
-                'success': True,
-                'pending': True,
-                'operation_id': operation_id,
-                'message': 'Channel operation queued successfully'
+                "success": True,
+                "pending": True,
+                "operation_id": operation_id,
+                "message": "Channel operation queued successfully",
             }
 
         except Exception as e:
             self.logger.error(f"Error in _add_channel_for_web: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            return {"success": False, "error": str(e)}
 
     def _remove_channel_for_web(self, channel_idx):
         """
@@ -8423,60 +9624,61 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             # Insert operation into queue
-            cursor.execute('''
+            cursor.execute(
+                """
                 INSERT INTO channel_operations
                 (operation_type, channel_idx, status)
                 VALUES (?, ?, 'pending')
-            ''', ('remove', channel_idx))
+            """,
+                ("remove", channel_idx),
+            )
 
             operation_id = cursor.lastrowid
             conn.commit()
             conn.close()
 
-            self.logger.info(f"Queued channel remove operation: index {channel_idx} (operation_id: {operation_id})")
+            self.logger.info(
+                f"Queued channel remove operation: index {channel_idx} (operation_id: {operation_id})"
+            )
 
             # Return immediately with operation_id - let frontend poll for status
             return {
-                'success': True,
-                'pending': True,
-                'operation_id': operation_id,
-                'message': 'Channel operation queued successfully'
+                "success": True,
+                "pending": True,
+                "operation_id": operation_id,
+                "message": "Channel operation queued successfully",
             }
 
         except Exception as e:
             self.logger.error(f"Error in _remove_channel_for_web: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            return {"success": False, "error": str(e)}
 
-    def _decode_path_hex(self, path_hex: str, bytes_per_hop: int | None = None) -> list[dict[str, Any]]:
+    def _decode_path_hex(
+        self, path_hex: str, bytes_per_hop: int | None = None
+    ) -> list[dict[str, Any]]:
         """Decode a hex path string to repeater nodes.
 
         Thin wrapper over the shared engine (modules.path_inference.decode_path_nodes); the
         bot `path` command and /api/mesh/resolve-path use the same implementation.
         """
         from modules.path_inference import decode_path_nodes
+
         return decode_path_nodes(
             path_hex,
             bytes_per_hop,
             config=self.config,
             db_manager=self.db_manager,
             logger=self.logger,
-            mesh_graph=getattr(self, "mesh_graph", None),
+            mesh_graph=self._get_mesh_graph(),
         )
 
-    def run(self, host='127.0.0.1', port=8080, debug=False):
+    def run(self, host="127.0.0.1", port=8080, debug=False):
         """Run the modern web viewer"""
         self.logger.info(f"Starting modern web viewer on {host}:{port}")
         self._suppress_werkzeug_headers_error()
         try:
             self.socketio.run(
-                self.app,
-                host=host,
-                port=port,
-                debug=debug,
-                allow_unsafe_werkzeug=True
+                self.app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True
             )
         except Exception as e:
             self.logger.error(f"Error running web viewer: {e}")
@@ -8502,14 +9704,15 @@ class BotDataViewer:
         for name in ("werkzeug", "werkzeug.serving"):
             logging.getLogger(name).addFilter(_HeadersAlreadySetFilter())
 
+
 def main():
     """Entry point for the meshcore-viewer command"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='MeshCore Bot Data Viewer')
-    parser.add_argument('--host', default='127.0.0.1', help='Host to bind to')
-    parser.add_argument('--port', type=int, default=8080, help='Port to bind to')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser = argparse.ArgumentParser(description="MeshCore Bot Data Viewer")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8080, help="Port to bind to")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument(
         "--config",
         default="config.ini",
@@ -8521,5 +9724,6 @@ def main():
     viewer = BotDataViewer(config_path=args.config)
     viewer.run(host=args.host, port=args.port, debug=args.debug)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

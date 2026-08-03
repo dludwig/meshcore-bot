@@ -10,7 +10,7 @@ import configparser
 import json
 import logging
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -33,6 +33,30 @@ def _write_config(path: Path, db_path: str) -> None:
     }
     with open(path, "w") as f:
         cfg.write(f)
+
+
+@contextmanager
+def _temp_config_option(config, section: str, option: str, value: str):
+    """Set a config option for the body of a test, restoring prior state after.
+
+    Patching ConfigParser.get is not a substitute: getboolean/getint delegate to
+    it internally, so a stubbed get breaks every other option read too.
+    """
+    added_section = not config.has_section(section)
+    if added_section:
+        config.add_section(section)
+    had_option = config.has_option(section, option)
+    previous = config.get(section, option) if had_option else None
+    config.set(section, option, value)
+    try:
+        yield
+    finally:
+        if added_section:
+            config.remove_section(section)
+        elif had_option:
+            config.set(section, option, previous)
+        else:
+            config.remove_option(section, option)
 
 
 def _fake_setup_logging(self: BotDataViewer) -> None:
@@ -2249,6 +2273,214 @@ class TestSubscribeCommandsHistoryReplay:
         assert "time() - 300" in src or "_time.time() - 300" in src, (
             "last_timestamp must be initialized to time.time()-300, not 0"
         )
+
+    def test_mesh_graph_is_not_built_at_startup(self, tmp_path):
+        """Uses its own viewer: the shared one may already have decoded a path."""
+        db_path = str(tmp_path / "startup.db")
+        config_path = str(tmp_path / "config.ini")
+        _write_config(Path(config_path), db_path)
+
+        factory = Mock()
+        with (
+            patch("modules.mesh_graph.MeshGraph", factory),
+            patch.object(BotDataViewer, "_setup_logging", _fake_setup_logging),
+            patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
+            patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
+            patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+            patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
+        ):
+            v = BotDataViewer(db_path=db_path, config_path=config_path)
+
+        assert v.mesh_graph is None
+        factory.assert_not_called()
+
+    def test_mesh_graph_is_lazy_singleton_and_read_only(self, viewer, monkeypatch):
+        graph = object()
+        factory = Mock(return_value=graph)
+        monkeypatch.setattr("modules.mesh_graph.MeshGraph", factory)
+        viewer.mesh_graph = None
+        try:
+            assert viewer._get_mesh_graph() is graph
+            assert viewer._get_mesh_graph() is graph
+            # capture=False keeps edge writes and the batch-writer thread in the
+            # bot process, which owns capture.
+            factory.assert_called_once_with(viewer._mesh_graph_bot, capture=False)
+        finally:
+            viewer.mesh_graph = None
+
+    def test_path_decoding_passes_mesh_graph_to_shared_engine(self, viewer, monkeypatch):
+        """Without the graph, decoding silently disagrees with the bot's `path` command."""
+        graph = object()
+        monkeypatch.setattr(
+            "modules.mesh_graph.MeshGraph", Mock(return_value=graph)
+        )
+        decode = Mock(return_value=[])
+        monkeypatch.setattr("modules.path_inference.decode_path_nodes", decode)
+        viewer.mesh_graph = None
+        try:
+            viewer._decode_path_hex("aabb")
+            assert decode.call_args.kwargs["mesh_graph"] is graph
+
+            decode.reset_mock()
+            viewer._resolve_path("aabb")
+            assert decode.call_args.kwargs["mesh_graph"] is graph
+        finally:
+            viewer.mesh_graph = None
+
+    def test_path_decoding_degrades_when_mesh_graph_fails_to_load(self, viewer, monkeypatch):
+        monkeypatch.setattr(
+            "modules.mesh_graph.MeshGraph", Mock(side_effect=RuntimeError("no table"))
+        )
+        decode = Mock(return_value=[])
+        monkeypatch.setattr("modules.path_inference.decode_path_nodes", decode)
+        viewer.mesh_graph = None
+        try:
+            viewer._decode_path_hex("aabb")
+            assert decode.call_args.kwargs["mesh_graph"] is None
+        finally:
+            viewer.mesh_graph = None
+
+    def test_missing_migrations_fail_at_startup_not_in_a_request(self, tmp_path):
+        """RepeaterManager is lazy now, so the viewer must validate up front.
+
+        Otherwise a migration problem first surfaces as a 500 from whichever
+        request happens to need the manager.
+        """
+        db_path = str(tmp_path / "unmigrated.db")
+        config_path = str(tmp_path / "config.ini")
+        _write_config(Path(config_path), db_path)
+
+        boom = Mock(side_effect=RuntimeError("Missing repeater/graph database tables: purging_log"))
+        with (
+            patch("modules.web_viewer.app.validate_repeater_tables", boom),
+            patch.object(BotDataViewer, "_setup_logging", _fake_setup_logging),
+            patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
+            patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
+            patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+            patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
+            pytest.raises(RuntimeError, match="Missing repeater/graph database tables"),
+        ):
+            BotDataViewer(db_path=db_path, config_path=config_path)
+
+    def test_repeater_manager_is_lazy_and_singleton(self, viewer, monkeypatch):
+        manager = object()
+        factory = Mock(return_value=manager)
+        monkeypatch.setattr("modules.web_viewer.app.RepeaterManager", factory)
+        viewer.repeater_manager = None
+        try:
+            assert viewer._get_repeater_manager() is manager
+            assert viewer._get_repeater_manager() is manager
+            factory.assert_called_once_with(viewer._repeater_manager_bot)
+        finally:
+            viewer.repeater_manager = None
+
+    def test_live_stream_polling_is_idle_without_relevant_subscribers(self, viewer):
+        with viewer._clients_lock:
+            original_clients = dict(viewer.connected_clients)
+            viewer.connected_clients.clear()
+            viewer.connected_clients["mesh-only"] = {"subscribed_mesh": True}
+        try:
+            assert viewer._has_live_stream_subscribers() is False
+            with viewer._clients_lock:
+                viewer.connected_clients["packet-client"] = {
+                    "subscribed_packets": True
+                }
+            assert viewer._has_live_stream_subscribers() is True
+        finally:
+            with viewer._clients_lock:
+                viewer.connected_clients.clear()
+                viewer.connected_clients.update(original_clients)
+
+    def test_viewer_journal_mode_is_initialized_once(self, viewer, monkeypatch):
+        statements = []
+        real_connect = sqlite3.connect
+
+        class TracingConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                statements.append(sql)
+                return super().execute(sql, parameters)
+
+        def tracing_connect(*args, **kwargs):
+            kwargs["factory"] = TracingConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", tracing_connect)
+        viewer.db_manager._journal_mode_initialized.discard("Web_Viewer")
+        for _ in range(3):
+            with closing(viewer._get_db_connection()):
+                pass
+
+        journal_statements = [
+            sql for sql in statements if sql.upper().startswith("PRAGMA JOURNAL_MODE=")
+        ]
+        foreign_key_statements = [
+            sql for sql in statements if sql.upper().startswith("PRAGMA FOREIGN_KEYS=")
+        ]
+        assert journal_statements == ["PRAGMA journal_mode=WAL"]
+        assert len(foreign_key_statements) == 3
+
+    def test_viewer_connections_use_the_shared_dbmanager_implementation(self, viewer):
+        """The viewer must not carry its own copy of the pragma logic."""
+        conn = Mock()
+        with patch.object(viewer.db_manager, "_apply_sqlite_pragmas") as shared:
+            viewer._configure_db_connection(conn)
+        shared.assert_called_once_with(conn, for_web_viewer=True)
+
+        # The DBManager it delegates to must own the same file every viewer
+        # connection opens, or its journal-mode bookkeeping would be tracking
+        # a different database.
+        assert str(viewer.db_manager.db_path) == str(viewer.db_path)
+
+    def test_rollback_journal_mode_is_applied_to_every_connection(self, viewer):
+        """DELETE/TRUNCATE/PERSIST/MEMORY/OFF are connection-local, not persistent.
+
+        Caching them like WAL would leave every connection after the first
+        silently running SQLite's default mode instead of the configured one.
+        """
+        applied = []
+        conn = Mock()
+        conn.execute.side_effect = lambda sql: applied.append(sql)
+        viewer.db_manager._journal_mode_initialized.discard("Web_Viewer")
+
+        with _temp_config_option(
+            viewer.config, "Web_Viewer", "sqlite_journal_mode", "MEMORY"
+        ):
+            viewer._configure_db_connection(conn)
+            viewer._configure_db_connection(conn)
+
+        assert [s for s in applied if s.upper().startswith("PRAGMA JOURNAL_MODE=")] == [
+            "PRAGMA journal_mode=MEMORY",
+            "PRAGMA journal_mode=MEMORY",
+        ]
+        # A non-persistent mode must not consume the WAL-only fast path.
+        assert "Web_Viewer" not in viewer.db_manager._journal_mode_initialized
+
+    def test_invalid_journal_mode_warns_once_and_falls_back(self, viewer):
+        """The mode is read per connection now, so the warning must not repeat."""
+        viewer.db_manager._journal_mode_warned.discard("Web_Viewer")
+        viewer.db_manager._journal_mode_initialized.discard("Web_Viewer")
+        applied = []
+        conn = Mock()
+        conn.execute.side_effect = lambda sql: applied.append(sql)
+        fake_logger = Mock()
+        try:
+            with (
+                _temp_config_option(
+                    viewer.config, "Web_Viewer", "sqlite_journal_mode", "BOGUS"
+                ),
+                patch.object(viewer.db_manager, "logger", fake_logger),
+            ):
+                for _ in range(3):
+                    viewer._configure_db_connection(conn)
+        finally:
+            viewer.db_manager._journal_mode_warned.discard("Web_Viewer")
+
+        assert fake_logger.warning.call_count == 1
+        assert "BOGUS" in str(fake_logger.warning.call_args)
+        # Falls back to WAL rather than sending an invalid pragma to SQLite.
+        assert [s for s in applied if s.upper().startswith("PRAGMA JOURNAL_MODE=")] == [
+            "PRAGMA journal_mode=WAL"
+        ]
 
 
 # ---------------------------------------------------------------------------

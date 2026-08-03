@@ -32,7 +32,7 @@ from ..utils import (
     parse_trace_payload_route_hashes,
     verify_meshcore_advert_ed25519,
 )
-from ..version_info import resolve_runtime_version
+from ..version_info import resolve_application_version
 
 # Import MQTT client
 try:
@@ -1904,7 +1904,7 @@ class PacketCaptureService(BaseServicePlugin):
     def _load_client_version(self) -> str:
         """Load client version from shared runtime resolver."""
         try:
-            info = resolve_runtime_version(self.bot.bot_root)
+            info = resolve_application_version()
             display = info.get("display") or "unknown"
             return f"meshcore-bot/{display}"
         except Exception as e:

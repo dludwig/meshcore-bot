@@ -45,11 +45,15 @@ def _merge_avg_hop_position(
 class MeshGraph:
     """Graph structure tracking observed connections between mesh nodes."""
 
-    def __init__(self, bot):
+    def __init__(self, bot, capture: Optional[bool] = None):
         """Initialize the mesh graph.
 
         Args:
             bot: Bot instance with db_manager and config access.
+            capture: Force the capture kill-switch instead of reading it from
+                config. Pass False for a read-only consumer (e.g. the web
+                viewer's path decoding) so it loads the graph without writing
+                edges or running a batch-writer thread. None reads config.
         """
         self.bot = bot
         self.logger = bot.logger
@@ -58,7 +62,10 @@ class MeshGraph:
         # Capture/validation feature flags
         # graph_capture_enabled: controls whether new edge data is collected from packets
         # When False, no new edges are added and the batch writer thread is not started.
-        self.capture_enabled = bot.config.getboolean('Path_Command', 'graph_capture_enabled', fallback=True)
+        if capture is None:
+            self.capture_enabled = bot.config.getboolean('Path_Command', 'graph_capture_enabled', fallback=True)
+        else:
+            self.capture_enabled = bool(capture)
 
         # In-memory graph storage: {(from_prefix, to_prefix): edge_data}
         self.edges: dict[tuple[str, str], dict] = {}
