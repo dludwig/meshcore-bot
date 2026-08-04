@@ -183,7 +183,7 @@ class TestFormatMessage:
             "published": None,
             "raw": {},
         }
-        with patch("modules.feed_manager.shorten_url_sync") as mock_shorten:
+        with patch("modules.feed_format.shorten_url_sync") as mock_shorten:
             msg = fm.format_message(item, feed)
         mock_shorten.assert_not_called()
         assert msg == "https://example.com/long/path"
@@ -200,7 +200,7 @@ class TestFormatMessage:
             "raw": {},
         }
         with patch(
-            "modules.feed_manager.shorten_url_sync",
+            "modules.feed_format.shorten_url_sync",
             return_value="https://v.gd/abc",
         ) as mock_shorten:
             msg = fm.format_message(item, feed)
@@ -218,7 +218,7 @@ class TestFormatMessage:
             "published": None,
             "raw": {},
         }
-        with patch("modules.feed_manager.shorten_url_sync", return_value=""):
+        with patch("modules.feed_format.shorten_url_sync", return_value=""):
             msg = fm.format_message(item, feed)
         assert msg == "https://example.com/long/path"
 
@@ -234,7 +234,7 @@ class TestFormatMessage:
             "raw": {},
         }
         with patch(
-            "modules.feed_manager.shorten_url_sync",
+            "modules.feed_format.shorten_url_sync",
             return_value="https://v.gd/x",
         ) as mock_shorten:
             msg = fm.format_message(item, feed)
@@ -253,7 +253,7 @@ class TestFormatMessage:
             "raw": {},
         }
         with patch(
-            "modules.feed_manager.shorten_url_sync",
+            "modules.feed_format.shorten_url_sync",
             return_value="https://v.gd/x",
         ) as mock_shorten:
             msg = fm.format_message(item, feed)
@@ -272,7 +272,7 @@ class TestFormatMessage:
             "raw": {},
         }
         with patch(
-            "modules.feed_manager.shorten_url_sync",
+            "modules.feed_format.shorten_url_sync",
             return_value="https://v.gd/abcdefghijklmnop",
         ) as mock_shorten:
             msg = fm.format_message(item, feed)

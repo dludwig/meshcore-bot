@@ -1592,6 +1592,27 @@ class TestFeedManagementRoutes:
         result = viewer._format_feed_item(item, "{title|substr:0,4}", feed_name="x")
         assert result == "Road"
 
+    def test_preview_sanitize_strips_control_chars(self, viewer):
+        item = {"title": "Hi\x00there", "description": ""}
+        result = viewer._format_feed_item(item, "{title}", feed_name="x")
+        assert "\x00" not in result
+        assert "Hi" in result and "there" in result
+
+    def test_preview_shorten_urls_honors_config(self, viewer, monkeypatch):
+        if not viewer.config.has_section("Feed_Manager"):
+            viewer.config.add_section("Feed_Manager")
+        viewer.config.set("Feed_Manager", "shorten_urls", "true")
+        item = {"title": "t", "description": "", "link": "https://example.com/long-path"}
+
+        def _fake_shorten(url, config=None, logger=None):
+            return "https://v.gd/ab"
+
+        monkeypatch.setattr(
+            "modules.feed_format.shorten_url_sync", _fake_shorten
+        )
+        result = viewer._format_feed_item(item, "{link}", feed_name="x")
+        assert result == "https://v.gd/ab"
+
     # --- Reset feed errors (global + per-feed) ---
 
     def _seed_feed_errors(self, viewer):

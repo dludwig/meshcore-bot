@@ -17,7 +17,7 @@ import time
 from contextlib import closing, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 # When started as a script (`python modules/web_viewer/app.py`), Python puts the
@@ -77,6 +77,17 @@ from modules.web_viewer.dashboard_stats import (
 
 # RFC 8594 Sunset date advertised on the deprecated /api/stats endpoint.
 STATS_ENDPOINT_SUNSET = "Fri, 01 Jan 2027 00:00:00 GMT"
+
+
+class NeighborEvidenceKeys(NamedTuple):
+    """Directed edge identities that zero-hop neighbor discovery has confirmed.
+
+    A ``mesh_connections`` edge counts as neighbor-confirmed if it matches on
+    either key space; see BotDataViewer._neighbor_evidence_edge_keys.
+    """
+
+    prefixes: set[tuple[str, str]]
+    public_keys: set[tuple[str, str]]
 
 
 def _validate_dynamic_key(key: str) -> "str | None":
@@ -152,14 +163,18 @@ def _strip_ansi_codes(text: str) -> str:
 
 
 from modules.config_snapshot import config_to_redacted_sections
+from modules.feed_filter_eval import (
+    get_nested_value,
+    item_passes_filter_config,
+    parse_microsoft_date,
+)
+from modules.feed_format import format_feed_message, sort_feed_items
 from modules.feed_manager import (
     DEFAULT_MAX_FEED_RESPONSE_BYTES,
     DEFAULT_MAX_PARSED_FEED_ITEMS,
-    FeedManager,
     _useful_feed_content_type,
 )
 from modules.repeater_manager import RepeaterManager, validate_repeater_tables
-from modules.url_shortener import _coerce_url_string
 from modules.utils import resolve_path
 from modules.web_viewer.config_panels import CONFIG_PANELS, PANEL_CATEGORIES
 from modules.web_viewer.integration import normalized_web_viewer_password
@@ -1059,6 +1074,145 @@ class BotDataViewer:
         result.sort(key=lambda e: e["last_seen"] or "", reverse=True)
         return result
 
+    # Nodes in the neighbor tables are stored as full 32-byte public keys, so the
+    # graph's highest resolution (3 bytes) is always available for edge identity.
+    NEIGHBOR_PREFIX_HEX_CHARS = 6
+
+    def _neighbor_evidence_edge_keys(
+        self,
+        days: int | None = None,
+    ) -> "NeighborEvidenceKeys":
+        """Directed pairs that confirmed zero-hop discovery has proven.
+
+        Used to upgrade the evidence label in the combined view, where the edge
+        itself comes from ``mesh_connections`` and so has lost its provenance.
+        Two key spaces are returned because a ``mesh_connections`` edge can be
+        matched by either:
+
+        * ``prefixes`` — 3-byte prefix pairs, matching edges the graph stores at
+          the same resolution neighbor discovery feeds it.
+        * ``public_keys`` — full-key pairs, for edges the graph deliberately keeps
+          at a *shorter* prefix (see ``MeshGraph.add_edge``: a 1-byte edge with no
+          public key is not promoted, so several nodes keep sharing it) while
+          still filling in the public keys discovery supplied. Truncating our
+          keys down to 2 chars instead would be wrong — it would relabel every
+          other node sharing that byte.
+
+        ``days`` windows the evidence the same way the caller windows its edges.
+        ``neighbor_links`` is never pruned, so without it a link last seen years
+        ago would keep labelling a recent path-derived edge a current neighbor.
+        """
+        try:
+            edges = self._derive_neighbor_evidence_graph(days=days)[0]
+        except Exception as exc:
+            # A pre-migration-22 database simply has no neighbor evidence.
+            self.logger.debug(f"Neighbor evidence keys unavailable: {exc}")
+            return NeighborEvidenceKeys(set(), set())
+
+        # Both directions are already emitted per link, so no reversing here.
+        prefixes = {
+            (edge["from_prefix"], edge["to_prefix"])
+            for edge in edges
+            if edge["from_prefix"] and edge["to_prefix"]
+        }
+        public_keys = {
+            (edge["from_public_key"], edge["to_public_key"])
+            for edge in edges
+            if edge["from_public_key"] and edge["to_public_key"]
+        }
+        return NeighborEvidenceKeys(prefixes, public_keys)
+
+    def _compute_neighbor_evidence_edges(self) -> list[dict[str, Any]]:
+        """Derive mesh edges from confirmed zero-hop neighbor discovery.
+
+        This is the strongest evidence class in the database: each row is a
+        direct RF reception between two *full* public keys with a measured SNR,
+        recorded by modules/neighbors_discovery.py. Two differences from the
+        multi-byte path derivation are worth noting:
+
+        * ``from_public_key``/``to_public_key`` are populated. Path-derived edges
+          cannot fill these in, because a path carries prefixes only.
+        * ``snr``/``best_snr`` are real measurements. Unlike the dashboard's
+          one-hop panel, which withholds SNR unless two sources agree because
+          ``complete_contact_tracking.hop_count`` over-claims zero-hop, a
+          discover response *is* the authoritative first-party measurement.
+
+        Both directions are emitted per link: a discover response proves we
+        transmitted, they received, they transmitted, and we received.
+        """
+        chars = self.NEIGHBOR_PREFIX_HEX_CHARS
+        query = """
+            SELECT
+                self_public_key,
+                neighbor_public_key,
+                observation_count,
+                snr_sum,
+                snr_count,
+                best_snr,
+                last_snr,
+                first_seen,
+                last_seen
+            FROM neighbor_links
+        """
+        try:
+            with self._with_db_connection() as conn:
+                rows = conn.execute(query).fetchall()
+        except Exception as exc:
+            self.logger.debug(f"Neighbor evidence edges unavailable: {exc}")
+            return []
+
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            self_key = (row["self_public_key"] or "").lower()
+            neighbor_key = (row["neighbor_public_key"] or "").lower()
+            if not self_key or not neighbor_key:
+                continue
+            snr_count = row["snr_count"] or 0
+            mean_snr = (row["snr_sum"] / snr_count) if snr_count else None
+            for from_key, to_key in (
+                (self_key, neighbor_key),
+                (neighbor_key, self_key),
+            ):
+                edges.append(
+                    {
+                        "from_prefix": from_key[:chars],
+                        "to_prefix": to_key[:chars],
+                        "from_public_key": from_key,
+                        "to_public_key": to_key,
+                        "observation_count": row["observation_count"] or 1,
+                        "first_seen": row["first_seen"],
+                        "last_seen": row["last_seen"],
+                        # A direct link is by definition the first hop of any path
+                        # that crosses it.
+                        "avg_hop_position": 1.0,
+                        "geographic_distance": None,
+                        "snr": mean_snr,
+                        "best_snr": row["best_snr"],
+                        "last_snr": row["last_snr"],
+                        "evidence": "neighbors",
+                    }
+                )
+
+        edges.sort(key=lambda e: e["last_seen"] or "", reverse=True)
+        return edges
+
+    def _derive_neighbor_evidence_graph(
+        self,
+        days: int | None = None,
+        min_observations: int | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Filtered neighbor-evidence edges plus their prefix resolution.
+
+        Reuses the multi-byte view filter: it only touches ``last_seen`` and
+        ``observation_count`` (handling both naive and aware timestamps), which
+        is exactly the filtering these edges need.
+        """
+        all_edges = self._compute_neighbor_evidence_edges()
+        filtered = self._filter_multibyte_evidence_edges(
+            all_edges, days=days, min_observations=min_observations
+        )
+        return filtered, self.NEIGHBOR_PREFIX_HEX_CHARS
+
     def _resolve_path(self, path_input: str) -> dict[str, Any]:
         """Resolve a hex path to repeater names/locations for the mesh map.
 
@@ -1181,6 +1335,9 @@ class BotDataViewer:
             response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
             # Allow CDNs used by templates (base.html, login.html, mesh.html).
             # Without these hosts, browsers block external CSS/JS/fonts (not CSRF).
+            # fonts.googleapis.com serves login.html's stylesheet and fonts.gstatic.com
+            # the font files it references — both hosts are needed or the login page
+            # silently falls back to system fonts.
             # The highest-risk admin screens have migrated their inline handlers
             # and authorize their remaining template scripts with a per-request
             # nonce. Other legacy screens retain unsafe-inline until their inline
@@ -1208,13 +1365,15 @@ class BotDataViewer:
                 + script_source
                 + "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
                 "style-src 'self' 'unsafe-inline' "
-                "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
+                "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com "
+                "https://fonts.googleapis.com; "
                 "img-src 'self' data: https://*.tile.openstreetmap.org "
                 "https://*.basemaps.cartocdn.com "
                 "https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
                 "connect-src 'self' ws: wss: "
                 "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
-                "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com"
+                "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+                "https://fonts.gstatic.com"
             )
 
             # Sanitize error details from 5xx JSON responses to prevent info disclosure.
@@ -2964,6 +3123,11 @@ class BotDataViewer:
                     except (TypeError, ValueError):
                         page_size = 100
                 search = request.args.get("search", "").strip()[:100]
+                path_bytes = request.args.get("path_bytes", "").strip()
+                device_role = request.args.get("device_role", "").strip()
+                hop_filter = request.args.get("hop_filter", "").strip()
+                location_filter = request.args.get("location_filter", "").strip()
+                starred = request.args.get("starred", "").strip()
                 sort = request.args.get("sort", "last_seen")
                 direction = request.args.get("direction", "desc").lower()
                 contacts = self._get_tracking_data(
@@ -2971,6 +3135,11 @@ class BotDataViewer:
                     page=page,
                     page_size=page_size,
                     search=search,
+                    path_bytes=path_bytes,
+                    device_role=device_role,
+                    hop_filter=hop_filter,
+                    location_filter=location_filter,
+                    starred=starred,
                     sort=sort,
                     direction=direction,
                 )
@@ -3120,6 +3289,10 @@ class BotDataViewer:
             evidence=multibyte derives edges purely from unique multi-byte path
             observations (observed_paths, bytes_per_hop >= 2), bypassing the
             mesh_connections merge heuristics that single-byte evidence feeds into.
+
+            evidence=neighbors derives edges purely from confirmed zero-hop
+            discovery (neighbor_links) — full public keys on both ends plus a
+            measured SNR, the strongest evidence class available.
             """
             conn = None
             try:
@@ -3144,6 +3317,25 @@ class BotDataViewer:
                             "evidence": "multibyte",
                         }
                     )
+
+                if evidence == "neighbors":
+                    edges, prefix_hex_chars = self._derive_neighbor_evidence_graph(
+                        days=days,
+                        min_observations=min_observations,
+                    )
+                    return jsonify(
+                        {
+                            "edges": edges,
+                            "prefix_hex_chars": prefix_hex_chars,
+                            "evidence": "neighbors",
+                        }
+                    )
+
+                # Combined view: mesh_connections cannot record *why* an edge
+                # exists, so re-derive the strongest label from neighbor_links.
+                # Same window as the edges themselves, so stale evidence cannot
+                # claim a recent edge is a current direct neighbor.
+                neighbor_keys = self._neighbor_evidence_edge_keys(days=days)
 
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
@@ -3218,10 +3410,24 @@ class BotDataViewer:
                     is_multibyte = (
                         bool(fp) and bool(tp) and len(fp) >= 4 and len(tp) >= 4
                     )
+                    from_lower = fp.lower() if fp else ""
+                    to_lower = tp.lower() if tp else ""
+                    from_key = (row["from_public_key"] or "").lower()
+                    to_key = (row["to_public_key"] or "").lower()
+                    if (from_lower, to_lower) in neighbor_keys.prefixes or (
+                        from_key
+                        and to_key
+                        and (from_key, to_key) in neighbor_keys.public_keys
+                    ):
+                        edge_evidence = "neighbors"
+                    elif is_multibyte:
+                        edge_evidence = "multibyte"
+                    else:
+                        edge_evidence = "singlebyte"
                     edges.append(
                         {
-                            "from_prefix": fp.lower() if fp else "",
-                            "to_prefix": tp.lower() if tp else "",
+                            "from_prefix": from_lower,
+                            "to_prefix": to_lower,
                             "from_public_key": row["from_public_key"],
                             "to_public_key": row["to_public_key"],
                             "observation_count": row["observation_count"],
@@ -3229,7 +3435,7 @@ class BotDataViewer:
                             "last_seen": row["last_seen"],
                             "avg_hop_position": row["avg_hop_position"],
                             "geographic_distance": row["geographic_distance"],
-                            "evidence": "multibyte" if is_multibyte else "singlebyte",
+                            "evidence": edge_evidence,
                         }
                     )
 
@@ -7533,6 +7739,11 @@ class BotDataViewer:
         page: int | None = None,
         page_size: int | None = None,
         search: str = "",
+        path_bytes: str = "",
+        device_role: str = "",
+        hop_filter: str = "",
+        location_filter: str = "",
+        starred: str = "",
         sort: str = "last_seen",
         direction: str = "desc",
     ):
@@ -7566,6 +7777,21 @@ class BotDataViewer:
             }
             where_parts = []
             where_params: list[Any] = []
+            # A node can have more than one observed advert path.  Treat its byte class as
+            # the widest path encoding seen for it, with the contact's current out-path as a
+            # fallback for databases that have not retained an observed path yet.  This gives
+            # the list one stable, sortable value instead of placing the same node in several
+            # byte buckets.  Only count rows with a known 1/2/3 encoding so NULL/invalid
+            # observations do not collapse to "1-byte" and block the out-path fallback.
+            path_bytes_expression = """COALESCE((
+                SELECT MAX(op.bytes_per_hop)
+                FROM observed_paths op
+                WHERE op.public_key = c.public_key
+                  AND op.packet_type = 'advert'
+                  AND op.path_hex IS NOT NULL AND op.path_hex != ''
+                  AND op.bytes_per_hop IN (1, 2, 3)
+            ), CASE WHEN c.out_bytes_per_hop IN (1, 2, 3)
+                     THEN c.out_bytes_per_hop ELSE 0 END)"""
             if since in datetime_offsets:
                 where_parts.append(
                     f"c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
@@ -7590,6 +7816,47 @@ class BotDataViewer:
                     ")"
                 )
                 where_params.extend([f"{escaped}%"] + [f"%{escaped}%"] * 6)
+
+            path_bytes = str(path_bytes or "").strip()
+            if path_bytes in ("1", "2", "3"):
+                where_parts.append(f"{path_bytes_expression} = ?")
+                where_params.append(int(path_bytes))
+            elif path_bytes == "unknown":
+                where_parts.append(f"{path_bytes_expression} = 0")
+
+            device_role = str(device_role or "").strip().lower()
+            if device_role in ("companion", "repeater", "roomserver", "sensor"):
+                where_parts.append("LOWER(COALESCE(c.role, '')) = ?")
+                where_params.append(device_role)
+            elif device_role == "other":
+                where_parts.append(
+                    "LOWER(COALESCE(c.role, '')) NOT IN ('companion', 'repeater', 'roomserver', 'sensor')"
+                )
+
+            if hop_filter in ("0", "1", "2", "3"):
+                where_parts.append(
+                    "COALESCE(c.hop_count, 0) = ?"
+                    if hop_filter == "0"
+                    else "COALESCE(c.hop_count, 0) >= ?"
+                )
+                where_params.append(int(hop_filter))
+
+            has_location_expression = (
+                "((c.city IS NOT NULL AND c.city != '') OR "
+                "(c.state IS NOT NULL AND c.state != '') OR "
+                "(c.country IS NOT NULL AND c.country != '') OR "
+                "(c.latitude IS NOT NULL AND c.longitude IS NOT NULL "
+                "AND c.latitude != 0 AND c.longitude != 0))"
+            )
+            if location_filter == "known":
+                where_parts.append(has_location_expression)
+            elif location_filter == "unknown":
+                where_parts.append(f"NOT {has_location_expression}")
+
+            if starred == "yes":
+                where_parts.append("COALESCE(c.is_starred, 0) = 1")
+            elif starred == "no":
+                where_parts.append("COALESCE(c.is_starred, 0) = 0")
 
             where_clause = (
                 (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
@@ -7659,6 +7926,7 @@ class BotDataViewer:
                 ),
                 "snr": "COALESCE(c.snr, 0)",
                 "hop_count": "COALESCE(c.hop_count, 0)",
+                "path_bytes": path_bytes_expression,
                 "first_heard": "COALESCE(c.first_heard, '')",
                 "last_seen": "COALESCE(c.last_heard, '')",
                 "advert_count": "COALESCE(c.advert_count, 0)",
@@ -7702,6 +7970,9 @@ class BotDataViewer:
                 + """
                     c.signal_strength,
                     c.is_starred, c.out_path, c.out_path_len, c.out_bytes_per_hop,
+                    """
+                + path_bytes_expression
+                + """ AS path_bytes_per_hop,
                     c.last_advert_timestamp as last_message
                 FROM complete_contact_tracking c
                 """
@@ -7854,6 +8125,7 @@ class BotDataViewer:
                     if row["out_path_len"] is not None
                     else -1,
                     "out_bytes_per_hop": out_bytes_per_hop_val,
+                    "path_bytes_per_hop": int(row["path_bytes_per_hop"] or 0),
                     "paths_count": paths_count,
                     "path_encoding_badge": path_encoding_badge,
                 }
@@ -8816,8 +9088,10 @@ class BotDataViewer:
                     data = json.loads(content)
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     # If JSON parsing fails, try to get text and see if it's an error message
-                    text = content[:200].decode("utf-8", errors="replace")
-                    raise Exception(f"API returned non-JSON response: {text[:200]}")
+                    text_snippet = content[:200].decode("utf-8", errors="replace")
+                    raise Exception(
+                        f"API returned non-JSON response: {text_snippet[:200]}"
+                    )
 
                 # Check if response is an error message (string)
                 if isinstance(data, str):
@@ -8868,30 +9142,6 @@ class BotDataViewer:
                 timestamp_field = parser_config.get("timestamp_field", "created_at")
                 emoji_field = parser_config.get("emoji_field", "emoji")
 
-                # Helper function to get nested values
-                def get_nested_value(data, path, default=""):
-                    if not path or not data:
-                        return default
-                    parts = path.split(".")
-                    value = data
-                    for part in parts:
-                        if isinstance(value, dict):
-                            value = value.get(part)
-                        elif isinstance(value, list):
-                            try:
-                                idx = int(part)
-                                if 0 <= idx < len(value):
-                                    value = value[idx]
-                                else:
-                                    return default
-                            except (ValueError, TypeError):
-                                return default
-                        else:
-                            return default
-                        if value is None:
-                            return default
-                    return value if value is not None else default
-
                 for item_data in items_data[:preview_parse_limit]:
                     # Ensure item_data is a dict
                     if not isinstance(item_data, dict):
@@ -8916,7 +9166,7 @@ class BotDataViewer:
                                 elif isinstance(ts_value, str):
                                     # Try Microsoft date format first
                                     if ts_value.startswith("/Date("):
-                                        published = self._parse_microsoft_date(ts_value)
+                                        published = parse_microsoft_date(ts_value)
                                     else:
                                         # Try ISO format
                                         try:
@@ -8968,20 +9218,22 @@ class BotDataViewer:
 
             # Apply sorting if configured
             if sort_config:
-                items = self._sort_items_preview(items, sort_config)
+                items = sort_feed_items(
+                    items, sort_config, log_warning=self.logger.warning
+                )
 
             # Apply filter if configured
             if filter_config:
                 items = [
                     item
                     for item in items
-                    if self._should_include_item(item, filter_config)
+                    if item_passes_filter_config(item, filter_config)
                 ]
 
             # Limit to first 3 items after filtering
             items = items[:3]
 
-            # Format items using output format
+            # Format items using output format (shared with FeedManager)
             formatted_items = []
             for item in items:
                 formatted = self._format_feed_item(item, output_format, feed_name="")
@@ -8993,549 +9245,34 @@ class BotDataViewer:
             self.logger.error(f"Error previewing feed: {e}")
             raise
 
-    def _should_include_item(self, item: dict[str, Any], filter_config: dict) -> bool:
-        """Check if an item should be included based on filter configuration (preview; same rules as FeedManager)."""
-        from modules.feed_filter_eval import item_passes_filter_config
-
-        return item_passes_filter_config(item, filter_config)
-
-    def _parse_microsoft_date(self, date_str: str) -> datetime | None:
-        """Parse Microsoft JSON date format: /Date(timestamp-offset)/"""
-        import re
-
-        if not date_str or not isinstance(date_str, str):
-            return None
-
-        # Match /Date(timestamp-offset)/ format
-        match = re.match(r"/Date\((\d+)([+-]\d+)?\)/", date_str)
-        if match:
-            timestamp_ms = int(match.group(1))
-            offset_str = match.group(2) if match.group(2) else "+0000"
-
-            # Convert milliseconds to seconds
-            timestamp = timestamp_ms / 1000.0
-
-            # Parse offset (format: +0800 or -0800)
-            try:
-                offset_hours = int(offset_str[:3])
-                offset_mins = int(offset_str[3:5])
-                offset_seconds = (offset_hours * 3600) + (offset_mins * 60)
-                if offset_str[0] == "-":
-                    offset_seconds = -offset_seconds
-
-                # Create timezone-aware datetime
-                tz = timezone.utc
-                if offset_seconds != 0:
-                    from datetime import timedelta
-
-                    tz = timezone(timedelta(seconds=offset_seconds))
-
-                return datetime.fromtimestamp(timestamp, tz=tz)
-            except (ValueError, IndexError):
-                # Fallback to UTC if offset parsing fails
-                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
-
-        return None
-
-    def _sort_items_preview(
-        self, items: list[dict[str, Any]], sort_config: dict
-    ) -> list[dict[str, Any]]:
-        """Sort items based on sort configuration (standalone version for preview)"""
-        if not sort_config or not items:
-            return items
-
-        field_path = sort_config.get("field")
-        order = sort_config.get("order", "desc").lower()
-
-        if not field_path:
-            return items
-
-        # Helper to get nested values
-        def get_nested_value(data, path, default=""):
-            if not path or not data:
-                return default
-            parts = path.split(".")
-            value = data
-            for part in parts:
-                if isinstance(value, dict):
-                    value = value.get(part)
-                elif isinstance(value, list):
-                    try:
-                        idx = int(part)
-                        if 0 <= idx < len(value):
-                            value = value[idx]
-                        else:
-                            return default
-                    except (ValueError, TypeError):
-                        return default
-                else:
-                    return default
-                if value is None:
-                    return default
-            return value if value is not None else default
-
-        def get_sort_value(item):
-            """Get the sort value for an item"""
-            # Try raw data first
-            raw_data = item.get("raw", {})
-            value = get_nested_value(raw_data, field_path, "")
-
-            if not value and field_path.startswith("raw."):
-                value = get_nested_value(raw_data, field_path[4:], "")
-
-            if not value:
-                value = get_nested_value(item, field_path, "")
-
-            # Handle Microsoft date format
-            if isinstance(value, str) and value.startswith("/Date("):
-                dt = self._parse_microsoft_date(value)
-                if dt:
-                    return dt.timestamp()
-
-            # Handle datetime objects
-            if isinstance(value, datetime):
-                return value.timestamp()
-
-            # Handle numeric values
-            if isinstance(value, (int, float)):
-                return float(value)
-
-            # Handle string timestamps
-            if isinstance(value, str):
-                # Try to parse as ISO format
-                try:
-                    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                    return dt.timestamp()
-                except ValueError:
-                    pass
-
-                # Try common date formats
-                for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
-                    try:
-                        dt = datetime.strptime(value, fmt)
-                        return dt.timestamp()
-                    except ValueError:
-                        continue
-
-            # For strings, use lexicographic comparison
-            return str(value)
-
-        # Sort items
-        try:
-            sorted_items = sorted(items, key=get_sort_value, reverse=(order == "desc"))
-            return sorted_items
-        except Exception as e:
-            self.logger.warning(f"Error sorting items in preview: {e}")
-            return items
-
     def _format_feed_item(
         self, item: dict[str, Any], format_str: str, feed_name: str = ""
     ) -> str:
-        """Format a feed item using the output format (standalone version)"""
-        import html
-        import re
-        from datetime import datetime
-
-        # Extract field values (NULL/missing fields must not become None for str ops)
-        title = item.get("title") or "Untitled"
-        body = item.get("description", "") or item.get("body", "")
-
-        # Clean HTML from body if present
-        if body:
-            body = html.unescape(body)
-            # Convert line break tags to newlines before stripping other HTML
-            # Handle <br>, <br/>, <br />, <BR>, etc.
-            body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
-            # Convert paragraph tags to newlines (with spacing)
-            body = re.sub(r"</p>", "\n\n", body, flags=re.IGNORECASE)
-            body = re.sub(r"<p[^>]*>", "", body, flags=re.IGNORECASE)
-            # Remove remaining HTML tags
-            body = re.sub(r"<[^>]+>", "", body)
-            # Clean up whitespace (preserve intentional line breaks)
-            # Replace multiple newlines with double newline, then normalize spaces within lines
-            body = re.sub(
-                r"\n\s*\n\s*\n+", "\n\n", body
-            )  # Multiple newlines -> double newline
-            lines = body.split("\n")
-            body = "\n".join(
-                " ".join(line.split()) for line in lines
-            )  # Normalize spaces per line
-            body = body.strip()
-
-        link_original = _coerce_url_string(item.get("link", ""))
-        published = item.get("published")
-
-        # Format timestamp
-        date_str = ""
-        if published:
-            try:
-                now = datetime.now(timezone.utc) if published.tzinfo else datetime.now()
-
-                diff = now - published
-                minutes = int(diff.total_seconds() / 60)
-
-                if minutes < 1:
-                    date_str = "now"
-                elif minutes < 60:
-                    date_str = f"{minutes}m ago"
-                elif minutes < 1440:
-                    hours = minutes // 60
-                    mins = minutes % 60
-                    date_str = f"{hours}h {mins}m ago"
-                else:
-                    days = minutes // 1440
-                    date_str = f"{days}d ago"
-            except Exception:
-                pass
-
-        # Choose emoji: a per-item emoji (e.g. from API emoji_field) wins; otherwise
-        # fall back to a heuristic based on the feed name.
-        emoji = item.get("emoji")
-        if not emoji:
-            emoji = "📢"
-            feed_name_lower = (feed_name or "").lower()
-            if "emergency" in feed_name_lower or "alert" in feed_name_lower:
-                emoji = "🚨"
-            elif "warning" in feed_name_lower:
-                emoji = "⚠️"
-            elif "info" in feed_name_lower or "news" in feed_name_lower:
-                emoji = "ℹ️"
-
-        # Build replacements
-        replacements = {
-            "title": title,
-            "body": body,
-            "date": date_str,
-            "link": link_original,
-            "emoji": emoji,
-        }
-
-        # Get raw API data if available (for preview, we don't have raw data, so this will be empty)
-        raw_data = item.get("raw", {})
-
-        # Helper to get nested values
-        def get_nested_value(data, path, default=""):
-            if not path or not data:
-                return default
-            parts = path.split(".")
-            value = data
-            for part in parts:
-                if isinstance(value, dict):
-                    value = value.get(part)
-                elif isinstance(value, list):
-                    try:
-                        idx = int(part)
-                        if 0 <= idx < len(value):
-                            value = value[idx]
-                        else:
-                            return default
-                    except (ValueError, TypeError):
-                        return default
-                else:
-                    return default
-                if value is None:
-                    return default
-            return value if value is not None else default
-
-        # Apply shortening, parsing, and conditional functions
-        def apply_shortening(text: str, function: str) -> str:
-            fn = (function or "").strip()
-            if fn == "shorten" or fn.startswith("shorten|"):
-                from modules.url_shortener import shorten_url_sync
-
-                if not (text or "").strip():
-                    return ""
-                if fn == "shorten":
-                    out = shorten_url_sync(text, config=self.config, logger=self.logger)
-                    return out if out else text
-                rest = fn.split("|", 1)[1].strip()
-                out = shorten_url_sync(text, config=self.config, logger=self.logger)
-                base = out if out else text
-                return apply_shortening(base, rest)
-
-            if not text:
-                return ""
-
-            if function.startswith("truncate:"):
-                try:
-                    max_len = int(function.split(":", 1)[1])
-                    if len(text) <= max_len:
-                        return text
-                    return text[:max_len] + "..."
-                except (ValueError, IndexError):
-                    return text
-            elif function.startswith("truncate_hard:"):
-                # Like truncate:N but never appends an ellipsis
-                try:
-                    max_len = int(function.split(":", 1)[1])
-                    if len(text) <= max_len:
-                        return text
-                    return text[:max_len]
-                except (ValueError, IndexError):
-                    return text
-            elif function.startswith("substr:"):
-                # substr:START[,LENGTH] - JS-style: START offset, optional LENGTH chars
-                try:
-                    args = function.split(":", 1)[1].split(",")
-                    start = int(args[0])
-                    if len(args) > 1 and args[1].strip() != "":
-                        length = int(args[1])
-                        return text[start : start + length]
-                    return text[start:]
-                except (ValueError, IndexError):
-                    return text
-            elif function.startswith("word_wrap:"):
-                try:
-                    max_len = int(function.split(":", 1)[1])
-                    if len(text) <= max_len:
-                        return text
-                    truncated = text[:max_len]
-                    last_space = truncated.rfind(" ")
-                    if last_space > max_len * 0.7:
-                        return truncated[:last_space] + "..."
-                    return truncated + "..."
-                except (ValueError, IndexError):
-                    return text
-            elif function.startswith("first_words:"):
-                try:
-                    num_words = int(function.split(":", 1)[1])
-                    words = text.split()
-                    if len(words) <= num_words:
-                        return text
-                    return " ".join(words[:num_words]) + "..."
-                except (ValueError, IndexError):
-                    return text
-            elif function.startswith("regex:"):
-                try:
-                    # Parse regex pattern and optional group number
-                    # Format: regex:pattern:group or regex:pattern
-                    # Need to handle patterns that contain colons, so split from the right
-                    remaining = function[6:]  # Skip 'regex:' prefix
-
-                    # Try to find the last colon that's followed by a number (the group number)
-                    # Look for pattern like :N at the end
-                    last_colon_idx = remaining.rfind(":")
-                    pattern = remaining
-                    group_num = None
-
-                    if last_colon_idx > 0:
-                        # Check if what's after the last colon is a number
-                        potential_group = remaining[last_colon_idx + 1 :]
-                        if potential_group.isdigit():
-                            pattern = remaining[:last_colon_idx]
-                            group_num = int(potential_group)
-
-                    if not pattern:
-                        return text
-
-                    # Apply regex
-                    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                    if match:
-                        if group_num is not None:
-                            # Use specified group (0 = whole match, 1 = first group, etc.)
-                            if 0 <= group_num <= len(match.groups()):
-                                return (
-                                    match.group(group_num)
-                                    if group_num > 0
-                                    else match.group(0)
-                                )
-                        else:
-                            # Use first capture group if available, otherwise whole match
-                            if match.groups():
-                                return match.group(1)
-                            else:
-                                return match.group(0)
-                    return ""  # No match found
-                except (ValueError, IndexError, re.error):
-                    # Silently fail on regex errors in preview
-                    return text
-            elif function.startswith("if_regex:"):
-                try:
-                    # Parse: if_regex:pattern:then:else
-                    # Split by ':' but need to handle regex patterns that contain ':'
-                    parts = function[9:].split(
-                        ":", 2
-                    )  # Skip 'if_regex:' prefix, split into [pattern, then, else]
-                    if len(parts) < 3:
-                        return text
-
-                    pattern = parts[0]
-                    then_value = parts[1]
-                    else_value = parts[2]
-
-                    if not pattern:
-                        return text
-
-                    # Check if pattern matches
-                    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                    if match:
-                        return then_value
-                    else:
-                        return else_value
-                except (ValueError, IndexError, re.error):
-                    # Silently fail on regex errors in preview
-                    return text
-            elif function.startswith("switch:"):
-                try:
-                    # Parse: switch:value1:result1:value2:result2:...:default
-                    # Example: switch:highest:🔴:high:🟠:medium:🟡:low:⚪:⚪
-                    parts = function[7:].split(":")  # Skip 'switch:' prefix
-                    if len(parts) < 2:
-                        return text
-
-                    # Pairs of value:result, last one is default
-                    text_lower = text.lower().strip()
-                    for i in range(0, len(parts) - 1, 2):
-                        if i + 1 < len(parts):
-                            value = parts[i].lower()
-                            result = parts[i + 1]
-                            if text_lower == value:
-                                return result
-
-                    # Return last part as default if no match
-                    return parts[-1] if parts else text
-                except (ValueError, IndexError):
-                    # Silently fail on switch errors in preview
-                    return text
-            elif function.startswith("regex_cond:"):
-                try:
-                    # Parse: regex_cond:extract_pattern:check_pattern:then:group
-                    parts = function[11:].split(":", 3)  # Skip 'regex_cond:' prefix
-                    if len(parts) < 4:
-                        return text
-
-                    extract_pattern = parts[0]
-                    check_pattern = parts[1]
-                    then_value = parts[2]
-                    else_group = int(parts[3]) if parts[3].isdigit() else 1
-
-                    if not extract_pattern:
-                        return text
-
-                    # Extract using extract_pattern
-                    match = re.search(extract_pattern, text, re.IGNORECASE | re.DOTALL)
-                    if match:
-                        # Get the captured group
-                        if match.groups():
-                            extracted = (
-                                match.group(else_group)
-                                if else_group <= len(match.groups())
-                                else match.group(1)
-                            )
-                            # Strip whitespace from extracted text
-                            extracted = extracted.strip()
-                        else:
-                            extracted = match.group(0).strip()
-
-                        # Check if extracted text matches check_pattern (exact match or contains)
-                        if check_pattern:
-                            # Try exact match first, then substring match
-                            if extracted.lower() == check_pattern.lower() or re.search(
-                                check_pattern, extracted, re.IGNORECASE
-                            ):
-                                return then_value
-
-                        return extracted
-                    return ""  # No match found
-                except (ValueError, IndexError, re.error):
-                    # Silently fail on regex errors in preview
-                    return text
-            return text
-
-        def _preview_auto_base_value(field_name: str) -> str:
-            if field_name.startswith("raw."):
-                value = get_nested_value(raw_data, field_name[4:], "")
-                if value is None:
-                    return ""
-                if isinstance(value, (dict, list)):
-                    try:
-                        return json.dumps(value)
-                    except Exception:
-                        return str(value)
-                return str(value)
-            if field_name == "link":
-                return link_original or ""
-            return str(replacements.get(field_name, "") or "")
-
-        # Process format string
-        def replace_placeholder(match):
-            content = match.group(1)
-            if "|" in content:
-                field_name, function = content.split("|", 1)
-                field_name = field_name.strip()
-                function = function.strip()
-                if function == "auto":
-                    return ""
-
-                # Check if it's a raw field access
-                if field_name.startswith("raw."):
-                    value = str(get_nested_value(raw_data, field_name[4:], ""))
-                else:
-                    value = replacements.get(field_name, "")
-
-                return apply_shortening(value, function)
-            else:
-                field_name = content.strip()
-
-                # Check if it's a raw field access
-                if field_name.startswith("raw."):
-                    value = get_nested_value(raw_data, field_name[4:], "")
-                    if value is None:
-                        return ""
-                    elif isinstance(value, (dict, list)):
-                        try:
-                            import json
-
-                            return json.dumps(value)
-                        except Exception:
-                            return str(value)
-                    else:
-                        return str(value)
-                else:
-                    return replacements.get(field_name, "")
-
+        """Format a feed item using the shared feed formatter (parity with FeedManager)."""
         try:
             max_length = self.config.getint(
                 "Feed_Manager", "max_message_length", fallback=130
             )
         except Exception:
             max_length = 130
-
-        auto_slots = FeedManager._feed_format_auto_slots(format_str)
-        if len(auto_slots) > 1:
-            self.logger.warning(
-                "Multiple {field|auto} placeholders in feed output format; "
-                "only the first expands. Others render empty."
+        try:
+            shorten_feed_urls = (
+                self.config.getboolean("Feed_Manager", "shorten_urls", fallback=False)
+                if self.config.has_section("Feed_Manager")
+                else False
             )
+        except ValueError:
+            shorten_feed_urls = False
 
-        if len(auto_slots) >= 1:
-            start, end, auto_field = auto_slots[0]
-            prefix = format_str[:start]
-            suffix = format_str[end:]
-            prefix_r = re.sub(r"\{([^}]+)\}", replace_placeholder, prefix)
-            suffix_r = re.sub(r"\{([^}]+)\}", replace_placeholder, suffix)
-            budget = max_length - len(prefix_r) - len(suffix_r)
-            raw_auto = _preview_auto_base_value(auto_field)
-            auto_text = FeedManager._truncate_to_budget(raw_auto, budget)
-            message = prefix_r + auto_text + suffix_r
-        else:
-            message = re.sub(r"\{([^}]+)\}", replace_placeholder, format_str)
-
-        # Final truncation (mesh limit)
-        if len(message) > max_length:
-            lines = message.split("\n")
-            if len(lines) > 1:
-                total_length = sum(len(line) + 1 for line in lines[:-1])
-                remaining = max_length - total_length - 3
-                if remaining > 20:
-                    lines[-1] = lines[-1][:remaining] + "..."
-                    message = "\n".join(lines)
-                else:
-                    message = message[: max_length - 3] + "..."
-            else:
-                message = message[: max_length - 3] + "..."
-
-        return message
+        return format_feed_message(
+            item,
+            format_str,
+            feed_name=feed_name or "",
+            max_message_length=max_length,
+            shorten_feed_urls=shorten_feed_urls,
+            config=self.config,
+            logger=self.logger,
+        )
 
     def _get_bot_uptime(self):
         """Get bot uptime in seconds from database"""

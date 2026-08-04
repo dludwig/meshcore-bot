@@ -87,10 +87,10 @@ class TestApplyShortening:
 
     def test_shorten_chain_applies_truncate_hard(self, fm, monkeypatch):
         # shorten|truncate_hard:N should shorten first, then hard-truncate the result
-        import modules.feed_manager as fmmod
+        import modules.feed_format as feed_format
 
         monkeypatch.setattr(
-            fmmod, "shorten_url_sync", lambda *a, **k: "https://sho.rt/abcdef"
+            feed_format, "shorten_url_sync", lambda *a, **k: "https://sho.rt/abcdef"
         )
         result = fm._apply_shortening("https://example.com/very/long", "shorten|truncate_hard:12")
         assert result == "https://sho."
