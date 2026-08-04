@@ -13,7 +13,7 @@ import sqlite3
 import time
 from configparser import ConfigParser
 from contextlib import closing
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -463,7 +463,7 @@ class TestRollupCorrectness:
         time.tzset()
         try:
             # 03:00 UTC is 20:00 the previous day in Los Angeles.
-            utc_moment = datetime(2026, 7, 29, 3, 0, tzinfo=UTC)
+            utc_moment = datetime(2026, 7, 29, 3, 0, tzinfo=timezone.utc)
             local_date = utc_moment.astimezone().strftime("%Y-%m-%d")
             assert local_date == "2026-07-28", "fixture assumes a UTC-7/8 offset"
 
