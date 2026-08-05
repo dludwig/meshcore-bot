@@ -507,11 +507,17 @@ category.funfact = fun
 # <schedule> is one of:
 #   - 5-field crontab (minute hour day-of-month month day-of-week), e.g.
 #       0 8 * * *     = every day at 08:00 (in [Bot] timezone)
-#       30 12 * * 1   = every Monday at 12:30
-#   - Preset aliases (same semantics as common cron @macros):
-#       @yearly @annually  @monthly  @weekly  @daily  @midnight  @hourly
+#       30 12 * * mon = every Monday at 12:30
+#       30 12 * * 0   = same (Monday) — see APScheduler note below
+#   - Preset aliases (@yearly @annually @monthly @weekly @daily @midnight @hourly).
+#     These expand to the 5-field forms above; @weekly is Monday 00:00 (not Sunday).
 #   - Deprecated (still accepted, logs a warning): HHMM = daily at that 24h clock time
 #       0800          = same as 0 8 * * *   — migrate to cron; HHMM will be removed later.
+#
+# APScheduler day-of-week (not Vixie cron):
+#   Numeric DOW is 0=Monday … 6=Sunday. Vixie cron uses 0=Sunday (and often allows 7=Sunday);
+#   APScheduler rejects 7. Prefer mon–sun names to avoid mixing conventions.
+#   Example trap: Vixie `0 12 * * 1` is Monday; here `0 12 * * 1` is Tuesday.
 #
 # Newlines: use \n in the message for a line break (e.g. general:Line one\nLine two).
 # Literal backslash: use \\n for backslash+n; \\t for tab.

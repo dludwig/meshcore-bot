@@ -206,3 +206,19 @@ Admins can DM **`channelpause`** or **`channelresume`** (see `[Admin_ACL]` in `c
 ## Scheduled messages (`[Scheduled_Messages]`)
 
 Each entry is `<schedule_key> = <value>` where the value is normally **`channel:message`** (first colon separates channel from body). For **regional flood scope** on that send only, use **`channel:#scope:message`**: the middle segment must start with `#` (same convention as `flood_scopes` / `outgoing_flood_scope_override`). The message body may contain more colons. Omit the middle field for classic global flood. See `config.ini.example` under `[Scheduled_Messages]` for examples. The **`schedule`** command lists each job with `(#scope)` when set.
+
+### Schedule keys (APScheduler cron, not Vixie)
+
+Schedule keys are parsed by **APScheduler** `CronTrigger.from_crontab` (plus `@` presets and deprecated `HHMM`). Field order is the usual five: `minute hour day-of-month month day-of-week`.
+
+**Day-of-week numbering differs from classic Vixie / crontab(5):**
+
+| | APScheduler (this bot) | Vixie cron |
+| --- | --- | --- |
+| `0` | Monday | Sunday |
+| `1` … `6` | Tuesday … Sunday | Monday … Saturday |
+| `7` | Invalid | Often accepted as Sunday |
+
+Prefer **`mon`–`sun`** names in the DOW field so expressions stay unambiguous. Example: Monday 12:30 is `30 12 * * mon` or `30 12 * * 0` — **not** Vixie’s `30 12 * * 1` (that is Tuesday here).
+
+Preset aliases expand to those same APScheduler forms. In particular **`@weekly`** is Monday 00:00 (`0 0 * * 0`), not Sunday midnight as on many Unix crons.
