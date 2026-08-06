@@ -394,6 +394,7 @@ def format_feed_message(
     Supported placeholders and functions match FeedManager.format_message.
     """
     title = sanitize_input(item.get("title") or "Untitled", max_length=None)
+    title = html.unescape(title)
     body = sanitize_input(item.get("description", "") or item.get("body", ""), max_length=None)
     if body:
         body = clean_feed_html_body(body)

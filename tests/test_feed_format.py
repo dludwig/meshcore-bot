@@ -79,6 +79,13 @@ class TestFormatFeedMessage:
         )
         assert msg == "Hello"
 
+    def test_title_unescapes_html_entities(self):
+        msg = format_feed_message(
+            {"title": "Foo &amp; Bar&#39;s", "description": ""},
+            "{title}",
+        )
+        assert msg == "Foo & Bar's"
+
     def test_sanitize_strips_control_chars(self):
         msg = format_feed_message(
             {"title": "Hi\x00there", "description": ""},
