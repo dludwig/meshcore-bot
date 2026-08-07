@@ -33,14 +33,17 @@ dependencies = [
     "maidenhead>=1.4.0",
     "pytz>=2023.3",
     "aiohttp>=3.8.0",
-    "meshcore>=2.3.6",
+    # 2.3.8+ required for zero-hop neighbour discovery (see requirements.txt)
+    "meshcore>=2.3.8",
     "openmeteo-requests>=1.7.2",
     "requests-cache>=1.1.1",
     "retry-requests>=1.0.0",
     "flask>=2.3.0",
     "flask-socketio>=5.3.0",
     "flask-compress>=1.14",
-    "meshcore-cli",
+    # Still required: `next_cmd` backs contact and channel operations that have no
+    # equivalent in the meshcore library yet (see requirements.txt).
+    "meshcore-cli>=1.4.0",
     "feedparser>=6.0.10",
     "paho-mqtt>=1.6.0",
     "cryptography>=41.0.0",
@@ -195,17 +198,14 @@ module = [
 ]
 ignore_errors = true
 
-[tool.pytest.ini_options]
-# Hard limit every test to 30 s; prevents hangs from blocking I/O or infinite loops.
-# Individual tests that legitimately need longer can use @pytest.mark.timeout(N).
-timeout = 30
-timeout_method = "thread"
-asyncio_mode = "auto"
+# Pytest is configured in pytest.ini, not here. pytest.ini takes precedence over
+# pyproject.toml, so a [tool.pytest.ini_options] block in this file would be dead
+# config that silently drifts from the settings actually in effect.
 
 [tool.coverage.run]
 source = ["modules"]
 omit = ["tests/*", ".venv/*"]
 
 [tool.coverage.report]
-fail_under = 35
+fail_under = 50
 show_missing = true

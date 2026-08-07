@@ -24,6 +24,18 @@ from ..meshcore_payload_decode import (
     ChannelKeyStore,
     decode_payload,
 )
+from ..neighbors_discovery import (
+    MAX_INTERVAL_HOURS,
+    MIN_CYCLE_GAP_SECONDS,
+    MIN_INTERVAL_HOURS,
+    STATUS_RESPONDED,
+    NeighborsConfig,
+    build_neighbors_message,
+    collect_scopes,
+    discover_neighbors,
+    fetch_self_scopes,
+    record_neighbors,
+)
 
 # Import bot's utilities for packet hash
 from ..utils import (
@@ -46,6 +58,26 @@ import contextlib
 
 from .base_service import BaseServicePlugin
 from .packet_capture_utils import create_auth_token_async, read_private_key_file
+
+# bot_metadata key holding the last neighbors cycle timestamp. Namespaced because
+# bot_metadata is shared across the whole bot.
+NEIGHBORS_STATE_KEY = "packet_capture.last_neighbors_publish"
+
+# A cycle can spend airtime without producing a publish timestamp (for example,
+# when the discover acknowledgement is lost). Persist that attempt separately so
+# a process restart cannot bypass the short airtime guard while still allowing
+# the scheduler to retry after MIN_CYCLE_GAP_SECONDS rather than waiting a full
+# configured interval.
+NEIGHBORS_ATTEMPT_STATE_KEY = "packet_capture.last_neighbors_attempt"
+
+# How long the scheduler waits before re-checking after a cycle that produced no
+# result. Short on purpose: the usual causes (radio down, unsupported build) cost
+# nothing to re-test. A cycle that did transmit is held by MIN_CYCLE_GAP_SECONDS
+# instead, which is longer.
+NEIGHBORS_RETRY_BACKOFF_SECONDS = 300.0
+
+# Sentinel meaning "no IATA configured" (documented as invalid in config.ini.example).
+DEFAULT_IATA = "XYZ"
 
 
 def _decode_key_str(key_str: str) -> Optional[bytes]:
@@ -176,6 +208,45 @@ class PacketCaptureService(BaseServicePlugin):
          "min": 1, "default": 43200, "unit": "s", "help": "Default JWT renewal interval (per-broker overrides apply)."},
         {"key": "jwt_ttl_seconds", "label": "JWT TTL", "type": "int", "group": "Advanced",
          "min": 1, "default": 86400, "unit": "s", "help": "Default JWT lifetime (per-broker overrides apply)."},
+        # --- Neighbors (zero-hop discovery; see modules/neighbors_discovery.py) ---
+        {"key": "neighbors_enabled", "label": "Neighbors discovery", "type": "bool", "group": "Neighbors",
+         "default": False,
+         "help": "Periodically ask which repeaters this node hears directly. Records confirmed "
+                 "direct links with SNR, and publishes to brokers that opted in."},
+        {"key": "neighbors_interval_hours", "label": "Interval", "type": "int", "group": "Neighbors",
+         "min": 12, "max": 336, "default": 24, "unit": "h",
+         "help": "How often a discovery cycle runs. Clamped to 12-336h, matching the firmware."},
+        {"key": "neighbors_discover_window", "label": "Discover window", "type": "float", "group": "Neighbors",
+         "min": 5, "default": 60.0, "unit": "s",
+         "help": "How long responses are collected. Repeaters reply after a random delay, so a "
+                 "short window finds fewer neighbours. The bot stays responsive throughout."},
+        {"key": "neighbors_max", "label": "Max neighbours", "type": "int", "group": "Neighbors",
+         "min": 1, "default": 32, "help": "Cap per cycle, most useful first (recent, then stronger SNR)."},
+        {"key": "neighbors_feed_mesh_graph", "label": "Feed mesh graph", "type": "bool", "group": "Neighbors",
+         "default": True, "help": "Also add confirmed direct links as mesh graph edges."},
+        {"key": "neighbors_collect_scopes", "label": "Collect region scopes", "type": "bool",
+         "group": "Neighbors", "default": False,
+         "help": "SLOW — also ask each neighbour for its region scopes. Each request holds the radio "
+                 "for up to ~25s, delaying bot replies, and for a repeater with no stored path the "
+                 "library temporarily rewrites that contact's path on the device. Leave off unless "
+                 "you specifically need scopes."},
+        {"key": "neighbors_command_timeout", "label": "Command timeout", "type": "float",
+         "group": "Neighbors", "min": 1, "default": 20.0, "unit": "s",
+         "help": "Cap on the discover request itself; a stalled link can otherwise block."},
+        {"key": "neighbors_scope_timeout", "label": "Scope timeout", "type": "float", "group": "Neighbors",
+         "min": 0, "default": 0.0, "unit": "s",
+         "help": "Per-scope-request wait. 0 uses the device's own airtime estimate."},
+        {"key": "neighbors_scope_min_timeout", "label": "Scope min timeout", "type": "float",
+         "group": "Neighbors", "min": 0, "default": 8.0, "unit": "s",
+         "help": "Floor under the device-suggested scope timeout."},
+        {"key": "neighbors_scope_gap", "label": "Scope gap", "type": "float", "group": "Neighbors",
+         "min": 0, "default": 2.0, "unit": "s", "help": "Settle delay between scope requests."},
+        {"key": "neighbors_cycle_timeout", "label": "Scope pass budget", "type": "float",
+         "group": "Neighbors", "min": 10, "default": 600.0, "unit": "s",
+         "help": "Overall budget for the scope pass; unreached neighbours report as timeout."},
+        {"key": "neighbors_self_scopes", "label": "Own scopes override", "type": "str",
+         "group": "Neighbors", "default": "", "width": "lg",
+         "help": "Override for this node's own \"self.scopes\" value. Empty asks the device."},
     ]
 
     # Repeating structured blocks (see modules/settings_schema.py). Each MQTT
@@ -206,6 +277,13 @@ class PacketCaptureService(BaseServicePlugin):
                  "help": "JWT audience claim (when using auth token)."},
                 {"key": "topic_status", "label": "Status topic", "type": "str", "default": ""},
                 {"key": "topic_packets", "label": "Packets topic", "type": "str", "default": ""},
+                {"key": "neighbors", "label": "Publish neighbours", "type": "bool", "default": True,
+                 "help": "Send the zero-hop neighbours snapshot to this broker. On by default, but "
+                         "nothing is sent until Neighbours discovery is enabled above. Turn off to "
+                         "hold just this broker back."},
+                {"key": "topic_neighbors", "label": "Neighbours topic", "type": "str", "default": "",
+                 "help": "Defaults to the packets topic with its last segment swapped for "
+                         "'neighbors', else <topic prefix>/neighbors."},
                 {"key": "websocket_path", "label": "WebSocket path", "type": "str", "default": "/mqtt",
                  "help": "Path when transport is websockets."},
                 {"key": "client_id", "label": "Client ID", "type": "str", "default": ""},
@@ -305,6 +383,24 @@ class PacketCaptureService(BaseServicePlugin):
         self.cached_firmware_info = None
         self.radio_info = None
 
+        # Neighbors discovery runtime state. Kept out of _load_config so a future
+        # config reload cannot orphan a running scheduler or replay a cycle
+        # (map_uploader_service re-invokes its own _load_config on reload).
+        self.neighbors_task = None
+        self.neighbors_capability_state = None
+        self.neighbors_discover_failures = 0
+        self.neighbors_topic_warned: set[int] = set()
+        self.last_neighbors_publish = self._load_neighbors_state()
+        # When a cycle last reached the radio, whether or not it produced a
+        # result. Callers that ration airtime need this rather than
+        # last_neighbors_publish, which a failed cycle never stamps.
+        self.last_neighbors_attempt = self._load_neighbors_attempt_state()
+        # Single-flight across every trigger (scheduler, command, future callers):
+        # two overlapping cycles would collect into each other's discover window
+        # and double the airtime. asyncio is single-threaded, so a plain flag set
+        # and cleared without an await in between is enough.
+        self.neighbors_cycle_active = False
+
         # Background tasks
         self.background_tasks: list[asyncio.Task] = []
         self.should_exit = False
@@ -365,8 +461,12 @@ class PacketCaptureService(BaseServicePlugin):
         self.mqtt_enabled = config.getboolean("PacketCapture", "mqtt_enabled", fallback=True)
         self.mqtt_brokers = self._parse_mqtt_brokers(config)
 
-        # Global IATA
-        self.global_iata = config.get("PacketCapture", "iata", fallback="XYZ").lower()
+        # Global IATA. Blank stays blank so packet/status {IATA} topics keep
+        # their historical empty-segment resolution; a missing key still falls
+        # back to the XYZ sentinel. Neighbors treats blank and XYZ as unset.
+        self.global_iata = config.get(
+            "PacketCapture", "iata", fallback=DEFAULT_IATA
+        ).strip().lower()
 
         # Owner information
         self.owner_public_key = config.get("PacketCapture", "owner_public_key", fallback=None)
@@ -402,6 +502,100 @@ class PacketCaptureService(BaseServicePlugin):
         # Note: Python signing can fetch private key from device if not provided via file
         # The create_auth_token_async function will automatically try to export the key
         # from the device if private_key_hex is None and meshcore_instance is available
+
+        self._load_neighbors_config(config)
+
+    def _load_neighbors_config(self, config) -> None:
+        """Build the neighbors cycle configuration (see modules/neighbors_discovery.py).
+
+        Off by default: a cycle spends real airtime and, with scope collection
+        enabled, holds the shared radio command lock for seconds at a time.
+        """
+        self.neighbors_enabled = config.getboolean("PacketCapture", "neighbors_enabled", fallback=False)
+        self.neighbors_feed_mesh_graph = config.getboolean(
+            "PacketCapture", "neighbors_feed_mesh_graph", fallback=True
+        )
+
+        requested_interval = config.getint("PacketCapture", "neighbors_interval_hours", fallback=24)
+        self.neighbors_config = NeighborsConfig(
+            interval_hours=requested_interval,
+            discover_window=config.getfloat("PacketCapture", "neighbors_discover_window", fallback=60.0),
+            command_timeout=config.getfloat("PacketCapture", "neighbors_command_timeout", fallback=20.0),
+            collect_scopes=config.getboolean("PacketCapture", "neighbors_collect_scopes", fallback=False),
+            scope_timeout=config.getfloat("PacketCapture", "neighbors_scope_timeout", fallback=0.0),
+            scope_min_timeout=config.getfloat("PacketCapture", "neighbors_scope_min_timeout", fallback=8.0),
+            scope_gap=config.getfloat("PacketCapture", "neighbors_scope_gap", fallback=2.0),
+            cycle_timeout=config.getfloat("PacketCapture", "neighbors_cycle_timeout", fallback=600.0),
+            max_neighbors=config.getint("PacketCapture", "neighbors_max", fallback=32),
+            self_scopes=config.get("PacketCapture", "neighbors_self_scopes", fallback="").strip(),
+        )
+        # NeighborsConfig clamps out-of-range values; say so rather than silently
+        # honouring something different from what was configured.
+        if self.neighbors_enabled and self.neighbors_config.interval_hours != requested_interval:
+            self.logger.warning(
+                f"neighbors_interval_hours {requested_interval} is outside the supported "
+                f"{MIN_INTERVAL_HOURS}-{MAX_INTERVAL_HOURS}h range, "
+                f"using {self.neighbors_config.interval_hours}h"
+            )
+
+    def _load_neighbors_timestamp(self, key: str, label: str) -> float:
+        """Load and validate one neighbors wall-clock timestamp."""
+        try:
+            raw = self.bot.db_manager.get_metadata(key)
+        except Exception as e:
+            self.logger.debug(f"Could not read {label}: {e}")
+            return 0.0
+        if not raw:
+            return 0.0
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            self.logger.warning(f"Ignoring malformed {label} value: {raw!r}")
+            return 0.0
+        # A clock jump either way would otherwise pin the scheduler: a future
+        # timestamp suppresses cycles indefinitely, a nonsensical old one is noise.
+        now = time.time()
+        if value > now + 300 or value < now - (400 * 86400):
+            self.logger.warning(
+                f"Ignoring out-of-range {label} timestamp ({value})"
+            )
+            return 0.0
+        return value
+
+    def _load_neighbors_state(self) -> float:
+        """Last completed cycle timestamp, from bot_metadata.
+
+        Neighbors intervals are long (12-336h), so surviving a restart is what
+        keeps a bot that reboots often from re-running discovery every start.
+        """
+        return self._load_neighbors_timestamp(NEIGHBORS_STATE_KEY, "neighbors state")
+
+    def _load_neighbors_attempt_state(self) -> float:
+        """Last cycle that may have reached the radio, from bot_metadata."""
+        return self._load_neighbors_timestamp(
+            NEIGHBORS_ATTEMPT_STATE_KEY, "neighbors attempt state"
+        )
+
+    def _save_neighbors_timestamp(self, key: str, value: float, label: str) -> None:
+        """Persist one neighbors wall-clock timestamp."""
+        try:
+            self.bot.db_manager.set_metadata(key, str(value))
+        except Exception as e:
+            self.logger.debug(f"Could not save {label}: {e}")
+
+    def _save_neighbors_state(self) -> None:
+        """Persist the last cycle timestamp to bot_metadata."""
+        self._save_neighbors_timestamp(
+            NEIGHBORS_STATE_KEY, self.last_neighbors_publish, "neighbors state"
+        )
+
+    def _save_neighbors_attempt_state(self) -> None:
+        """Persist the last cycle that may have reached the radio."""
+        self._save_neighbors_timestamp(
+            NEIGHBORS_ATTEMPT_STATE_KEY,
+            self.last_neighbors_attempt,
+            "neighbors attempt state",
+        )
 
     def _build_channel_key_store(self, config) -> ChannelKeyStore:
         """Build a comprehensive channel key store for GRP_TXT decryption.
@@ -528,6 +722,15 @@ class PacketCaptureService(BaseServicePlugin):
                 "topic_prefix": config.get("PacketCapture", f"mqtt{broker_num}_topic_prefix", fallback=None),
                 "topic_status": config.get("PacketCapture", f"mqtt{broker_num}_topic_status", fallback=None),
                 "topic_packets": config.get("PacketCapture", f"mqtt{broker_num}_topic_packets", fallback=None),
+                "topic_neighbors": config.get(
+                    "PacketCapture", f"mqtt{broker_num}_topic_neighbors", fallback=None
+                ),
+                # On by default, so `neighbors_enabled` is the single switch that
+                # turns the feature on everywhere. Set false per broker to hold one
+                # back. The whole feature is still off until neighbors_enabled.
+                "neighbors": config.getboolean(
+                    "PacketCapture", f"mqtt{broker_num}_neighbors", fallback=True
+                ),
                 "use_auth_token": config.getboolean(
                     "PacketCapture", f"mqtt{broker_num}_use_auth_token", fallback=False
                 ),
@@ -1863,6 +2066,481 @@ class PacketCaptureService(BaseServicePlugin):
         if self.mqtt_enabled:
             task = asyncio.create_task(self.mqtt_reconnection_monitor())
             self.background_tasks.append(task)
+
+        # Neighbors discovery. Unlike the upstream capture tool this does not
+        # require a broker: the database is a legitimate consumer on its own, so
+        # the cycle runs whenever the feature is enabled and publishes to
+        # whichever brokers opted in (possibly none).
+        if self.neighbors_enabled:
+            self.neighbors_task = asyncio.create_task(self.neighbors_scheduler())
+            self.background_tasks.append(self.neighbors_task)
+
+    def neighbors_brokers(self) -> list[dict[str, Any]]:
+        """Connected MQTT clients whose broker opted into the neighbors topic."""
+        return [
+            info for info in self.mqtt_clients
+            if info.get("connected", False) and info["config"].get("neighbors", False)
+        ]
+
+    def neighbors_commands_available(self) -> bool:
+        """Detect whether the connected build exposes the neighbors commands.
+
+        ``send_node_discover_req`` needs companion CMD_SEND_CONTROL_DATA (v8+);
+        ``req_regions_sync`` needs CMD_SEND_ANON_REQ and is only required when
+        scope collection is enabled. Logged once per state change, like stats.
+        """
+        if not self.meshcore or not hasattr(self.meshcore, "commands"):
+            return False
+
+        commands = self.meshcore.commands
+        required = ["send_node_discover_req"]
+        if self.neighbors_config.collect_scopes:
+            required.append("req_regions_sync")
+        available = all(callable(getattr(commands, attr, None)) for attr in required)
+        state = "available" if available else "missing"
+        if state != self.neighbors_capability_state:
+            if available:
+                self.logger.info("MeshCore neighbors commands detected - neighbors discovery enabled")
+            else:
+                self.logger.warning(
+                    "MeshCore neighbors commands not available - neighbors discovery disabled "
+                    "(needs a newer firmware/meshcore build)"
+                )
+            self.neighbors_capability_state = state
+        return available
+
+    def _neighbors_topic_template(self, broker_config: dict[str, Any]) -> Optional[str]:
+        """Unresolved neighbors topic template for one broker.
+
+        Order matters because brokers publish neighbors by default, so the derived
+        value has to be *correct*, not merely non-empty:
+
+        1. Explicit ``topic_neighbors`` always wins.
+        2. Otherwise swap the last segment of ``topic_packets``. A broker
+           configured with ``meshcore/{IATA}/{PUBLIC_KEY}/packets`` then gets
+           ``meshcore/{IATA}/{PUBLIC_KEY}/neighbors`` — the topic the firmware
+           actually publishes — instead of an unrelated flat topic.
+        3. Otherwise ``<topic_prefix>/neighbors``, mirroring how the packet path
+           falls back to ``<prefix>/packet``.
+        """
+        explicit = broker_config.get("topic_neighbors")
+        if explicit:
+            return explicit
+
+        packets = broker_config.get("topic_packets")
+        if packets:
+            if "/" in packets:
+                return packets.rsplit("/", 1)[0] + "/neighbors"
+            return "neighbors"
+
+        prefix = broker_config.get("topic_prefix")
+        if prefix:
+            return f"{prefix}/neighbors"
+        return None
+
+    def _iata_is_unset(self) -> bool:
+        """True when no real IATA is configured (blank or the XYZ sentinel)."""
+        return (not self.global_iata) or self.global_iata == DEFAULT_IATA.lower()
+
+    def _resolve_neighbors_topic(self, broker_config: dict[str, Any]) -> Optional[str]:
+        """Resolved topic for one broker's neighbors snapshot, or None if unroutable."""
+        template = self._neighbors_topic_template(broker_config)
+        if not template:
+            return None
+
+        # An unset IATA is blank or the documented sentinel "XYZ", and this topic
+        # is location-routed on the community brokers. Publishing a snapshot to
+        # meshcore/XYZ/... (or meshcore//...) would pollute a shared namespace, so
+        # refuse instead — matching the upstream rule that neighbors needs a real
+        # IATA to route. Only applies to a template we derived; an explicit topic
+        # is the operator's call.
+        # .upper() catches both the {IATA} and {iata} placeholder spellings.
+        if (
+            not broker_config.get("topic_neighbors")
+            and "{IATA}" in template.upper()
+            and self._iata_is_unset()
+        ):
+            return None
+
+        return self._resolve_topic_template(template, "neighbors")
+
+    def publish_neighbors_mqtt(self, message: dict[str, Any]) -> dict[str, int]:
+        """Publish a neighbors snapshot to every opted-in, connected broker.
+
+        Non-retained: a snapshot taken every 12-336h is not a useful last-will
+        value, and a stale retained copy would read as current.
+        """
+        metrics = {"attempted": 0, "succeeded": 0}
+        if not self.mqtt_enabled or mqtt is None:
+            return metrics
+
+        payload = json.dumps(message, default=str)
+        for mqtt_client_info in self.neighbors_brokers():
+            config = mqtt_client_info["config"]
+            broker_num = config.get("broker_num", 0)
+            host = config.get("host", "unknown")
+            topic = self._resolve_neighbors_topic(config)
+            if not topic:
+                # Warn once per broker: the cycle spent real airtime, so silently
+                # dropping the result would be worse than noisy.
+                if broker_num not in self.neighbors_topic_warned:
+                    self.neighbors_topic_warned.add(broker_num)
+                    template = self._neighbors_topic_template(config)
+                    if template and "{IATA}" in template.upper():
+                        reason = (
+                            f"its topic is location-routed ({template}) but no IATA is set; "
+                            f"set [PacketCapture] iata, or mqtt{broker_num}_topic_neighbors "
+                            f"to a topic that does not need one"
+                        )
+                    else:
+                        reason = (
+                            f"no neighbors topic could be resolved (set "
+                            f"mqtt{broker_num}_topic_neighbors or a topic prefix)"
+                        )
+                    self.logger.warning(
+                        f"Not publishing neighbors to {host}: {reason}"
+                    )
+                continue
+
+            try:
+                metrics["attempted"] += 1
+                result = mqtt_client_info["client"].publish(topic, payload, qos=0, retain=False)
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    metrics["succeeded"] += 1
+                    self.logger.debug(f"Published neighbors to '{topic}' on {host}")
+                else:
+                    self.logger.warning(
+                        f"Failed to publish neighbors to '{topic}' on {host}: "
+                        f"{result.rc} ({mqtt.error_string(result.rc)})"
+                    )
+            except Exception as e:
+                self.logger.error(f"Error publishing neighbors to MQTT on {host}: {e}")
+
+        return metrics
+
+    def _feed_mesh_graph(self, self_pubkey: str, entries: list[Any]) -> None:
+        """Add each confirmed direct link to the mesh graph, both directions.
+
+        Both directions are correct: a discover response proves we transmitted,
+        they received, they transmitted, and we received.
+
+        Note that ``mesh_connections`` cannot represent *why* an edge exists —
+        its multi-byte confirmation flag is memory-only and never persisted — so
+        ``neighbor_links`` remains the source of truth for this evidence, and the
+        viewer derives its neighbors evidence mode from that table instead.
+        """
+        mesh_graph = getattr(self.bot, "mesh_graph", None)
+        if not mesh_graph or not self_pubkey:
+            return
+
+        self_prefix = self_pubkey.lower()[:6]
+        added = 0
+        for entry in entries:
+            neighbor_prefix = entry.pubkey.lower()[:6]
+            if not neighbor_prefix or neighbor_prefix == self_prefix:
+                continue
+            try:
+                # hop_position 1: a direct link is the first hop of any path
+                # through it. add_edge honours the graph capture kill-switch.
+                mesh_graph.add_edge(
+                    self_prefix, neighbor_prefix,
+                    from_public_key=self_pubkey.lower(),
+                    to_public_key=entry.pubkey.lower(),
+                    hop_position=1, prefix_bytes=2,
+                )
+                mesh_graph.add_edge(
+                    neighbor_prefix, self_prefix,
+                    from_public_key=entry.pubkey.lower(),
+                    to_public_key=self_pubkey.lower(),
+                    hop_position=1, prefix_bytes=2,
+                )
+                added += 2
+            except Exception as e:
+                self.logger.debug(f"Neighbors: could not add graph edge for {neighbor_prefix}: {e}")
+
+        if added and self.debug:
+            self.logger.debug(f"Neighbors: fed {added} mesh graph edge(s)")
+
+    def _device_public_key(self) -> str:
+        """This node's public key, lowercase hex, or '' when unavailable."""
+        if not self.meshcore or not hasattr(self.meshcore, "self_info"):
+            return ""
+        try:
+            self_info = self.meshcore.self_info
+            if isinstance(self_info, dict):
+                key = self_info.get("public_key", "")
+            else:
+                key = getattr(self_info, "public_key", "")
+            if isinstance(key, (bytes, bytearray)):
+                key = bytes(key).hex()
+            key = str(key or "").replace("0x", "").replace(" ", "").strip().lower()
+            return "" if key in ("", "unknown") else key
+        except Exception as e:
+            self.logger.debug(f"Could not read device public key: {e}")
+            return ""
+
+    @staticmethod
+    def _empty_neighbors_summary(reason: str = "") -> dict[str, Any]:
+        """A cycle summary that reports no work done, optionally with a reason."""
+        return {
+            "ok": False, "reason": reason, "discovered": 0, "queried": 0,
+            "best_snr": None, "attempted": 0, "succeeded": 0, "recorded": 0,
+        }
+
+    def neighbors_cooldown_remaining(self) -> float:
+        """Seconds until another cycle may reach the radio.
+
+        Measured from the last cycle that got as far as transmitting, whichever
+        trigger started it — so a cycle that failed on a lost acknowledgement
+        still counts, because the discover broadcast went out regardless. A cycle
+        that bailed before touching the radio stamps nothing and so costs nothing.
+        """
+        last = max(self.last_neighbors_attempt, self.last_neighbors_publish)
+        if last <= 0:
+            return 0.0
+        return max(0.0, MIN_CYCLE_GAP_SECONDS - (time.time() - last))
+
+    def claim_neighbors_cycle(self) -> Optional[str]:
+        """Claim the single-flight lock before a cycle reaches the radio.
+
+        Returns ``None`` when claimed. Returns a refusal reason when another
+        cycle is already running or the airtime cooldown has not expired.
+
+        The ``neighbors`` command claims *before* acknowledging so an await
+        cannot let the scheduler sneak in and turn "started" into an immediate
+        failure. Pair every successful claim with ``release_neighbors_cycle``
+        (``run_neighbors_cycle`` does this in ``finally``).
+        """
+        if self.neighbors_cycle_active:
+            self.logger.info(
+                "Neighbors: a discovery cycle is already running, skipping this trigger"
+            )
+            return "a discovery cycle is already running"
+
+        cooldown = self.neighbors_cooldown_remaining()
+        if cooldown > 0:
+            self.logger.info(
+                f"Neighbors: last cycle was too recent, {cooldown:.0f}s left before "
+                f"another may run"
+            )
+            return f"another cycle may run in {cooldown:.0f}s"
+
+        self.neighbors_cycle_active = True
+        return None
+
+    def release_neighbors_cycle(self) -> None:
+        """Drop the single-flight lock claimed by ``claim_neighbors_cycle``."""
+        self.neighbors_cycle_active = False
+
+    async def run_neighbors_cycle(self, *, already_claimed: bool = False) -> dict[str, Any]:
+        """Run one discovery cycle, subject to the airtime guards.
+
+        Both guards live here rather than in a caller, because the scheduler, the
+        ``neighbors`` command and any future trigger all reach the same radio:
+
+        * no overlap — two concurrent cycles would each collect the other's
+          discover responses and spend twice the airtime for no extra information;
+        * no cycle within ``MIN_CYCLE_GAP_SECONDS`` of the last one that
+          transmitted.
+
+        Pass ``already_claimed=True`` when the caller has successfully called
+        ``claim_neighbors_cycle`` (the manual command does this so it can
+        acknowledge only after the lock is held).
+
+        Returns a summary dict (also used by the ``neighbors`` command):
+        ``{'ok', 'reason', 'discovered', 'queried', 'best_snr', 'attempted',
+        'succeeded', 'recorded'}``.
+        """
+        if not already_claimed:
+            reason = self.claim_neighbors_cycle()
+            if reason is not None:
+                return self._empty_neighbors_summary(reason)
+
+        try:
+            return await self._run_neighbors_cycle()
+        finally:
+            self.release_neighbors_cycle()
+
+    async def _run_neighbors_cycle(self) -> dict[str, Any]:
+        """One discovery cycle: record it, feed the graph, publish it.
+
+        Always call through run_neighbors_cycle, which holds the single-flight
+        guard for the whole cycle.
+        """
+        summary = self._empty_neighbors_summary()
+
+        if not self.neighbors_enabled:
+            summary["reason"] = "neighbors discovery is disabled"
+            return summary
+        if not self.meshcore or not self.bot.connected:
+            summary["reason"] = "radio not connected"
+            return summary
+        if not self.neighbors_commands_available():
+            summary["reason"] = "radio build does not support neighbor discovery"
+            return summary
+
+        cfg = self.neighbors_config
+        self_pubkey = self._device_public_key()
+        self.logger.info("Neighbors: starting discovery cycle")
+
+        # A reconnect swaps in a fresh MeshCore object and clears every event
+        # subscription, so a cycle spanning one is collecting into a dead handler.
+        session = self.meshcore
+
+        def session_intact() -> bool:
+            return self.meshcore is session and self.bot.connected
+
+        # Stamp the attempt before the request, not after the cycle: from here on
+        # the discover broadcast may go out and spend airtime even if we never
+        # learn that it did (a lost acknowledgement fails the cycle without
+        # stamping last_neighbors_publish). Rate limiting has to charge for the
+        # transmission, not for the result. Persist this to ration requests
+        # across restarts as well. It is separate from
+        # last_neighbors_publish so a failed cycle retries after the short airtime
+        # gap rather than waiting the full configured schedule interval.
+        self.last_neighbors_attempt = time.time()
+        self._save_neighbors_attempt_state()
+
+        entries = await discover_neighbors(
+            self.meshcore, cfg, self_pubkey, self.logger,
+            debug=self.debug, still_valid=session_intact,
+        )
+        if entries is None:
+            # A build that rejects the discover command fails every cycle; warn
+            # once rather than on every wakeup forever.
+            self.neighbors_discover_failures += 1
+            if self.neighbors_discover_failures == 1:
+                self.logger.warning(
+                    "Neighbors: discovery request failed; will keep retrying quietly "
+                    "on the configured interval"
+                )
+            else:
+                self.logger.debug(
+                    f"Neighbors: discovery request failed "
+                    f"({self.neighbors_discover_failures} consecutive)"
+                )
+            summary["reason"] = "discovery request failed"
+            return summary
+        self.neighbors_discover_failures = 0
+
+        total_discovered = len(entries)
+        summary["discovered"] = total_discovered
+        if total_discovered > cfg.max_neighbors:
+            self.logger.info(
+                f"Neighbors: {total_discovered} discovered, keeping the "
+                f"{cfg.max_neighbors} most useful"
+            )
+            entries = entries[:cfg.max_neighbors]
+
+        self.logger.info(f"Neighbors: {len(entries)} neighbor(s) discovered")
+        await collect_scopes(self.meshcore, entries, cfg, self.logger, debug=self.debug)
+
+        if not session_intact():
+            self.logger.warning(
+                "Neighbors: device session was reset mid-cycle, discarding this cycle "
+                "rather than recording partial data"
+            )
+            summary["reason"] = "device session reset mid-cycle"
+            return summary
+
+        summary["queried"] = len(entries)
+        if entries:
+            summary["best_snr"] = max(e.snr for e in entries)
+
+        # Record before publishing: the data is valuable on its own, and a broker
+        # problem must not cost us the observation.
+        if entries and self_pubkey:
+            summary["recorded"] = record_neighbors(
+                self.bot.db_manager, self_pubkey, entries, self.logger
+            )
+        elif entries and not self_pubkey:
+            self.logger.warning(
+                "Neighbors: device public key unavailable, cannot record links "
+                "(an unattributed link is not usable evidence)"
+            )
+
+        if entries and self.neighbors_feed_mesh_graph and self_pubkey:
+            self._feed_mesh_graph(self_pubkey, entries)
+
+        self_scopes = await fetch_self_scopes(self.meshcore, cfg, self.logger)
+        origin_id = self_pubkey.upper() if self_pubkey else "DEVICE"
+        message, dropped = build_neighbors_message(
+            self._get_bot_name() or "MeshCore Device",
+            origin_id, self_scopes, entries,
+            total_neighbors=total_discovered,
+        )
+        if dropped:
+            self.logger.warning(
+                f"Neighbors: payload budget reached, dropped {dropped} least-useful entry(ies)"
+            )
+
+        metrics = self.publish_neighbors_mqtt(message)
+        summary["attempted"] = metrics["attempted"]
+        summary["succeeded"] = metrics["succeeded"]
+
+        responded = sum(1 for e in entries if e.status == STATUS_RESPONDED)
+        if metrics["attempted"]:
+            self.logger.info(
+                f"Neighbors: published {len(message['neighbors'])} entry(ies) "
+                f"({responded} responded) to {metrics['succeeded']}/{metrics['attempted']} broker(s)"
+            )
+        else:
+            self.logger.info(
+                f"Neighbors: recorded {summary['recorded']} link(s); "
+                f"no broker has neighbors enabled, nothing published"
+            )
+
+        # Stamp the attempt even when nothing was published, so a persistently
+        # failing broker cannot turn every wakeup into a fresh discovery burst.
+        self.last_neighbors_publish = time.time()
+        self._save_neighbors_state()
+        summary["ok"] = True
+        return summary
+
+    async def neighbors_scheduler(self) -> None:
+        """Run a discovery cycle on the configured interval."""
+        interval_seconds = self.neighbors_config.interval_seconds
+        if self.debug:
+            self.logger.debug(
+                f"Starting neighbors scheduler "
+                f"({self.neighbors_config.interval_hours}h interval)"
+            )
+
+        while not self.should_exit:
+            try:
+                time_since_last = time.time() - self.last_neighbors_publish
+                if time_since_last < interval_seconds:
+                    sleep_time = interval_seconds - time_since_last
+                    if self.debug:
+                        self.logger.debug(f"Next neighbors cycle in {sleep_time / 3600:.1f} hours")
+                    if await self._wait_with_shutdown(sleep_time):
+                        break
+                    continue
+
+                await self.run_neighbors_cycle()
+
+                # run_neighbors_cycle stamps last_neighbors_publish when it got as
+                # far as a result. If it bailed early (not connected, unsupported
+                # build) back off before retrying so we re-check periodically
+                # rather than spinning — but never retry inside the airtime
+                # cooldown: a cycle that failed on a lost acknowledgement already
+                # put a discover broadcast on the air, and retrying every
+                # NEIGHBORS_RETRY_BACKOFF_SECONDS would spend triple the intended
+                # airtime.
+                if (time.time() - self.last_neighbors_publish) >= interval_seconds:
+                    backoff = max(NEIGHBORS_RETRY_BACKOFF_SECONDS,
+                                  self.neighbors_cooldown_remaining())
+                    if await self._wait_with_shutdown(backoff):
+                        break
+
+            except asyncio.CancelledError:
+                if self.debug:
+                    self.logger.debug("Neighbors scheduler cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in neighbors scheduler: {e}")
+                if await self._wait_with_shutdown(NEIGHBORS_RETRY_BACKOFF_SECONDS):
+                    break
 
     async def stats_refresh_scheduler(self) -> None:
         """Periodically refresh stats and publish them via MQTT (matches original script).

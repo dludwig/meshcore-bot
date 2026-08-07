@@ -428,12 +428,25 @@ class TestRollupCorrectness:
         """Means cannot be re-aggregated across a window; sums and counts can."""
         seed_database(viewer.db_path)
         _refresh(viewer)
-        row = _rollup(viewer, local_date_str())
-        assert row["snr_count"] == MESSAGES
-        assert row["rssi_count"] == MESSAGES
+        today = local_date_str()
+        row = _rollup(viewer, today)
+        # Seed timestamps are `now - i`, so near midnight some rows land on
+        # yesterday. Compare against the same day window the rollup uses.
+        start, end = day_bounds(today)
         with sqlite3.connect(viewer.db_path) as conn:
-            expected = conn.execute("SELECT SUM(snr) FROM message_stats").fetchone()[0]
-        assert row["snr_sum"] == pytest.approx(expected)
+            expected = conn.execute(
+                """
+                SELECT SUM(snr),
+                       SUM(CASE WHEN snr  IS NOT NULL THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN rssi IS NOT NULL THEN 1 ELSE 0 END)
+                FROM message_stats
+                WHERE timestamp >= ? AND timestamp < ?
+                """,
+                (start, end),
+            ).fetchone()
+        assert row["snr_count"] == expected[1]
+        assert row["rssi_count"] == expected[2]
+        assert row["snr_sum"] == pytest.approx(expected[0])
 
     def test_missing_stats_tables_degrade_to_null(self, viewer):
         """`collect_stats = false` leaves the tables absent entirely."""

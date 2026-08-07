@@ -13,14 +13,19 @@ geopy>=2.3.0
 maidenhead>=1.4.0
 pytz>=2023.3
 aiohttp>=3.8.0
-meshcore>=2.3.6
+# 2.3.8+ is required, not merely preferred: send_node_discover_req / req_regions_sync
+# (zero-hop neighbour discovery) and the bounded, serialised BLE write both landed there.
+meshcore>=2.3.8
 openmeteo-requests>=1.7.2
 requests-cache>=1.1.1
 retry-requests>=1.0.0
 flask>=2.3.0
 flask-socketio>=5.3.0
 flask-compress>=1.14
-meshcore-cli
+# Still required alongside the meshcore library: `meshcore_cli.next_cmd` backs the
+# contact and channel operations (add/remove contact, discover_companion_contacts,
+# set_manual_add_contacts, get_channel) that meshcore.commands does not expose.
+meshcore-cli>=1.4.0
 feedparser>=6.0.10
 paho-mqtt>=1.6.0
 cryptography>=41.0.0

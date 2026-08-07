@@ -444,6 +444,113 @@ class TestContactRoutes:
         assert data["pagination"]["page"] == 1
         assert data["pagination"]["page_size"] == 200
 
+    def test_api_contacts_filters_and_sorts_by_path_bytes(self, client, viewer):
+        rows = [
+            ("d801" * 16, "PathBytes One", 1),
+            ("d802" * 16, "PathBytes Three", 3),
+            ("d803" * 16, "PathBytes Two", 2),
+        ]
+        for public_key, name, _bytes_per_hop in rows:
+            _insert_contact(viewer, public_key, name)
+        with closing(sqlite3.connect(viewer.db_path)) as conn:
+            for public_key, _name, bytes_per_hop in rows:
+                conn.execute(
+                    """UPDATE complete_contact_tracking
+                       SET out_bytes_per_hop = ?, role = ?, hop_count = ?, city = ?, is_starred = ?
+                       WHERE public_key = ?""",
+                    (
+                        bytes_per_hop,
+                        'repeater' if bytes_per_hop == 2 else 'companion',
+                        2 if bytes_per_hop == 2 else 0,
+                        'Test City' if bytes_per_hop == 2 else None,
+                        1 if bytes_per_hop == 2 else 0,
+                        public_key,
+                    ),
+                )
+            conn.commit()
+
+        filtered = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes", "path_bytes": "2", "sort": "path_bytes",
+                "direction": "asc",
+            },
+        ).get_json()
+        assert [row["username"] for row in filtered["tracking_data"]] == ["PathBytes Two"]
+        assert filtered["tracking_data"][0]["path_bytes_per_hop"] == 2
+
+        combined_filters = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10, "search": "PathBytes",
+                "device_role": "repeater", "hop_filter": "2", "location_filter": "known",
+                "starred": "yes",
+            },
+        ).get_json()
+        assert [row["username"] for row in combined_filters["tracking_data"]] == ["PathBytes Two"]
+
+        sorted_rows = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes", "sort": "path_bytes", "direction": "desc",
+            },
+        ).get_json()["tracking_data"]
+        assert [row["path_bytes_per_hop"] for row in sorted_rows] == [3, 2, 1]
+
+    def test_api_contacts_path_bytes_ignores_invalid_observed_encodings(self, client, viewer):
+        """NULL/invalid observed_paths.bytes_per_hop must not become 1-byte.
+
+        Those rows should be ignored so the contact falls back to out_bytes_per_hop.
+        """
+        public_key = "d804" * 16
+        _insert_contact(viewer, public_key, "PathBytes Fallback")
+        with closing(sqlite3.connect(viewer.db_path)) as conn:
+            conn.execute(
+                """UPDATE complete_contact_tracking
+                   SET out_bytes_per_hop = 3, last_heard = datetime('now', 'localtime')
+                   WHERE public_key = ?""",
+                (public_key,),
+            )
+            conn.execute(
+                """INSERT INTO observed_paths
+                   (public_key, from_prefix, to_prefix, path_hex, path_length,
+                    bytes_per_hop, packet_type, first_seen, last_seen, observation_count)
+                   VALUES (?, 'abcd', 'ef01', 'abcdef01', 4, NULL, 'advert',
+                           datetime('now', 'localtime'), datetime('now', 'localtime'), 1)""",
+                (public_key,),
+            )
+            conn.commit()
+
+        rows = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes Fallback", "sort": "path_bytes",
+            },
+        ).get_json()["tracking_data"]
+        assert len(rows) == 1
+        assert rows[0]["path_bytes_per_hop"] == 3
+
+        filtered = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes Fallback", "path_bytes": "3",
+            },
+        ).get_json()["tracking_data"]
+        assert [row["username"] for row in filtered] == ["PathBytes Fallback"]
+
+        as_one_byte = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes Fallback", "path_bytes": "1",
+            },
+        ).get_json()["tracking_data"]
+        assert as_one_byte == []
+
     @pytest.mark.parametrize(
         ("sort", "ascending_names"),
         [

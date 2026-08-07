@@ -70,7 +70,10 @@ jobs:
         run: pip install "ruff==0.15.15"
 
       - name: ruff check — fail on any lint error
-        run: ruff check modules/ tests/
+        # Whole tree, not just modules/ and tests/: scripts/ and the root-level
+        # scripts (meshcore_bot.py, validate_config.py, generate_website.py, …)
+        # ship to users too. Excludes come from pyproject's [tool.ruff].
+        run: ruff check .
 
       - name: Log injection check — fail on new unsanitized logger calls
         run: python scripts/check_log_injection.py

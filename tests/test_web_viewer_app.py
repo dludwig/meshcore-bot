@@ -403,6 +403,21 @@ def _seed_observed_path(db_path, path_hex, bytes_per_hop, observation_count=1,
         conn.commit()
 
 
+def _insert_neighbor_link(conn, self_key, neighbor_key, *, last_seen,
+                          observation_count=1):
+    """Insert a confirmed zero-hop link, the strongest evidence class."""
+    conn.execute(
+        """
+        INSERT INTO neighbor_links
+            (self_public_key, neighbor_public_key, first_seen, last_seen,
+             observation_count, snr_sum, snr_count, best_snr, last_snr,
+             last_status, scopes)
+        VALUES (?, ?, ?, ?, ?, 5.0, 1, 5.0, 5.0, 'responded', '')
+        """,
+        (self_key, neighbor_key, last_seen, last_seen, observation_count),
+    )
+
+
 class TestApiMeshEdgesEvidence:
     def test_nodes_days_filter_is_applied_in_database(self, viewer_with_db):
         recent = time.strftime('%Y-%m-%dT%H:%M:%S')
@@ -612,6 +627,67 @@ class TestApiMeshEdgesEvidence:
                 (edge['from_prefix'], edge['to_prefix'])
                 for edge in data['edges']
             } == {('cccc55', 'dddd66')}
+
+    def test_neighbor_label_matches_on_full_public_keys(self, viewer_with_db):
+        """MeshGraph keeps some 1-byte edges but fills in the keys discovery gave it.
+
+        add_edge refuses to promote a 1-byte edge with no public key (several
+        nodes still share it), so a 3-byte prefix comparison alone would leave a
+        confirmed neighbour labelled 'singlebyte'.
+        """
+        self_key, neighbor_key = 'aa' * 32, 'bb' * 32
+        recent = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(viewer_with_db.db_path, timeout=60) as conn:
+            conn.execute(
+                """
+                INSERT INTO mesh_connections
+                    (from_prefix, to_prefix, from_public_key, to_public_key,
+                     observation_count, last_seen)
+                VALUES ('aa', 'bb', ?, ?, 5, ?)
+                """,
+                (self_key, neighbor_key, recent),
+            )
+            _insert_neighbor_link(conn, self_key, neighbor_key, last_seen=recent)
+            conn.commit()
+
+        with viewer_with_db.app.test_client() as client:
+            response = client.get('/api/mesh/edges')
+            edges = {(e['from_prefix'], e['to_prefix']): e
+                     for e in json.loads(response.data)['edges']}
+            assert edges[('aa', 'bb')]['evidence'] == 'neighbors'
+
+    def test_stale_neighbor_evidence_does_not_relabel_a_recent_edge(
+        self, viewer_with_db
+    ):
+        """neighbor_links is never pruned, so a link last heard years ago must not
+        claim a recent path-derived edge is a current direct neighbour."""
+        self_key, neighbor_key = 'aa' * 32, 'bb' * 32
+        recent = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(viewer_with_db.db_path, timeout=60) as conn:
+            conn.execute(
+                """
+                INSERT INTO mesh_connections
+                    (from_prefix, to_prefix, observation_count, last_seen)
+                VALUES (?, ?, 5, ?)
+                """,
+                (self_key[:6], neighbor_key[:6], recent),
+            )
+            _insert_neighbor_link(conn, self_key, neighbor_key,
+                                  last_seen='2020-01-01T00:00:00+00:00')
+            conn.commit()
+
+        key = (self_key[:6], neighbor_key[:6])
+        with viewer_with_db.app.test_client() as client:
+            windowed = json.loads(
+                client.get('/api/mesh/edges?days=7').data
+            )['edges']
+            assert {(e['from_prefix'], e['to_prefix']): e
+                    for e in windowed}[key]['evidence'] == 'multibyte'
+
+            # Unwindowed, the lifetime evidence still stands.
+            lifetime = json.loads(client.get('/api/mesh/edges').data)['edges']
+            assert {(e['from_prefix'], e['to_prefix']): e
+                    for e in lifetime}[key]['evidence'] == 'neighbors'
 
     def test_stats_include_multibyte_edge_count(self, viewer_with_db):
         with sqlite3.connect(viewer_with_db.db_path, timeout=60) as conn:

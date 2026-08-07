@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .db_migrations import MigrationRunner
 from .db_retention import (
@@ -59,6 +59,8 @@ class DBManager:
         "purging_log",  # Repeater manager
         "mesh_connections",  # Mesh graph for path validation
         "observed_paths",  # Repeater manager - observed paths from adverts and messages
+        "neighbor_links",  # Zero-hop neighbor discovery - current adjacency
+        "neighbor_observations",  # Zero-hop neighbor discovery - per-cycle history
     }
 
     def __init__(self, bot: Any, db_path: str = "meshcore_bot.db"):
@@ -121,7 +123,9 @@ class DBManager:
             return f"could not inspect database path: {diag_error}"
 
     # Geocoding cache methods
-    def get_cached_geocoding(self, query: str) -> tuple[float | None, float | None]:
+    def get_cached_geocoding(
+        self, query: str
+    ) -> tuple[Optional[float], Optional[float]]:
         """Get cached geocoding result for a query.
 
         Args:
@@ -187,7 +191,7 @@ class DBManager:
             self.logger.error(f"Error caching geocoding: {e}")
 
     # Generic cache methods
-    def get_cached_value(self, cache_key: str, cache_type: str) -> str | None:
+    def get_cached_value(self, cache_key: str, cache_type: str) -> Optional[str]:
         """Get cached value for a key and type.
 
         Args:
@@ -252,7 +256,7 @@ class DBManager:
         except Exception as e:
             self.logger.error(f"Error caching value: {e}")
 
-    def get_cached_json(self, cache_key: str, cache_type: str) -> dict | None:
+    def get_cached_json(self, cache_key: str, cache_type: str) -> Optional[dict]:
         """Get cached JSON value for a key and type.
 
         Args:
@@ -559,7 +563,7 @@ class DBManager:
         except Exception as e:
             self.logger.error(f"Error setting metadata {key}: {e}")
 
-    def get_metadata(self, key: str) -> str | None:
+    def get_metadata(self, key: str) -> Optional[str]:
         """Get a metadata value for the bot.
 
         Args:
@@ -580,7 +584,7 @@ class DBManager:
             self.logger.error(f"Error getting metadata {key}: {e}")
             return None
 
-    def get_bot_start_time(self) -> float | None:
+    def get_bot_start_time(self) -> Optional[float]:
         """Get bot start time from metadata"""
         start_time_str = self.get_metadata("start_time")
         if start_time_str:
@@ -711,7 +715,7 @@ class DBManager:
         except Exception as e:
             self.logger.error(f"Error storing system health: {e}")
 
-    def get_system_health(self) -> dict[str, Any] | None:
+    def get_system_health(self) -> Optional[dict[str, Any]]:
         """Get system health data from metadata"""
         try:
             import json
@@ -756,17 +760,15 @@ class AsyncDBManager:
             conn.row_factory = aiosqlite.Row
             yield conn
 
-    async def get_metadata(self, key: str) -> str | None:
+    async def get_metadata(self, key: str) -> Optional[str]:
         """Async version of DBManager.get_metadata."""
         try:
-            async with (
-                self.connection() as conn,
-                conn.execute(
+            async with self.connection() as conn:
+                async with conn.execute(
                     "SELECT value FROM bot_metadata WHERE key = ?", (key,)
-                ) as cursor,
-            ):
-                row = await cursor.fetchone()
-                return row[0] if row else None
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else None
         except Exception as e:
             self.logger.error(f"AsyncDBManager: error getting metadata {key}: {e}")
             return None
@@ -806,7 +808,7 @@ class AsyncDBManager:
             self.logger.error(f"AsyncDBManager: error executing update: {e}")
             return 0
 
-    async def get_cached_value(self, cache_key: str, cache_type: str) -> str | None:
+    async def get_cached_value(self, cache_key: str, cache_type: str) -> Optional[str]:
         """Async version of DBManager.get_cached_value."""
         try:
             async with self.connection() as conn:

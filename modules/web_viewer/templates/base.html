@@ -727,21 +727,18 @@
 
             setupSocketEvents() {
                 this.socket.on('connect', () => {
-                    console.log('Connected to server');
                     this.connected = true;
                     this.updateConnectionStatus('Connected', 'connected');
                     this.lastActivity = new Date();
                     this.updateLastActivity();
                 });
 
-                this.socket.on('disconnect', (reason) => {
-                    console.log('Disconnected from server:', reason);
+                this.socket.on('disconnect', () => {
                     this.connected = false;
                     this.updateConnectionStatus('Disconnected', 'disconnected');
                 });
 
                 this.socket.on('status', (data) => {
-                    console.log('Server status:', data.message);
                     this.showNotification(data.message, 'info');
                 });
 
@@ -752,7 +749,6 @@
 
                 // Modern ping/pong pattern
                 this.socket.on('pong', () => {
-                    console.log('Pong received from server');
                     this.lastActivity = new Date();
                     this.updateLastActivity();
                 });

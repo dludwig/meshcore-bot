@@ -372,6 +372,41 @@ venv_reuse_blocker() {
     fi
 }
 
+# Extra pip arguments for 32-bit ARM hosts (Raspberry Pi 2/3 on a 32-bit OS).
+#
+# Ten dependencies have no prebuilt armv7 wheel on PyPI and would compile from source on
+# the device - hours of work on a Cortex-A7 and a likely OOM at 1 GB RAM.  piwheels serves
+# prebuilt armv7 wheels and is already configured on Raspberry Pi OS via /etc/pip.conf;
+# passing it explicitly also covers Ubuntu armhf, DietPi and other 32-bit distros that do
+# not ship that default.  constraints-armv7.txt then closes the last two gaps, so the
+# install resolves entirely to wheels.  See that file for the measurements.
+#
+# Scoped to 32-bit ARM on purpose: the constraints hold two packages one version back, and
+# there is no reason to impose that on amd64/arm64.  Results go in ARMV7_PIP_ARGS, which is
+# empty on every other platform.
+ARMV7_PIP_ARGS=()
+configure_armv7_pip_args() {
+    local requirements="$1"
+    local constraints
+
+    ARMV7_PIP_ARGS=()
+    case "$(uname -m)" in
+        armv6l|armv7l) ;;
+        *) return 0 ;;
+    esac
+
+    ARMV7_PIP_ARGS+=(--extra-index-url https://www.piwheels.org/simple)
+    print_info "32-bit ARM detected; using piwheels prebuilt wheels to avoid on-device compilation"
+
+    constraints="$(dirname "$requirements")/constraints-armv7.txt"
+    if [ -f "$constraints" ]; then
+        ARMV7_PIP_ARGS+=(-c "$constraints")
+    else
+        print_warning "constraints-armv7.txt not found next to $requirements"
+        print_warning "brotli and ephem will compile from source; this can take a while"
+    fi
+}
+
 # Bring an existing virtualenv up to date with requirements.txt.  Plain
 # `pip install -r` (no --upgrade) is deliberate: it installs what is missing and
 # upgrades only what no longer satisfies a specifier, which is the fast path.
@@ -383,7 +418,8 @@ update_venv_in_place() {
 
     print_info "Reusing the existing virtualenv at $venv"
     print_info "Synchronizing dependencies from $requirements"
-    if ! "$venv/bin/python" -m pip install --quiet -r "$requirements"; then
+    configure_armv7_pip_args "$requirements"
+    if ! "$venv/bin/python" -m pip install --quiet "${ARMV7_PIP_ARGS[@]}" -r "$requirements"; then
         print_error "Failed to update Python dependencies"
         print_info "Check your internet connection, or rebuild with: $0 --upgrade"
         return 1
@@ -729,7 +765,8 @@ if [[ "$VENV_UPDATED_IN_PLACE" != true ]]; then
         print_error "requirements.txt not found in installation directory"
         exit 1
     fi
-    $VENV_BUILD_PYTHON -m pip install --quiet -r "$INSTALL_DIR/requirements.txt" || {
+    configure_armv7_pip_args "$INSTALL_DIR/requirements.txt"
+    $VENV_BUILD_PYTHON -m pip install --quiet "${ARMV7_PIP_ARGS[@]}" -r "$INSTALL_DIR/requirements.txt" || {
         print_error "Failed to install Python dependencies"
         print_info "You may need to check your internet connection or Python version"
         rm -rf "$VENV_BUILD"

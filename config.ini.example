@@ -277,8 +277,8 @@ respond_to_dms = true
 
 # Maximum number of hops on an incoming message, any higher and it will be ignored.
 # Messages received with a high number of hops are rarely intended for the local
-# mesh and are not likely to get recieve a response.
-# Default: 64 - to not change behavior on existing installations
+# mesh and are not likely to receive a response.
+# Code default when omitted: 64. This example uses 7 for a tighter local mesh.
 max_response_hops = 7
 
 # List of region scopes (comma-separated) that the bot will reply to when messages arrive on those scopes.
@@ -304,12 +304,10 @@ max_response_hops = 7
 # flood_scope.general = #west
 # flood_scope.weather = #sea
 # flood_scope.#local = *
-
 [Banned_Users]
 # List of banned sender names (comma-separated). Matching is prefix (starts-with):
 # "Awful Username" also matches "Awful Username 🍆". No bot responses in channels or DMs.
 banned_users =
-
 [Localization]
 # Language code for bot responses (en, es, es-MX, es-ES, fr, de, ja, etc.)
 # Default: en (English)
@@ -352,7 +350,8 @@ admin_pubkeys =
 # These commands will only work for users in the admin_pubkeys list
 # reload: Reload configuration without restarting (radio settings cannot be changed)
 # channelpause: DM-only; channelpause / channelresume — pause or resume bot responses on channels (not persisted)
-admin_commands = repeater,webviewer,reload,channelpause
+# neighbors: DM-only; runs a zero-hop neighbour discovery cycle (spends airtime — admin-gate this)
+admin_commands = repeater,webviewer,reload,channelpause,neighbors
 [Plugin_Overrides]
 # Plugin Overrides - Use alternative plugin implementations
 # Format: command_name = alternative_file_name
@@ -712,7 +711,6 @@ prefix_best_location_radius_km = 50
 # Example: prefix_best_do_not_suggest = 00,FF,01,02
 # Leave empty to allow all prefixes
 prefix_best_do_not_suggest =
-
 [Weather]
 # NOTE: Unit settings are used by both the wx and gwx commands and Weather_Service plugin
 
@@ -963,6 +961,12 @@ purging_log_retention_days = 90
 #
 # Mesh connections (path graph edges). Should be >= Path_Command graph_edge_expiration_days.
 mesh_connections_retention_days = 7
+#
+# Zero-hop neighbour observation history (see [PacketCapture] neighbors_enabled).
+# At most one row per neighbour per cycle, and cycles are >= 12h apart, so this
+# grows very slowly and a long window is cheap. The neighbor_links aggregate that
+# the mesh graph reads is never pruned.
+neighbor_observations_retention_days = 365
 [Path_Command]
 # Enable or disable the path command
 enabled = true
@@ -1334,30 +1338,18 @@ max_distance_km = 20.0
 # Only report incidents newer than this (hours)
 max_incident_age_hours = 24.0
 
-# Only report incidents within this distance of the bot (kilometers)
-max_distance_km = 20.0
-
-# Only report incidents newer than this (hours)
-max_incident_age_hours = 24.0
-
 # PulsePoint agency IDs by city or county
 # Format: agency.city.<name> = comma-separated agency IDs
 #         agency.county.<name> = comma-separated agency IDs
 # Legacy: agency.<name> or agency_<name> (treated as county)
 # Get agency IDs from: https://web.pulsepoint.org/ or PulsePoint searchagencies API
-# You can use any naming convention that makes sense for your region
-# Examples: agency.county1, agency.city1, agency.region1, etc.
+# Use underscores for multi-word names (e.g. agency.city.federal_way)
+
+# Example: City agencies
+# agency.city.seattle = 17D20,17M15
 
 # Example: County agencies
-# agency.county1 =
-
-# Example: City agencies (can have multiple entries for the same region)
-# agency.city1 =
-# agency.city1_alias =
-
-# Example: Combined region (all counties/agencies)
-# agency.region_all =
-
+# agency.county.king = 17D02,17M15
 [Announcements_Command]
 # Enable or disable the announcements command (true/false)
 enabled = false
@@ -1485,6 +1477,13 @@ enabled = true
 enabled = true
 # channels =
 [Advert_Command]
+enabled = true
+# channels =
+[Neighbors_Command]
+# Runs one zero-hop neighbour discovery cycle on demand (DM only, 15min cooldown).
+# The scheduled interval has a 12h floor, so this is how you test a change or
+# refresh after moving the node. Requires [PacketCapture] neighbors_enabled = true.
+# Worth adding to Admin_ACL admin_commands, since a cycle spends airtime.
 enabled = true
 # channels =
 [Test_Command]
@@ -1774,6 +1773,67 @@ log_max_bytes = 50MB
 log_rotation_when = midnight
 log_backup_count = 5
 
+# --- Neighbour discovery (zero-hop) ---
+# Periodically asks which repeaters this node can hear DIRECTLY, then records each
+# confirmed link with its measured SNR. This is the strongest link evidence the bot
+# has: two full 32-byte public keys and a first-party RF measurement, as opposed to
+# path inference over 1-3 byte prefixes.
+#
+# Results go to the neighbor_links / neighbor_observations tables, feed the mesh
+# graph, and are published to every enabled broker (mqttN_neighbors defaults true;
+# set it false on a broker you want to hold back).
+# Trigger one on demand with the `neighbors` DM command (see [Neighbors_Command]).
+#
+# This is the single switch for the whole feature. Off by default because a cycle
+# spends real airtime; turning it on needs no other change.
+neighbors_enabled = false
+
+# How often a cycle runs, in hours. Clamped to 12-336 to match the firmware; an
+# out-of-range value is clamped with a warning rather than silently honoured.
+neighbors_interval_hours = 24
+
+# Seconds spent listening for responses. Repeaters answer after a randomised delay,
+# so a short window simply finds fewer neighbours (floor: 5s). The bot stays fully
+# responsive during this window — it is a passive listen, not a busy wait.
+neighbors_discover_window = 60
+
+# Cap on neighbours recorded per cycle, most useful first (most recently heard,
+# then strongest SNR).
+neighbors_max = 32
+
+# Also add each confirmed direct link to the mesh graph as an edge.
+neighbors_feed_mesh_graph = true
+
+# Also ask each neighbour for its region scopes. OFF BY DEFAULT, and worth
+# understanding before enabling:
+#   - Every bot radio command is serialised, and a scope request waits for its
+#     reply while holding that lock — up to ~25s per neighbour. With many
+#     neighbours the bot's own replies stall in bursts for minutes.
+#   - The zero-hop probe assumes the neighbour is not a known contact. This bot
+#     does track contacts, and for a repeater with no stored path the meshcore
+#     library reaches zero-hop by temporarily rewriting that contact's path on the
+#     device, then restoring it.
+# With this off, the snapshot reports every neighbour it heard with empty scopes.
+neighbors_collect_scopes = false
+
+# Cap on the discover request itself; a stalled BLE/serial write can otherwise
+# block far longer than the library's own reply timeout.
+neighbors_command_timeout = 20
+
+# Scope-request tuning (only used when neighbors_collect_scopes = true)
+# neighbors_scope_timeout: per-request wait; 0 = use the device's own airtime estimate
+# neighbors_scope_min_timeout: floor under the device-suggested timeout
+# neighbors_scope_gap: settle delay between requests (they must not overlap on air)
+# neighbors_cycle_timeout: overall budget for the pass; unreached neighbours report timeout
+neighbors_scope_timeout = 0
+neighbors_scope_min_timeout = 8
+neighbors_scope_gap = 2.0
+neighbors_cycle_timeout = 600
+
+# Override for this node's own "self.scopes" value in the published payload.
+# Empty asks the device for its default flood scope.
+neighbors_self_scopes =
+
 # Owner information (for packet analyzer registration)
 # Owner public key (64-character hex string)
 owner_public_key =
@@ -1824,6 +1884,18 @@ iata = XYZ
 # mqttN_client_id =                   # MQTT client ID (optional, auto-generated from bot name)
 # mqttN_upload_packet_types =         # Comma-separated packet types to upload (e.g. 2,4); empty = all
 # mqttN_include_decoded = true/false  # Publish the decoded object to this broker (default: include_decoded)
+# mqttN_neighbors = true/false        # Publish the zero-hop neighbours snapshot to this broker.
+#                                     # Default TRUE — neighbors_enabled below is the single
+#                                     # switch, so nothing is sent until you turn that on.
+#                                     # Set false to hold just this broker back.
+# mqttN_topic_neighbors =             # Neighbours topic template. Defaults to this broker's
+#                                     # packets topic with its last segment swapped for
+#                                     # "neighbors" (so a templated packets topic yields
+#                                     # meshcore/{IATA}/{PUBLIC_KEY}/neighbors), else
+#                                     # <mqttN_topic_prefix>/neighbors. A derived
+#                                     # location-routed topic is skipped with a warning when
+#                                     # no iata is set (blank or XYZ), rather than publishing
+#                                     # into that shared namespace.
 #
 # Topic template placeholders:
 # {IATA} - Uppercase IATA code (e.g., SEA)

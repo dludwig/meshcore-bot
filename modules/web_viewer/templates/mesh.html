@@ -243,9 +243,10 @@
                     </div>
                     <div class="col-md-2">
                         <label for="filter-evidence" class="form-label">Evidence</label>
-                        <select class="form-select" id="filter-evidence" title="Multi-byte only: build the graph solely from unique multi-byte path observations, ignoring ambiguous single-byte evidence">
+                        <select class="form-select" id="filter-evidence" title="Multi-byte only: build the graph solely from unique multi-byte path observations, ignoring ambiguous single-byte evidence. Neighbors only: only links this node confirmed directly by zero-hop discovery, with measured SNR.">
                             <option value="all">All Evidence</option>
                             <option value="multibyte" selected>Multi-byte Only</option>
+                            <option value="neighbors">Neighbors Only</option>
                         </select>
                     </div>
                     <div class="col-md-2">
@@ -294,6 +295,10 @@
                         <span>Bidirectional</span>
                     </div>
                     <hr style="margin: 4px 0;">
+                    <div class="connection-legend-item">
+                        <span style="display: inline-block; width: 18px; border-top: 4px solid currentColor; vertical-align: middle;"></span>
+                        <span>Confirmed neighbor (zero-hop)</span>
+                    </div>
                     <div class="connection-legend-item">
                         <span style="display: inline-block; width: 18px; border-top: 2px solid currentColor; vertical-align: middle;"></span>
                         <span>Multi-byte evidence</span>
@@ -741,7 +746,21 @@
         return edge.evidence === 'singlebyte';
     }
 
+    // A zero-hop discovery response is a direct RF measurement between two full
+    // public keys — the strongest evidence class, so it gets a heavier line.
+    function isNeighborEdge(edge) {
+        return edge.evidence === 'neighbors';
+    }
+
+    function formatSnr(value) {
+        return (typeof value === 'number' && isFinite(value)) ? `${value.toFixed(1)} dB` : null;
+    }
+
     function getEvidenceLabel(edge) {
+        if (edge.evidence === 'neighbors') {
+            const snr = formatSnr(edge.snr);
+            return snr ? `Confirmed neighbor (avg SNR ${snr})` : 'Confirmed neighbor (zero-hop)';
+        }
         if (edge.evidence === 'multibyte') {
             return edge.path_count
                 ? `Multi-byte (${edge.path_count} unique path${edge.path_count === 1 ? '' : 's'})`
@@ -931,14 +950,18 @@
     // --- Initial map framing: home mesh component ---
     // Nodes occasionally carry wrong GPS, and fitting the view to every node can
     // stretch the initial frame across continents. Instead, frame the component
-    // reachable from the bot's location over multi-byte (provenance-trusted)
-    // evidence edges only; wrong-GPS phantoms are rarely connected to it.
+    // reachable from the bot's location over provenance-trusted evidence edges
+    // only; wrong-GPS phantoms are rarely connected to it.
     let botLocation = null; // {latitude, longitude} from /api/mesh/stats
 
     function getHomeComponentBounds() {
         if (!botLocation) return null;
-        // Both evidence modes tag edges, so this works even in "All Evidence"
-        const mbEdges = filteredEdges.filter(e => e.evidence === 'multibyte');
+        // Every evidence mode tags its edges, so this works in "All Evidence" too.
+        // Confirmed neighbors count as trusted (they are measured, not inferred),
+        // and are the only tagged edges present in "Neighbors Only" mode.
+        const mbEdges = filteredEdges.filter(
+            e => e.evidence === 'multibyte' || e.evidence === 'neighbors'
+        );
         if (!mbEdges.length) return null;
 
         const adj = new Map();      // nodeId -> Set of neighbor nodeIds
@@ -1189,8 +1212,6 @@
             return;
         }
         
-        console.log(`Highlighting path with ${pathRepeaters.length} repeaters:`, pathRepeaters.map(r => r.node_id));
-        
         // Highlight edges between consecutive nodes in the path
         // Need to match the edgeKey format used when storing edges: `${edge.from_prefix}-${edge.to_prefix}`
         const pathEdgeKeys = new Set();
@@ -1234,25 +1255,11 @@
                 // Normalize to lowercase to match how edges are stored
                 const edgeKey = `${edge.from_prefix.toLowerCase()}-${edge.to_prefix.toLowerCase()}`;
                 pathEdgeKeys.add(edgeKey);
-                console.log(`Found edge for path segment ${fromRepeater.node_id}->${toRepeater.node_id}: ${edgeKey} (edge stored as ${edge.from_prefix}->${edge.to_prefix})`);
             } else {
                 console.warn(`No edge found for path segment ${fromRepeater.node_id}->${toRepeater.node_id}`);
-                // Log available edges for debugging
-                const availableEdges = filteredEdges.filter(e => {
-                    const eFrom = e.from_prefix.toUpperCase();
-                    const eTo = e.to_prefix.toUpperCase();
-                    return (eFrom === fromPrefix || eTo === fromPrefix || eFrom === toPrefix || eTo === toPrefix);
-                });
-                if (availableEdges.length > 0) {
-                    console.log(`Available edges with these prefixes:`, availableEdges.map(e => `${e.from_prefix}->${e.to_prefix}`));
-                } else {
-                    console.log(`No edges found with prefixes ${fromPrefix} or ${toPrefix} in filteredEdges (total: ${filteredEdges.length})`);
-                }
             }
         }
-        
-        console.log(`Path edge keys to highlight:`, Array.from(pathEdgeKeys));
-        
+
         // First, store original styles for ALL edges if not already stored
         edgeLines.forEach((line, edgeKey) => {
             if (!allEdgeStyles.has(edgeKey)) {
@@ -1263,8 +1270,6 @@
                 });
             }
         });
-        
-        console.log(`Total edges on map: ${edgeLines.size}, Path edges to highlight: ${pathEdgeKeys.size}`);
         
         // Normalize path edge keys to lowercase for matching
         const normalizedPathEdgeKeys = new Set();
@@ -1636,7 +1641,7 @@
             const edgeDays = document.getElementById('filter-edge-days').value;
             const nodeDays = document.getElementById('filter-node-days').value;
             const edgeParams = new URLSearchParams();
-            if (evidence === 'multibyte') edgeParams.set('evidence', 'multibyte');
+            if (evidence === 'multibyte' || evidence === 'neighbors') edgeParams.set('evidence', evidence);
             if (edgeDays) edgeParams.set('days', edgeDays);
             if (forceRefresh) edgeParams.set('refresh', '1');
             const nodeParams = new URLSearchParams();
@@ -1763,7 +1768,7 @@
                 if (filters.starredOnly !== undefined) {
                     document.getElementById('filter-starred').checked = filters.starredOnly;
                 }
-                if (filters.evidence === 'all' || filters.evidence === 'multibyte') {
+                if (['all', 'multibyte', 'neighbors'].includes(filters.evidence)) {
                     document.getElementById('filter-evidence').value = filters.evidence;
                 }
                 if (filters.colorMode === 'age' || filters.colorMode === 'heat') {
@@ -2134,6 +2139,10 @@
                         ${evidenceLabel ? `<tr>
                             <td style="padding: 2px 8px 2px 0; color: #888;"><strong>Evidence:</strong></td>
                             <td style="padding: 2px 0;">${evidenceLabel}</td>
+                        </tr>` : ''}
+                        ${isNeighborEdge(edge) && formatSnr(edge.best_snr) ? `<tr>
+                            <td style="padding: 2px 8px 2px 0; color: #888;"><strong>Best SNR:</strong></td>
+                            <td style="padding: 2px 0;">${formatSnr(edge.best_snr)}${formatSnr(edge.last_snr) ? ` (last ${formatSnr(edge.last_snr)})` : ''}</td>
                         </tr>` : ''}
                         <tr>
                             <td style="padding: 2px 8px 2px 0; color: #888;"><strong>Distance:</strong></td>
@@ -3151,7 +3160,12 @@
 
     // Shared edge width: log-scaled, capped so heavy edges don't blanket dense areas
     function getEdgeWeight(edge) {
-        return Math.max(1, Math.min(5, Math.log10(Math.max(1, edge.observation_count || 1)) * 1.5));
+        const weight = Math.max(1, Math.min(5, Math.log10(Math.max(1, edge.observation_count || 1)) * 1.5));
+        // Confirmed zero-hop links are the strongest evidence class, but they
+        // accumulate observations slowly (one per cycle, cycles are >=12h apart).
+        // Without a floor an inferred edge seen thousands of times would always
+        // outweigh a directly measured one, which inverts the confidence order.
+        return isNeighborEdge(edge) ? Math.max(weight, 3) : weight;
     }
 
     function getMapEdgeWeight(edge) {

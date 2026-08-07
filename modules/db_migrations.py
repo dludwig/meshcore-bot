@@ -715,6 +715,66 @@ def _m0021_daily_rollup_packet_type_encoding(cursor: sqlite3.Cursor) -> None:
     _add_column(cursor, "daily_rollup", "packet_type_encoding", "TEXT")
 
 
+def _m0022_neighbor_tables(cursor: sqlite3.Cursor) -> None:
+    """Tables for zero-hop neighbor discovery (see modules/neighbors_discovery.py).
+
+    A discover response is the strongest link evidence this codebase has: a
+    confirmed direct RF reception between two *full* 32-byte public keys, with a
+    measured SNR. Every other edge source is weaker — ``observed_paths`` carries
+    1–3 byte prefixes and no keys, and ``complete_contact_tracking.hop_count``
+    over-claims zero-hop. So these keep the full keys rather than prefixes, and
+    stay separate from ``mesh_connections``, which cannot represent provenance
+    (its ``confirmed_2byte`` flag is memory-only and never persisted).
+
+    Two tables because they answer different questions: ``neighbor_links`` is the
+    current adjacency the mesh graph reads, ``neighbor_observations`` is the
+    per-cycle history a signal trend needs. SNR is stored as sum+count rather
+    than a mean, matching ``daily_rollup``, so any window re-aggregates exactly.
+
+    Index names are database-global in SQLite (see the note on migration 20), so
+    every name here is table-qualified.
+    """
+    cursor.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS neighbor_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            self_public_key TEXT NOT NULL,
+            neighbor_public_key TEXT NOT NULL,
+            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            observation_count INTEGER DEFAULT 1,
+            snr_sum REAL DEFAULT 0,
+            snr_count INTEGER DEFAULT 0,
+            best_snr REAL,
+            last_snr REAL,
+            last_status TEXT,
+            scopes TEXT,
+            UNIQUE(self_public_key, neighbor_public_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS neighbor_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            observed_at TIMESTAMP NOT NULL,
+            self_public_key TEXT NOT NULL,
+            neighbor_public_key TEXT NOT NULL,
+            snr REAL,
+            heard_secs_ago INTEGER,
+            scopes TEXT,
+            status TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_neighbor_links_last_seen
+            ON neighbor_links(last_seen);
+        CREATE INDEX IF NOT EXISTS idx_neighbor_links_neighbor
+            ON neighbor_links(neighbor_public_key);
+        CREATE INDEX IF NOT EXISTS idx_neighbor_observations_observed_at
+            ON neighbor_observations(observed_at);
+        CREATE INDEX IF NOT EXISTS idx_neighbor_observations_neighbor
+            ON neighbor_observations(neighbor_public_key, observed_at);
+        """
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -743,6 +803,7 @@ MIGRATIONS: list[MigrationEntry] = [
     (19, "packet_stream: denormalized packet dimensions", _m0019_packet_stream_denorm_dims),
     (20, "mesh_connections: table-specific last_seen index", _m0020_mesh_connections_last_seen_index),
     (21, "daily_rollup: per-payload-type multibyte split", _m0021_daily_rollup_packet_type_encoding),
+    (22, "neighbor discovery tables", _m0022_neighbor_tables),
 ]
 
 

@@ -51,11 +51,11 @@ test-no-cov: $(VENV)/bin/python
 # ---------------------------------------------------------------------------
 
 lint: $(VENV)/bin/python
-	$(RUFF) check modules/ tests/
+	$(RUFF) check .
 	$(MYPY) modules/
 
 fix: $(VENV)/bin/python
-	$(RUFF) check --fix modules/ tests/
+	$(RUFF) check --fix .
 
 # ---------------------------------------------------------------------------
 # Packaging

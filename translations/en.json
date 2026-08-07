@@ -165,6 +165,10 @@
     "advert": [
       "advert"
     ],
+    "neighbors": [
+      "neighbors",
+      "neighbours"
+    ],
     "multitest": [
       "multitest",
       "mt"
@@ -406,6 +410,18 @@
       "cooldown_active": "Advert cooldown active. Please wait {minutes} more minutes before requesting another advert.",
       "success": "Flood advert sent successfully!",
       "error": "Error sending flood advert: {error}"
+    },
+    "neighbors": {
+      "description": "Runs a zero-hop neighbour discovery cycle (DM only)",
+      "disabled": "Neighbour discovery is not enabled. Set neighbors_enabled = true in the PacketCapture config.",
+      "busy": "A neighbour discovery cycle is already running. Try again once it finishes.",
+      "cooldown_active": "A neighbour discovery cycle ran recently. Please wait about {minutes} more minute(s) - discovery costs airtime for the whole mesh.",
+      "started": "Discovering neighbours - listening for about {seconds}s. I'll report back when done.",
+      "success": "Heard {count} neighbour(s), best SNR {best_snr}. Recorded {recorded} link(s).",
+      "published": "Published to {succeeded}/{attempted} broker(s).",
+      "none": "Discovery finished but no repeaters answered. Nothing is in direct range right now.",
+      "failed": "Neighbour discovery did not run: {reason}.",
+      "error": "Error running neighbour discovery: {error}"
     },
     "path": {
       "description": "Decode hex path data to show which repeaters were involved in message routing",

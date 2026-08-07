@@ -125,6 +125,11 @@ function successfulResponse(data) {
 test('loadContactsData sends bounded server-side list parameters', async () => {
     const { context, elements, Manager } = loadManagerClass();
     elements.set('contacts-timespan', fakeElement({ value: '30d' }));
+    elements.set('contacts-path-bytes', fakeElement({ value: '2' }));
+    elements.set('contacts-device-role', fakeElement({ value: 'repeater' }));
+    elements.set('contacts-hop-filter', fakeElement({ value: '2' }));
+    elements.set('contacts-location-filter', fakeElement({ value: 'known' }));
+    elements.set('contacts-starred-filter', fakeElement({ value: 'yes' }));
     const manager = bareManager(Manager);
     manager.currentPage = 3;
     manager.searchTerm = 'alpha';
@@ -161,6 +166,11 @@ test('loadContactsData sends bounded server-side list parameters', async () => {
     assert.equal(url.searchParams.get('page'), '3');
     assert.equal(url.searchParams.get('page_size'), '100');
     assert.equal(url.searchParams.get('search'), 'alpha');
+    assert.equal(url.searchParams.get('path_bytes'), '2');
+    assert.equal(url.searchParams.get('device_role'), 'repeater');
+    assert.equal(url.searchParams.get('hop_filter'), '2');
+    assert.equal(url.searchParams.get('location_filter'), 'known');
+    assert.equal(url.searchParams.get('starred'), 'yes');
     assert.equal(url.searchParams.get('sort'), 'distance');
     assert.equal(url.searchParams.get('direction'), 'asc');
     assert.equal(manager.filteredData.length, 1);
@@ -170,6 +180,11 @@ test('loadContactsData sends bounded server-side list parameters', async () => {
 test('a newer contacts request aborts the stale request', async () => {
     const { context, elements, Manager } = loadManagerClass();
     elements.set('contacts-timespan', fakeElement({ value: '30d' }));
+    elements.set('contacts-path-bytes', fakeElement({ value: '' }));
+    elements.set('contacts-device-role', fakeElement({ value: '' }));
+    elements.set('contacts-hop-filter', fakeElement({ value: '' }));
+    elements.set('contacts-location-filter', fakeElement({ value: '' }));
+    elements.set('contacts-starred-filter', fakeElement({ value: '' }));
     const manager = bareManager(Manager);
     manager.setLoadingState = () => {};
     manager.updateSortIcons = () => {};
@@ -208,6 +223,65 @@ test('a newer contacts request aborts the stale request', async () => {
     assert.equal(signals[1].aborted, false);
 });
 
+test('updateSortIcons leaves the hops info tip alone', () => {
+    const { context, Manager } = loadManagerClass();
+    const sortIcon = fakeElement({ className: 'fas fa-sort sort-icon' });
+    const infoIcon = fakeElement({ className: 'fas fa-info-circle' });
+    const hopsHeader = fakeElement({
+        classList: {
+            remove(name) {
+                this._removed = name;
+            },
+            add(name) {
+                this._added = name;
+            },
+        },
+        querySelector(selector) {
+            if (selector === '.sort-icon') return sortIcon;
+            if (selector === 'i') return sortIcon;
+            return null;
+        },
+        querySelectorAll(selector) {
+            if (selector === '.sort-icon') return [sortIcon];
+            if (selector === 'i') return [sortIcon, infoIcon];
+            return [];
+        },
+    });
+    const otherHeader = fakeElement({
+        classList: {
+            remove() {},
+            add() {},
+        },
+        querySelector() {
+            return null;
+        },
+        querySelectorAll() {
+            return [];
+        },
+    });
+
+    context.document.querySelectorAll = selector => {
+        if (selector === '.sortable .sort-icon') return [sortIcon];
+        if (selector === '.sortable i') return [sortIcon, infoIcon];
+        if (selector === '.sortable') return [hopsHeader, otherHeader];
+        return [];
+    };
+    context.document.querySelector = selector => {
+        if (selector === '[data-sort="hop_count"]') return hopsHeader;
+        return null;
+    };
+
+    const manager = bareManager(Manager);
+    manager.sortColumn = 'hop_count';
+    manager.sortDirection = 'asc';
+    manager.syncMobileSortSelect = () => {};
+    manager.updateSortIcons();
+
+    assert.equal(sortIcon.className, 'fas fa-sort-up sort-icon');
+    assert.equal(infoIcon.className, 'fas fa-info-circle');
+    assert.equal(hopsHeader.classList._added, 'sort-active');
+});
+
 test('search is debounced before reloading the first page', () => {
     const { context, elements, Manager } = loadManagerClass();
     const requiredIds = [
@@ -215,6 +289,12 @@ test('search is debounced before reloading the first page', () => {
         'refresh-contacts',
         'search-contacts',
         'contacts-timespan',
+        'contacts-path-bytes',
+        'contacts-device-role',
+        'contacts-hop-filter',
+        'contacts-location-filter',
+        'contacts-starred-filter',
+        'contacts-clear-filters',
         'contacts-timespan-mobile-menu',
         'bulk-delete-contacts',
         'contacts-list-panel',

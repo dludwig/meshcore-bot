@@ -411,6 +411,10 @@ solar
 - HF band conditions (Open/Closed/Marginal)
 - Solar activity summary
 
+Data comes from HamQSL and NOAA SWPC. For the provenance of the underlying
+`modules/solar_conditions.py` implementation, see
+[Solar conditions rewrite provenance](solar-conditions-provenance.md).
+
 ---
 
 ### `solarforecast` or `sf`

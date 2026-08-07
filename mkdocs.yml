@@ -36,8 +36,6 @@ plugins:
   - exclude:
       glob:
         - local/**
-        # Internal development log, not user-facing documentation.
-        - integration/**
 
 markdown_extensions:
   - pymdownx.superfences
@@ -81,3 +79,5 @@ nav:
     - Feed Management: FEEDS.md
   - FAQ: faq.md
   - Upgrade: upgrade.md
+  - Project:
+    - Solar conditions provenance: solar-conditions-provenance.md
