@@ -6,7 +6,15 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from modules.message_handler import MessageHandler
+from modules.message_handler import (
+    RF_MATCH_EXACT,
+    RF_MATCH_FALLBACK,
+    RF_MATCH_KEY,
+    RF_MATCH_PARTIAL,
+    RF_MATCH_PUBKEY,
+    MessageHandler,
+    rf_data_is_correlated,
+)
 from modules.models import MeshMessage
 from tests.conftest import mock_message as make_message
 
@@ -364,7 +372,7 @@ class TestFindRecentRfData:
         entry = self._rf_entry(age=1)
         handler.recent_rf_data = [entry]
         result = handler.find_recent_rf_data()
-        assert result is entry
+        assert result == {**entry, RF_MATCH_KEY: RF_MATCH_FALLBACK}
 
     def test_exact_packet_prefix_match(self, handler):
         handler.rf_data_timeout = 30
@@ -372,7 +380,7 @@ class TestFindRecentRfData:
         other = self._rf_entry(age=2, packet_prefix="00000000000000000000000000000000")
         handler.recent_rf_data = [target, other]
         result = handler.find_recent_rf_data("deadbeefdeadbeef1234567890abcdef")
-        assert result is target
+        assert result == {**target, RF_MATCH_KEY: RF_MATCH_EXACT}
 
     def test_exact_pubkey_prefix_match(self, handler):
         handler.rf_data_timeout = 30
@@ -380,7 +388,7 @@ class TestFindRecentRfData:
         other = self._rf_entry(age=2, pubkey_prefix="1111", packet_prefix="")
         handler.recent_rf_data = [target, other]
         result = handler.find_recent_rf_data("abcd")
-        assert result is target
+        assert result == {**target, RF_MATCH_KEY: RF_MATCH_PUBKEY}
 
     def test_partial_packet_prefix_match(self, handler):
         handler.rf_data_timeout = 30
@@ -389,7 +397,7 @@ class TestFindRecentRfData:
         target = self._rf_entry(age=1, packet_prefix=long_prefix, pubkey_prefix="")
         handler.recent_rf_data = [target]
         result = handler.find_recent_rf_data(partial_key)
-        assert result is target
+        assert result == {**target, RF_MATCH_KEY: RF_MATCH_PARTIAL}
 
     def test_no_key_returns_most_recent(self, handler):
         handler.rf_data_timeout = 30
@@ -406,7 +414,9 @@ class TestFindRecentRfData:
         # With max_age=5, entry is too old
         assert handler.find_recent_rf_data(max_age_seconds=5) is None
         # With max_age=30, entry is visible
-        assert handler.find_recent_rf_data(max_age_seconds=30) is entry
+        assert handler.find_recent_rf_data(max_age_seconds=30) == {
+            **entry, RF_MATCH_KEY: RF_MATCH_FALLBACK,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +676,10 @@ class TestHandleChannelMessage:
         handler.bot.mesh_graph = None
         handler.recent_rf_data = []
         handler.enhanced_correlation = False
+        # No flood_scopes allowlist configured, which is the default. Left as a Mock
+        # this reads as truthy and these tests accidentally exercise the allowlist.
+        handler.bot.command_manager.flood_scope_keys = {}
+        handler.bot.command_manager.flood_scope_allow_global = False
 
     def _make_event(self, payload):
         event = Mock()
@@ -2149,3 +2163,155 @@ class TestZeroHopObservedPathWriter:
         assert kwargs["snr"] == 5.5
         assert kwargs["rssi"] == -77
         assert kwargs["update_rssi"] is True
+
+
+class TestRfCorrelationProvenance:
+    """Issue #80: a fallback correlation is the most recent packet heard, not this
+    message's packet. Its route must never be attributed to the message — doing so
+    recorded multi-hop messages as a single direct hop and wrote fabricated edges
+    into the mesh graph."""
+
+    def test_correlated_matches_are_attributable(self):
+        for kind in (RF_MATCH_EXACT, RF_MATCH_PUBKEY, RF_MATCH_PARTIAL):
+            assert rf_data_is_correlated({RF_MATCH_KEY: kind}) is True
+
+    def test_fallback_is_not_attributable(self):
+        assert rf_data_is_correlated({RF_MATCH_KEY: RF_MATCH_FALLBACK}) is False
+
+    def test_missing_marker_is_treated_as_not_attributable(self):
+        """Fail closed: an untagged dict must not be trusted with a route."""
+        assert rf_data_is_correlated({"snr": 5}) is False
+
+    def test_none_is_not_attributable(self):
+        assert rf_data_is_correlated(None) is False
+
+    def test_fallback_result_is_tagged_as_such(self, handler):
+        handler.rf_data_timeout = 30
+        entry = {
+            "timestamp": time.time() - 1,
+            "snr": 5,
+            "rssi": -80,
+            "packet_prefix": "aabbccdd",
+            "pubkey_prefix": "1122",
+        }
+        handler.recent_rf_data = [entry]
+        # Correlation key matches nothing, so this can only be the fallback.
+        result = handler.find_recent_rf_data("ffffffffffffffffffffffffffffffff")
+        assert result[RF_MATCH_KEY] == RF_MATCH_FALLBACK
+        assert rf_data_is_correlated(result) is False
+
+    def test_exact_match_is_tagged_as_attributable(self, handler):
+        handler.rf_data_timeout = 30
+        entry = {
+            "timestamp": time.time() - 1,
+            "snr": 5,
+            "rssi": -80,
+            "packet_prefix": "deadbeefdeadbeef1234567890abcdef",
+            "pubkey_prefix": "1122",
+        }
+        handler.recent_rf_data = [entry]
+        result = handler.find_recent_rf_data("deadbeefdeadbeef1234567890abcdef")
+        assert rf_data_is_correlated(result) is True
+
+    def test_tag_does_not_leak_into_the_cache(self):
+        """The cache entry itself must stay clean, or a later lookup inherits a
+        stale provenance tag from an unrelated correlation."""
+        handler = object.__new__(MessageHandler)
+        handler.logger = Mock()
+        handler.rf_data_timeout = 30
+        entry = {"timestamp": time.time() - 1, "packet_prefix": "aa", "pubkey_prefix": "bb"}
+        handler.recent_rf_data = [entry]
+        handler.find_recent_rf_data()
+        assert RF_MATCH_KEY not in entry
+
+
+class TestAmbiguousPrefixIsNotAuthoritative:
+    """A pubkey or partial prefix identifies a sender, not one transmission. When
+    several cached packets share it the match cannot carry a route (#80 follow-up)."""
+
+    @staticmethod
+    def _entry(ts_offset, **over):
+        entry = {
+            "timestamp": time.time() - ts_offset,
+            "snr": 5,
+            "rssi": -80,
+            "packet_prefix": "",
+            "pubkey_prefix": "",
+        }
+        entry.update(over)
+        return entry
+
+    def test_single_pubkey_match_is_authoritative(self, handler):
+        handler.rf_data_timeout = 30
+        handler.recent_rf_data = [self._entry(1, pubkey_prefix="abcd")]
+        result = handler.find_recent_rf_data("abcd")
+        assert result[RF_MATCH_KEY] == RF_MATCH_PUBKEY
+        assert rf_data_is_correlated(result) is True
+
+    def test_several_packets_from_one_sender_are_not_authoritative(self, handler):
+        handler.rf_data_timeout = 30
+        handler.recent_rf_data = [
+            self._entry(9, pubkey_prefix="abcd", snr=1),
+            self._entry(1, pubkey_prefix="abcd", snr=2),
+        ]
+        result = handler.find_recent_rf_data("abcd")
+        assert rf_data_is_correlated(result) is False
+        # Still the newest, so signal figures remain the best available guess.
+        assert result["snr"] == 2
+
+    def test_single_partial_match_is_authoritative(self, handler):
+        handler.rf_data_timeout = 30
+        prefix = "aabbccddeeff0011aabbccddeeff0011"
+        handler.recent_rf_data = [self._entry(1, packet_prefix=prefix)]
+        result = handler.find_recent_rf_data("aabbccddeeff0011" + "f" * 16)
+        assert rf_data_is_correlated(result) is True
+
+    def test_several_partial_matches_are_not_authoritative(self, handler):
+        handler.rf_data_timeout = 30
+        handler.recent_rf_data = [
+            self._entry(9, packet_prefix="aabbccddeeff0011" + "1" * 16),
+            self._entry(1, packet_prefix="aabbccddeeff0011" + "2" * 16),
+        ]
+        result = handler.find_recent_rf_data("aabbccddeeff0011" + "f" * 16)
+        assert rf_data_is_correlated(result) is False
+
+    def test_exact_packet_prefix_stays_authoritative_with_others_present(self, handler):
+        handler.rf_data_timeout = 30
+        exact = "deadbeefdeadbeef1234567890abcdef"
+        handler.recent_rf_data = [
+            self._entry(9, pubkey_prefix="abcd"),
+            self._entry(1, packet_prefix=exact, pubkey_prefix="abcd"),
+        ]
+        result = handler.find_recent_rf_data(exact)
+        assert result[RF_MATCH_KEY] == RF_MATCH_EXACT
+        assert rf_data_is_correlated(result) is True
+
+
+class TestGlobalFloodAuthorization:
+    """'*' in flood_scopes permits unscoped global traffic, not unknown scope, so it
+    needs positive evidence that this message's own packet was ordinary FLOOD."""
+
+    def test_correlated_plain_flood_is_confirmed(self, handler):
+        from modules.enums import RouteType
+
+        rf = {"route_type_int": RouteType.FLOOD.value, RF_MATCH_KEY: RF_MATCH_EXACT}
+        assert handler._is_confirmed_global_flood(rf) is True
+
+    def test_correlated_transport_flood_is_not_global(self, handler):
+        from modules.enums import RouteType
+
+        rf = {"route_type_int": RouteType.TRANSPORT_FLOOD.value, RF_MATCH_KEY: RF_MATCH_EXACT}
+        assert handler._is_confirmed_global_flood(rf) is False
+
+    def test_uncorrelated_flood_is_not_confirmed(self, handler):
+        """A fallback packet's route type says nothing about this message."""
+        from modules.enums import RouteType
+
+        rf = {"route_type_int": RouteType.FLOOD.value, RF_MATCH_KEY: RF_MATCH_FALLBACK}
+        assert handler._is_confirmed_global_flood(rf) is False
+
+    def test_absent_rf_data_is_not_confirmed(self, handler):
+        assert handler._is_confirmed_global_flood(None) is False
+
+    def test_missing_route_type_is_not_confirmed(self, handler):
+        assert handler._is_confirmed_global_flood({RF_MATCH_KEY: RF_MATCH_EXACT}) is False

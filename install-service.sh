@@ -14,7 +14,7 @@
 #   ./install-service.sh          # Normal installation (non-destructive if already installed)
 #   ./install-service.sh --upgrade # Upgrade mode (copies new files, updates dependencies)
 #   ./install-service.sh -u        # Short form of --upgrade
-#   ./install-service.sh -u --install-extras # upgrade + install optional packages (profantiy, geodecoding)"
+#   ./install-service.sh -u --install-extras # upgrade + install optional packages (profanity, geocoding)
 #   ./install-service.sh --update-venv           # Only refresh the venv, in place
 #   ./install-service.sh -u --update-venv        # Upgrade code, reuse the venv
 #
@@ -110,7 +110,7 @@ for arg in "$@"; do
             echo "  $0                     # Normal installation (non-destructive if already installed)"
             echo "  $0 --upgrade           # Upgrade existing installation (rebuilds the venv)"
             echo "  $0 -u                  # Short form of --upgrade"
-            echo "  $0 -u --install-extras # upgrade + install optional packages (profantiy, geodecoding)"
+            echo "  $0 -u --install-extras # Upgrade and install optional packages without prompting"
             echo "  $0 --update-venv       # Refresh dependencies only, keeping the venv"
             echo "  $0 -u --update-venv    # Upgrade code and refresh the venv in place"
             exit 0
@@ -820,9 +820,34 @@ fi
 
 # Optional extras.  A rebuild starts empty so these have to be re-chosen; an
 # in-place update keeps whatever was installed before, so don't re-prompt.
+# --install-extras installs both sets non-interactively and takes precedence,
+# so an unattended run can top up an in-place venv update too.
 # Always invoke pip via `python -m pip` so a stale shebang cannot break installs.
 VENV_PYTHON="$INSTALL_DIR/venv/bin/python"
-if [[ "$VENV_UPDATED_IN_PLACE" == true ]]; then
+
+install_profanity_packages() {
+    print_info "Installing profanity filter packages..."
+    if "$VENV_PYTHON" -m pip install --quiet "better-profanity>=0.7.0" "unidecode>=1.3.0"; then
+        print_success "Installed profanity filter packages"
+    else
+        print_warning "Failed to install profanity filter packages (non-fatal)"
+    fi
+}
+
+install_geocoding_packages() {
+    print_info "Installing geocoding extras..."
+    if "$VENV_PYTHON" -m pip install --quiet "pycountry>=23.12.0" "us>=2.0.0"; then
+        print_success "Installed geocoding extras"
+    else
+        print_warning "Failed to install geocoding extras (non-fatal)"
+    fi
+}
+
+if [[ "$INSTALL_EXTRAS" == true ]]; then
+    print_info "Installing optional feature packages (--install-extras)"
+    install_profanity_packages
+    install_geocoding_packages
+elif [[ "$VENV_UPDATED_IN_PLACE" == true ]]; then
     print_info "Kept any optional packages already installed in the virtualenv"
 elif [[ "$INSTALL_EXTRAS" == true ]]; then
     print_info "Installing profanity filter packages..."
@@ -845,23 +870,13 @@ else
     echo ""
 
     if ask_yes_no "Install profanity filter packages? (recommended if using the profanity filter feature)" "n"; then
-        print_info "Installing profanity filter packages..."
-        if "$VENV_PYTHON" -m pip install --quiet "better-profanity>=0.7.0" "unidecode>=1.3.0"; then
-            print_success "Installed profanity filter packages"
-        else
-            print_warning "Failed to install profanity filter packages (non-fatal)"
-        fi
+        install_profanity_packages
     else
         print_info "Skipping profanity filter packages"
     fi
 
     if ask_yes_no "Install geocoding extras? (recommended if using location/path commands)" "n"; then
-        print_info "Installing geocoding extras..."
-        if "$VENV_PYTHON" -m pip install --quiet "pycountry>=23.12.0" "us>=2.0.0"; then
-            print_success "Installed geocoding extras"
-        else
-            print_warning "Failed to install geocoding extras (non-fatal)"
-        fi
+        install_geocoding_packages
     else
         print_info "Skipping geocoding extras"
     fi

@@ -153,6 +153,11 @@ rate_limit_seconds = 10
 # per-channel limits and bot_tx_rate_limit_seconds still apply.
 scheduled_message_max_stagger_seconds = 1.5
 
+# Seconds a {cmd:...} placeholder in a [Scheduled_Messages] entry may take to render
+# before it is abandoned and substituted with nothing. Commands that reach the network
+# (wx, aqi) need headroom; the scheduled send itself is still bounded by send_timeout_seconds.
+scheduled_command_timeout_seconds = 30
+
 # Bot transmission rate limit in seconds between bot messages
 # Prevents bot from overwhelming the mesh network
 bot_tx_rate_limit_seconds = 1.0
@@ -521,6 +526,37 @@ category.funfact = fun
 # Newlines: use \n in the message for a line break (e.g. general:Line one\nLine two).
 # Literal backslash: use \\n for backslash+n; \\t for tab.
 #
+#
+# Command output placeholder:
+#
+# {cmd:<command> [args]} runs a bot command and substitutes its reply text, so any
+# command can be broadcast on a schedule without that command needing its own
+# scheduling settings. The command runs for its text only and transmits nothing
+# itself; the scheduled message carries the result.
+#
+#   0 6,12,18 * * * = Public:{cmd:wx Seattle}
+#       Forecast for Seattle at 06:00, 12:00 and 18:00.
+#   */30 * * * *    = Public:Conditions: {cmd:wx 98101}
+#       Every 30 minutes, with surrounding text.
+#   @hourly         = Public:{cmd:aqi Tacoma}
+#
+# The command name is matched against command names and their keywords, so
+# {cmd:weather Seattle} and {cmd:wx Seattle} are equivalent. Arguments are passed
+# exactly as a user would type them after the keyword.
+#
+# A placeholder expands to nothing (and logs a warning) when the command is unknown,
+# disabled, admin-only, times out, or produces no output — the raw {cmd:...} text is
+# never put on the air. If expansion leaves the message empty, nothing is sent.
+# Command output is not re-scanned, so a reply containing {cmd:...} cannot recurse.
+#
+# Airtime guards (both deliberate, neither configurable):
+#   - A schedule containing {cmd:...} must not fire more often than every 15 minutes.
+#     An entry that does is rejected at startup with an error and is not scheduled.
+#     Measured by the tightest gap, so "0,1 * * * *" counts as every 60 seconds.
+#     Schedules without a command placeholder are unaffected.
+#   - The command's own cooldown still applies. If it is on cooldown when the schedule
+#     fires, the placeholder expands to nothing that round.
+#
 # Available placeholders for mesh network information:
 #
 # Total counts (ever heard):
@@ -643,6 +679,20 @@ forecast_solar_api_key =
 # Repeater prefix API URL for prefix command
 # Leave empty to disable prefix command functionality
 # Configure your own regional API endpoint
+repeater_prefix_api_url =
+# Optional external repeater-prefix API for the prefix command.
+#
+# LEAVE THIS EMPTY unless you run your own endpoint. Empty does NOT disable the
+# prefix command: the bot answers from its own database of heard repeaters, which
+# is the normal setup. The API only augments that with node counts from a wider
+# regional dataset; location details still come from the local database.
+#
+# This dates from when the project fetched repeater data from map.w0z.is, which is
+# defunct. There is no drop-in public replacement. To serve your own, return JSON:
+#   {"data": [{"prefix": "AB", "node_count": 3, "node_names": ["Node One", ...]}, ...]}
+# Fetched with a plain GET, must answer HTTP 200 with that JSON, 10s timeout.
+# "prefix" is upper-cased by the bot; "node_count" is an int; "node_names" a list.
+# Responses are cached for repeater_prefix_cache_hours below.
 repeater_prefix_api_url =
 
 # Repeater prefix cache duration in hours
@@ -985,10 +1035,17 @@ require_path_bytes_failure_response =
 # false: Only respond to "path", "decode", or "route" keywords
 enable_p_shortcut = true
 
-# Optional first line prepended to path command RF replies (Python str.format on the triggering message).
+# Optional first line prepended to path command RF replies.
 # Placeholders match keyword-style responses: {sender}, {connection_info}, {path},
-# {hops}, {hops_label}, {timestamp}, {snr}, {rssi}. Only the first RF chunk includes the prefix when the reply is split.
+# {hops}, {hops_label}, {timestamp}, {snr}, {rssi}, plus {path_distance}.
+# {path_distance} is the total distance travelled (sender -> hops -> bot), e.g. "12.4km".
+# It renders empty unless every node in the chain has known coordinates and the bot has
+# bot_latitude/bot_longitude set, so a partial sum is never mistaken for the full distance.
+# Feed-style pipe filters are supported (same engine as [Test_Command] response_format),
+# so a label can disappear along with an empty value.
+# Only the first RF chunk includes the prefix when the reply is split.
 # Example: @[{sender}]
+# Example: {path_distance|prefix_if_nonempty:\U0001F4CF }
 reply_prefix =
 
 # Bytes per hop required before resolving repeater names from the database.
@@ -1859,6 +1916,10 @@ auth_token_method = device
 # Example: SEA, LAX, JFK, etc.
 # Default: XYZ (invalid if not set)
 iata = XYZ
+
+# Optional observer name used in MQTT packet/status payloads.
+# If unset, the connected device/bot name is used.
+observer_name =
 
 # MQTT Broker Configuration
 # You can configure multiple MQTT brokers by using mqtt1_*, mqtt2_*, mqtt3_*, etc.

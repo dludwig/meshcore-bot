@@ -8,6 +8,25 @@ semantic versioning.
 
 ### Fixed
 
+- The web viewer's radio **Disconnect** button is now **Stop Bot** and asks for
+  confirmation first (#240). It never was a radio-only disconnect: the main loop runs
+  while the bot is connected, so disconnecting ended the process, which surprised at
+  least one operator running under `tmux` with nothing to restart it. The confirmation
+  spells out that the bot stops completely and only returns if systemd or Docker
+  restarts it.
+- Corrected the `[External_Data] repeater_prefix_api_url` comment, which claimed that
+  leaving it empty "disables prefix command functionality" (#70). Empty is the normal
+  setup: the prefix command answers from the bot's own database. The option only adds
+  an optional external dataset, and its JSON contract is now documented.
+- `message_stats.path` no longer reports another packet's route (#80). When RF
+  correlation failed, `find_recent_rf_data` fell back to the most recent packet in the
+  cache, and the caller attributed that packet's route to the message — which is how a
+  multi-hop message was occasionally recorded as a single direct hop. Correlation
+  results are now tagged with how they were matched, and an uncorrelated fallback is no
+  longer allowed to supply a route for either channel messages or DMs. The route is
+  left unresolved instead of being fabricated. This also stopped a wrong edge being
+  written to the mesh graph, and stopped the `path` command receiving another packet's
+  `routing_info`. SNR and RSSI still use the fallback as before.
 - Dashboard **One-hop neighbours** now lists radios this node heard directly
   (MeshCore hop count 0: empty RF path), not originators of 1-hop relayed
   adverts. Empty-path adverts are stored in `observed_paths` with SNR/RSSI;
@@ -18,11 +37,76 @@ semantic versioning.
   endpoint is `https://api.adsb.lol/v2/`; existing `api_url` values pointing
   at `api.airplanes.live` are remapped automatically. Local readsb URLs are
   unchanged.
+- `cmd` no longer lists commands that are disabled in `config.ini`. Commands
+  with no `[<Name>_Command]` section at all are still listed, as before.
+- Stale-contact cleanup no longer retries forever (#176). When the device refuses to
+  remove a contact the contact stays in the list, so every sweep re-selected it and
+  logged the same failure again — hundreds of `Failed to remove stale contact` warnings
+  that only a restart cleared. A contact is now dropped from cleanup after
+  3 consecutive refusals, with one summary warning explaining that the list may stay
+  near its limit. A successful removal clears the count.
+- Contacts whose device clock was never set are no longer treated as stale. MeshCore
+  seeds an unset clock with a hardcoded time — `1715770351` (15 May 2024) or
+  `1772323200` (1 Mar 2026) — so a never-synced node advertises that seed rather than
+  a real observation. The bot read it as extreme staleness, which put unsynced but
+  perfectly active contacts at the top of the removal list, consuming the whole
+  per-sweep budget and repeatedly trying to evict live nodes. This is what the
+  `722 days ago` entries in #176 were: the 15 May 2024 seed, not contacts last heard
+  in 2024. A raw `0` (decoding to 1970) is covered too, and genuine adverts near a
+  seed are unaffected.
+- The same unset-clock check now guards every purge path, not just stale-contact
+  cleanup. `_get_repeaters_for_purging`, `_get_companions_for_purging` and
+  `purge_old_repeaters` all ranked an unset clock as maximum age, so an active node
+  that had never been time-synced was the *first* candidate for eviction. Unknown
+  staleness is no longer grounds for removal.
+
+### Changed
+
+- Web viewer navigation is grouped: Radio, Scheduled Messages, Greeter, Feeds, Plugins
+  and Configuration now sit under a single **Settings** gear menu, leaving Dashboard,
+  Real-time, Contacts, Mesh Graph and Logs on the bar. The current page is highlighted,
+  including the gear when a settings page is open.
 
 ### Added
 
+- **Scheduled messages can be managed from the web viewer** (#174). A new Schedule page
+  lists every `[Scheduled_Messages]` entry with its next run time and offers add, edit
+  and delete. Changes are written to `config.ini` and applied by a queued config reload,
+  so no restart is needed. The schedule builder composes the cron key from plain-language
+  options and previews the next five runs; entries the bot cannot run are shown as
+  **Not scheduled** with the reason rather than hidden. It edits the same config section
+  the bot already uses, so there is no second source of truth.
+- Documented installing with `pipx`, which sidesteps PEP 668 on Debian 12+, Ubuntu
+  23.04+, Fedora and Arch (#222), including where `config.ini`, the database and
+  `local/` live — everything resolves relative to the config file's directory, so an
+  absolute `--config` is what makes a pipx install deterministic.
 - Migration 23: nullable `snr` / `rssi` columns on `observed_paths` for
   zero-hop advert rows.
+- `{cmd:<command> [args]}` placeholders in `[Scheduled_Messages]`: a scheduled message
+  can embed the reply of any bot command, so a recurring forecast is
+  `0 6,12,18 * * * = Public:{cmd:wx Seattle}` rather than a per-service schedule
+  setting. The command runs for its text only and transmits nothing itself
+  (`CommandManager.render_command_output`); unknown, disabled, admin-only, timing-out
+  and silent commands expand to nothing rather than airing raw placeholder text.
+  Bounded by the new `[Bot] scheduled_command_timeout_seconds` (default 30). Two
+  non-configurable airtime guards apply: a schedule using `{cmd:...}` must not fire
+  more often than every 15 minutes (rejected at startup, measured by the tightest gap
+  so `0,1 * * * *` counts as 60 seconds), and the command's own `cooldown_seconds` is
+  still enforced.
+- `{path_distance}` is now available in the path command's `[Path_Command] reply_prefix`,
+  reporting total distance travelled (sender → hops → bot, e.g. `12.4km`) and rendering
+  empty when any node in the chain has no usable coordinates. The prefix now supports the
+  same pipe filters as the test command's `response_format`, so
+  `{path_distance|prefix_if_nonempty:📏 }` drops the label along with the value.
+- `install-service.sh --install-extras` installs the optional profanity-filter and
+  geocoding packages without prompting, for unattended installs and upgrades. It
+  takes precedence over the in-place `--update-venv` path, so the two can be
+  combined.
+- `[PacketCapture] observer_name` — an optional name reported as the `origin` of
+  MQTT packet and status payloads. It lets the observer/analyzer identity differ
+  from the MeshCore RF node, which is useful when one bot name is already taken
+  by the radio's advertised name. Unset (the default) keeps the previous
+  behavior: the connected device name, falling back to `[Bot] bot_name`.
 
 ## [1.0.0] — 2026-08-07
 
