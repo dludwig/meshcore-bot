@@ -28,9 +28,7 @@ from ..utils import format_elapsed_display, get_config_timezone
 # render against this translator instead of the bot default.  A ContextVar keeps
 # the override isolated to the current asyncio task, so concurrent commands can
 # each answer in a different language without interfering with one another.
-_response_translator: ContextVar[Optional[Any]] = ContextVar(
-    "meshcore_response_translator", default=None
-)
+_response_translator: ContextVar[Optional[Any]] = ContextVar("meshcore_response_translator", default=None)
 
 
 class BaseCommand(ABC):
@@ -63,7 +61,9 @@ class BaseCommand(ABC):
     short_description: str = ""  # Brief description for website (without usage syntax)
     usage: str = ""  # Usage syntax, e.g., "wx <zipcode|city> [tomorrow|7d|hourly|alerts]"
     examples: list[str] = []  # Example commands, e.g., ["wx 98101", "wx seattle tomorrow"]
-    parameters: list[dict[str, str]] = []  # Parameter definitions, e.g., [{"name": "location", "description": "US zip code or city name"}]
+    parameters: list[
+        dict[str, str]
+    ] = []  # Parameter definitions, e.g., [{"name": "location", "description": "US zip code or city name"}]
 
     # Optional machine-readable description of this command's configurable
     # settings, used by the web viewer to render typed widgets and validate
@@ -83,12 +83,8 @@ class BaseCommand(ABC):
         self.allowed_channels = self._load_allowed_channels()
 
         # Cache command prefix settings before aliases (alias normalization uses prefixes)
-        self._command_prefixes, self._require_command_prefix = load_command_prefix_settings(
-            self.bot.config
-        )
-        self._command_prefix = (
-            self._command_prefixes[0] if self._command_prefixes else ''
-        )
+        self._command_prefixes, self._require_command_prefix = load_command_prefix_settings(self.bot.config)
+        self._command_prefix = self._command_prefixes[0] if self._command_prefixes else ""
 
         # Load aliases from this command's config section and extend keywords
         self._load_aliases_from_config()
@@ -106,7 +102,7 @@ class BaseCommand(ABC):
         Returns:
             str: Translated string, or key if translation not found.
         """
-        translator = _response_translator.get() or getattr(self.bot, 'translator', None)
+        translator = _response_translator.get() or getattr(self.bot, "translator", None)
         if translator is not None:
             return translator.translate(key, **kwargs)
         # Fallback if translator not available
@@ -121,7 +117,7 @@ class BaseCommand(ABC):
         Returns:
             Any: The value at the key path, or None if not found.
         """
-        translator = _response_translator.get() or getattr(self.bot, 'translator', None)
+        translator = _response_translator.get() or getattr(self.bot, "translator", None)
         if translator is not None:
             return translator.get_value(key)
         return None
@@ -141,32 +137,29 @@ class BaseCommand(ABC):
             A language code to switch to, or None to use the default translator.
         """
         try:
-            if not self.bot.config.getboolean(
-                'Localization', 'auto_detect_language', fallback=False
-            ):
+            if not self.bot.config.getboolean("Localization", "auto_detect_language", fallback=False):
                 return None
         except (ValueError, AttributeError):
             return None
 
-        if not getattr(message, 'content', None):
+        if not getattr(message, "content", None):
             return None
 
-        get_translator = getattr(self.bot, 'get_translator', None)
-        available = getattr(self.bot, 'available_languages', None)
+        get_translator = getattr(self.bot, "get_translator", None)
+        available = getattr(self.bot, "available_languages", None)
         if get_translator is None or available is None:
             return None  # bot without caching support (e.g. dummy translator)
 
         current = str(
-            getattr(self.bot.translator, 'base_language', None)
-            or getattr(self.bot.translator, 'language', 'en')
-            or 'en'
+            getattr(self.bot.translator, "base_language", None)
+            or getattr(self.bot.translator, "language", "en")
+            or "en"
         )
         try:
             from ..lang_detector import detect_language
+
             text = self._strip_mentions(message.content)
-            detected = detect_language(
-                text, supported=available(), fallback=current
-            )
+            detected = detect_language(text, supported=available(), fallback=current)
         except Exception as e:  # pragma: no cover - detection must never break a reply
             self.logger.debug(f"Language detection failed: {e}")
             return None
@@ -199,7 +192,7 @@ class BaseCommand(ABC):
             if token is not None:
                 _response_translator.reset(token)
 
-    def get_config_value(self, section: str, key: str, fallback: Any = None, value_type: str = 'str') -> Any:
+    def get_config_value(self, section: str, key: str, fallback: Any = None, value_type: str = "str") -> Any:
         """Get config value with backward compatibility for section name changes.
 
         For command configs, checks both old format (e.g., 'Hacker') and new format (e.g., 'Hacker_Command').
@@ -216,18 +209,18 @@ class BaseCommand(ABC):
         """
         # Map of old section names to new standardized names
         section_migration = {
-            'Hacker': 'Hacker_Command',
-            'Sports': 'Sports_Command',
-            'Stats': 'Stats_Command',
-            'Weather': 'Wx_Command',  # wx command reads from [Wx_Command]; [Weather] is legacy
+            "Hacker": "Hacker_Command",
+            "Sports": "Sports_Command",
+            "Stats": "Stats_Command",
+            "Weather": "Wx_Command",  # wx command reads from [Wx_Command]; [Weather] is legacy
         }
         # Legacy [Jokes] -> [Joke_Command] / [DadJoke_Command]: (requested_section, key) -> legacy section
         legacy_section_fallback = {
-            ('Joke_Command', 'joke_enabled'): 'Jokes',
-            ('Joke_Command', 'seasonal_jokes'): 'Jokes',
-            ('Joke_Command', 'long_jokes'): 'Jokes',
-            ('DadJoke_Command', 'dadjoke_enabled'): 'Jokes',
-            ('DadJoke_Command', 'long_jokes'): 'Jokes',
+            ("Joke_Command", "joke_enabled"): "Jokes",
+            ("Joke_Command", "seasonal_jokes"): "Jokes",
+            ("Joke_Command", "long_jokes"): "Jokes",
+            ("DadJoke_Command", "dadjoke_enabled"): "Jokes",
+            ("DadJoke_Command", "long_jokes"): "Jokes",
         }
 
         # Determine old and new section names
@@ -255,17 +248,17 @@ class BaseCommand(ABC):
                     raw_value = self.bot.config.get(sec, key)
 
                     # Type conversion
-                    if value_type == 'str':
+                    if value_type == "str":
                         value = raw_value
-                    elif value_type == 'bool':
+                    elif value_type == "bool":
                         value = self.bot.config.getboolean(sec, key, fallback=fallback)
-                    elif value_type == 'int':
+                    elif value_type == "int":
                         value = self.bot.config.getint(sec, key, fallback=fallback)
-                    elif value_type == 'float':
+                    elif value_type == "float":
                         value = self.bot.config.getfloat(sec, key, fallback=fallback)
-                    elif value_type == 'list':
+                    elif value_type == "list":
                         # Parse comma-separated list
-                        value = [item.strip() for item in raw_value.split(',') if item.strip()]
+                        value = [item.strip() for item in raw_value.split(",") if item.strip()]
                     else:
                         self.logger.warning(f"Unknown value_type '{value_type}' for {sec}.{key}, returning as string")
                         value = raw_value
@@ -274,11 +267,15 @@ class BaseCommand(ABC):
                     if value != fallback or self.bot.config.has_option(sec, key):
                         # Log migration notice on first use of old/legacy section
                         if sec == old_section:
-                            self.logger.info(f"Config migration: Using old section '[{old_section}]' for '{key}'. "
-                                           f"Please update to '[{new_section}]' in config.ini")
+                            self.logger.info(
+                                f"Config migration: Using old section '[{old_section}]' for '{key}'. "
+                                f"Please update to '[{new_section}]' in config.ini"
+                            )
                         elif legacy_sec and sec == legacy_sec:
-                            self.logger.info(f"Config migration: Using old section '[{legacy_sec}]' for '{key}'. "
-                                           f"Please update to '[{new_section}]' in config.ini")
+                            self.logger.info(
+                                f"Config migration: Using old section '[{legacy_sec}]' for '{key}'. "
+                                f"Please update to '[{new_section}]' in config.ini"
+                            )
                         return value
                 except (ValueError, TypeError) as e:
                     self.logger.debug(f"Config conversion error for {sec}.{key}: {e}")
@@ -289,20 +286,20 @@ class BaseCommand(ABC):
 
         # Try legacy enabled aliases (e.g. [Jokes] joke_enabled when requesting
         # Joke_Command enabled); shared map in modules/config_schema.py.
-        aliases = LEGACY_ENABLED_ALIASES.get(section, ()) if key == 'enabled' else ()
+        aliases = LEGACY_ENABLED_ALIASES.get(section, ()) if key == "enabled" else ()
         if aliases:
             for legacy_sec, legacy_key in aliases:
                 if self.bot.config.has_section(legacy_sec) and self.bot.config.has_option(legacy_sec, legacy_key):
                     try:
-                        if value_type == 'bool':
+                        if value_type == "bool":
                             value = self.bot.config.getboolean(legacy_sec, legacy_key, fallback=fallback)
-                        elif value_type == 'int':
+                        elif value_type == "int":
                             value = self.bot.config.getint(legacy_sec, legacy_key, fallback=fallback)
-                        elif value_type == 'float':
+                        elif value_type == "float":
                             value = self.bot.config.getfloat(legacy_sec, legacy_key, fallback=fallback)
-                        elif value_type == 'list':
+                        elif value_type == "list":
                             raw = self.bot.config.get(legacy_sec, legacy_key)
-                            value = [item.strip() for item in raw.split(',') if item.strip()]
+                            value = [item.strip() for item in raw.split(",") if item.strip()]
                         else:
                             value = self.bot.config.get(legacy_sec, legacy_key)
                         return value
@@ -347,40 +344,40 @@ class BaseCommand(ABC):
         """
         # Start with class attribute defaults
         usage_info = {
-            'description': self.description or "No description available",
-            'short_description': self.short_description or "",
-            'usage': self.usage or "",
-            'subcommands': [],
-            'examples': list(self.examples) if self.examples else [],
-            'parameters': list(self.parameters) if self.parameters else []
+            "description": self.description or "No description available",
+            "short_description": self.short_description or "",
+            "usage": self.usage or "",
+            "subcommands": [],
+            "examples": list(self.examples) if self.examples else [],
+            "parameters": list(self.parameters) if self.parameters else [],
         }
 
         # Try to get structured data from translations (i18n overrides)
-        if hasattr(self.bot, 'translator'):
+        if hasattr(self.bot, "translator"):
             try:
                 # Get subcommands from translations
                 subcommands_key = f"commands.{self.name}.subcommands"
                 subcommands_data = self.translate_get_value(subcommands_key)
                 if subcommands_data and isinstance(subcommands_data, list):
-                    usage_info['subcommands'] = subcommands_data
+                    usage_info["subcommands"] = subcommands_data
 
                 # Get examples from translations (override class attribute)
                 examples_key = f"commands.{self.name}.examples"
                 examples_data = self.translate_get_value(examples_key)
                 if examples_data and isinstance(examples_data, list):
-                    usage_info['examples'] = examples_data
+                    usage_info["examples"] = examples_data
 
                 # Get usage from translations (override class attribute)
                 usage_key = f"commands.{self.name}.usage_syntax"
                 usage_data = self.translate_get_value(usage_key)
                 if usage_data and isinstance(usage_data, str):
-                    usage_info['usage'] = usage_data
+                    usage_info["usage"] = usage_data
 
                 # Get parameters from translations (override class attribute)
                 params_key = f"commands.{self.name}.parameters"
                 params_data = self.translate_get_value(params_key)
                 if params_data and isinstance(params_data, list):
-                    usage_info['parameters'] = params_data
+                    usage_info["parameters"] = params_data
             except Exception as e:
                 self.logger.debug(f"Could not load usage info from translations for {self.name}: {e}")
 
@@ -397,15 +394,15 @@ class BaseCommand(ABC):
         """
         # Special handling for camelCase names
         camel_case_map = {
-            'dadjoke': 'DadJoke',
-            'webviewer': 'WebViewer',
+            "dadjoke": "DadJoke",
+            "webviewer": "WebViewer",
         }
 
         if self.name in camel_case_map:
             base_name = camel_case_map[self.name]
         else:
             # Use title() for regular names
-            base_name = self.name.title().replace('_', '_')
+            base_name = self.name.title().replace("_", "_")
 
         return f"{base_name}_Command"
 
@@ -416,12 +413,12 @@ class BaseCommand(ABC):
             float: Seconds remaining on cooldown below which commands should be queued.
         """
         section = self._derive_config_section_name()
-        threshold = self.get_config_value(section, 'cooldown_queue_threshold_seconds',
-                                         fallback=None, value_type='float')
+        threshold = self.get_config_value(
+            section, "cooldown_queue_threshold_seconds", fallback=None, value_type="float"
+        )
         if threshold is None:
             # Fall back to global config
-            threshold = self.bot.config.getfloat('Bot', 'cooldown_queue_threshold_seconds',
-                                                fallback=5.0)
+            threshold = self.bot.config.getfloat("Bot", "cooldown_queue_threshold_seconds", fallback=5.0)
         return max(0.0, min(threshold, self.cooldown_seconds))
 
     def _load_allowed_channels(self) -> Optional[list[str]]:
@@ -442,16 +439,16 @@ class BaseCommand(ABC):
         section_name = self._derive_config_section_name()
 
         # Try to get channels config
-        channels_str = self.get_config_value(section_name, 'channels', fallback=None, value_type='str')
+        channels_str = self.get_config_value(section_name, "channels", fallback=None, value_type="str")
 
         if channels_str is None:
             return None  # Use global monitor_channels
 
-        if channels_str.strip() == '':
+        if channels_str.strip() == "":
             return []  # Disabled for all channels (DM only)
 
         # Parse comma-separated list
-        channels = [ch.strip() for ch in channels_str.split(',') if ch.strip()]
+        channels = [ch.strip() for ch in channels_str.split(",") if ch.strip()]
         return channels if channels else None
 
     def _normalize_alias_from_config(self, alias: str) -> str:
@@ -468,7 +465,7 @@ class BaseCommand(ABC):
             Normalized trigger stem, or empty string if nothing remains.
         """
         if not alias:
-            return ''
+            return ""
         prefixes = self._command_prefixes
 
         # Legacy / mistaken leading punctuation (prefer stem-only in config)
@@ -479,7 +476,7 @@ class BaseCommand(ABC):
                 break
             matched = find_matching_prefix(alias, prefixes) if prefixes else None
             if matched:
-                alias = alias[len(matched):].strip()
+                alias = alias[len(matched) :].strip()
                 continue
             if not prefixes and alias and alias[0] in decorative:
                 alias = alias[1:].strip()
@@ -502,10 +499,10 @@ class BaseCommand(ABC):
         Each alias is appended to ``self.keywords`` if not already present.
         """
         section_name = self._derive_config_section_name()
-        aliases_str = self.get_config_value(section_name, 'aliases', fallback=None, value_type='str')
+        aliases_str = self.get_config_value(section_name, "aliases", fallback=None, value_type="str")
         if not aliases_str:
             return
-        for alias in aliases_str.split(','):
+        for alias in aliases_str.split(","):
             alias = self._normalize_alias_from_config(alias.strip().lower())
             if not alias:
                 continue
@@ -549,6 +546,7 @@ class BaseCommand(ABC):
         # Normalize allowed channels for comparison (case-insensitive, preserve # prefix)
         allowed_normalized = {ch.lower().strip() for ch in self.allowed_channels}
 
+        # self.logger.warn(f"DJL is_channel_allowed message_channel_normalized {message_channel_normalized}, self.allowed_channels {self.allowed_channels}, { message_channel_normalized in allowed_normalized}")
         # Check if channel matches allowed list
         return message_channel_normalized in allowed_normalized
 
@@ -589,17 +587,17 @@ class BaseCommand(ABC):
             Dict[str, Any]: A dictionary containing metadata about the command.
         """
         return {
-            'name': self.name,
-            'keywords': self.keywords,
-            'description': self.description,
-            'requires_dm': self.requires_dm,
-            'requires_internet': self.requires_internet,
-            'cooldown_seconds': self.cooldown_seconds,
-            'category': self.category,
-            'class_name': self.__class__.__name__,
-            'module_name': self.__class__.__module__,
-            'settings_schema': self.settings_schema,
-            'has_schema': bool(self.settings_schema),
+            "name": self.name,
+            "keywords": self.keywords,
+            "description": self.description,
+            "requires_dm": self.requires_dm,
+            "requires_internet": self.requires_internet,
+            "cooldown_seconds": self.cooldown_seconds,
+            "category": self.category,
+            "class_name": self.__class__.__name__,
+            "module_name": self.__class__.__module__,
+            "settings_schema": self.settings_schema,
+            "has_schema": bool(self.settings_schema),
         }
 
     async def send_response(
@@ -675,27 +673,27 @@ class BaseCommand(ABC):
         # For channel messages, calculate based on bot username length
         # Try to get device username from meshcore first (actual radio username)
         username = None
-        if hasattr(self.bot, 'meshcore') and self.bot.meshcore:
+        if hasattr(self.bot, "meshcore") and self.bot.meshcore:
             try:
-                if hasattr(self.bot.meshcore, 'self_info') and self.bot.meshcore.self_info:
+                if hasattr(self.bot.meshcore, "self_info") and self.bot.meshcore.self_info:
                     self_info = self.bot.meshcore.self_info
                     # Try to get name from self_info (could be dict or object)
                     if isinstance(self_info, dict):
-                        username = self_info.get('name') or self_info.get('user_name')
-                    elif hasattr(self_info, 'name'):
+                        username = self_info.get("name") or self_info.get("user_name")
+                    elif hasattr(self_info, "name"):
                         username = self_info.name
-                    elif hasattr(self_info, 'user_name'):
+                    elif hasattr(self_info, "user_name"):
                         username = self_info.user_name
             except Exception as e:
                 self.logger.debug(f"Could not get username from meshcore.self_info: {e}")
 
         # Fall back to bot_name from config if device username not available
         if not username:
-            username = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
+            username = self.bot.config.get("Bot", "bot_name", fallback="Bot")
 
         # 160 bytes are available for channel messages
         # Calculate max length: 160 - username_length - 2 (for ": ")
-        max_length = max(130, 160 - len(str(username).encode('utf-8')) - 2)
+        max_length = max(130, 160 - len(str(username).encode("utf-8")) - 2)
         if not MeshMessage.is_global_flood_scope(message.effective_outgoing_flood_scope(self.bot)):
             max_length -= CHANNEL_REGIONAL_FLOOD_SCOPE_BODY_OVERHEAD
         return max_length
@@ -741,6 +739,7 @@ class BaseCommand(ABC):
             user_id: User ID to record execution for. If None, records global execution.
         """
         import time
+
         current_time = time.time()
 
         if user_id:
@@ -750,10 +749,7 @@ class BaseCommand(ABC):
             # Clean up old entries periodically to prevent memory growth
             if len(self._user_cooldowns) > 1000:
                 cutoff = current_time - (self.cooldown_seconds * 2)
-                self._user_cooldowns = {
-                    k: v for k, v in self._user_cooldowns.items()
-                    if v > cutoff
-                }
+                self._user_cooldowns = {k: v for k, v in self._user_cooldowns.items() if v > cutoff}
         else:
             # Global cooldown (backward compatibility)
             self._last_execution_time = current_time
@@ -780,7 +776,7 @@ class BaseCommand(ABC):
 
     def _load_translated_keywords(self) -> None:
         """Load translated keywords from translation files"""
-        if not hasattr(self.bot, 'translator'):
+        if not hasattr(self.bot, "translator"):
             self.logger.debug(f"Translator not available for {self.name}, skipping keyword loading")
             return
 
@@ -813,7 +809,7 @@ class BaseCommand(ABC):
             str: The default command prefix, or empty string if not configured.
         """
         prefixes, _require = load_command_prefix_settings(self.bot.config)
-        return prefixes[0] if prefixes else ''
+        return prefixes[0] if prefixes else ""
 
     def _get_bot_name(self) -> str:
         """Get bot name from device or config.
@@ -822,26 +818,26 @@ class BaseCommand(ABC):
             str: The name of the bot/device.
         """
         # Try to get name from device first (actual radio username)
-        if hasattr(self.bot, 'meshcore') and self.bot.meshcore:
+        if hasattr(self.bot, "meshcore") and self.bot.meshcore:
             try:
-                if hasattr(self.bot.meshcore, 'self_info') and self.bot.meshcore.self_info:
+                if hasattr(self.bot.meshcore, "self_info") and self.bot.meshcore.self_info:
                     self_info = self.bot.meshcore.self_info
                     # Try to get name from self_info (could be dict or object)
                     if isinstance(self_info, dict):
-                        device_name = self_info.get('name') or self_info.get('adv_name')
+                        device_name = self_info.get("name") or self_info.get("adv_name")
                         if device_name:
                             return device_name
-                    elif hasattr(self_info, 'name'):
+                    elif hasattr(self_info, "name"):
                         if self_info.name:
                             return self_info.name
-                    elif hasattr(self_info, 'adv_name'):
+                    elif hasattr(self_info, "adv_name"):
                         if self_info.adv_name:
                             return self_info.adv_name
             except Exception as e:
                 self.logger.debug(f"Could not get name from device: {e}")
 
         # Fallback to config
-        bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
+        bot_name = self.bot.config.get("Bot", "bot_name", fallback="Bot")
         return bot_name
 
     def _extract_mentions(self, text: str) -> list[str]:
@@ -854,7 +850,7 @@ class BaseCommand(ABC):
             List[str]: List of mentioned usernames (without @[] brackets).
         """
         # Pattern to match @[username] - username can contain spaces, emojis, special chars
-        pattern = r'@\[([^\]]+)\]'
+        pattern = r"@\[([^\]]+)\]"
         mentions = re.findall(pattern, text)
         return mentions
 
@@ -905,11 +901,11 @@ class BaseCommand(ABC):
         """
         # Pattern to match @[username] - username can contain spaces, emojis, special chars
         # Match @[ followed by any characters until ]
-        pattern = r'@\[([^\]]+)\]'
+        pattern = r"@\[([^\]]+)\]"
         # Remove all mentions and clean up extra whitespace
-        cleaned = re.sub(pattern, '', text)
+        cleaned = re.sub(pattern, "", text)
         # Clean up multiple spaces and strip
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned
 
     def cleanup_message_for_matching(self, message: MeshMessage) -> str:
@@ -934,7 +930,7 @@ class BaseCommand(ABC):
         # (and legacy "!") from this message, skip prefix handling entirely: the content
         # is canonical and re-stripping/re-rejecting it here would break matching for
         # every command after the first in the check_keywords scan.
-        if not getattr(message, 'prefix_normalized', False):
+        if not getattr(message, "prefix_normalized", False):
             normalized = normalize_command_content(
                 content,
                 self._command_prefixes,
@@ -944,8 +940,8 @@ class BaseCommand(ABC):
                 return ""
             content = normalized
 
-        mention_mode = self.bot.config.get('Bot', 'respond_to_mentions', fallback='also').strip().lower()
-        if mention_mode != 'false':
+        mention_mode = self.bot.config.get("Bot", "respond_to_mentions", fallback="also").strip().lower()
+        if mention_mode != "false":
             if not self._check_mentions_ok(content):
                 return ""
             content = self._strip_mentions(content)
@@ -986,7 +982,7 @@ class BaseCommand(ABC):
             # This ensures the keyword is the first word in the message
             if content_lower.startswith(keyword_lower):
                 # Check if it's followed by a space or is the end of the message
-                if len(content_lower) == len(keyword_lower) or content_lower[len(keyword_lower)] == ' ':
+                if len(content_lower) == len(keyword_lower) or content_lower[len(keyword_lower)] == " ":
                     return True
 
         return False
@@ -1045,15 +1041,13 @@ class BaseCommand(ABC):
         """
         required = self.get_config_value(
             section,
-            'require_path_bytes_greater_or_equal_to',
+            "require_path_bytes_greater_or_equal_to",
             fallback=0,
-            value_type='int',
+            value_type="int",
         )
         if required in (0, 1, 2, 3):
             return required
-        self.logger.warning(
-            f"Invalid {section}.require_path_bytes_greater_or_equal_to={required}; defaulting to 0"
-        )
+        self.logger.warning(f"Invalid {section}.require_path_bytes_greater_or_equal_to={required}; defaulting to 0")
         return 0
 
     def _path_bytes_match_requirement(self, path_byte_length: int, required_path_bytes: int) -> bool:
@@ -1068,14 +1062,14 @@ class BaseCommand(ABC):
 
     def _get_message_path_byte_length(self, message: MeshMessage) -> int:
         """Best-effort extraction of message path byte length from routing/path data."""
-        routing_info = getattr(message, 'routing_info', None)
+        routing_info = getattr(message, "routing_info", None)
         if routing_info:
-            raw_path_byte_length = routing_info.get('path_byte_length')
+            raw_path_byte_length = routing_info.get("path_byte_length")
             if isinstance(raw_path_byte_length, int) and raw_path_byte_length >= 0:
                 return raw_path_byte_length
 
-            bytes_per_hop = routing_info.get('bytes_per_hop')
-            path_length = routing_info.get('path_length')
+            bytes_per_hop = routing_info.get("bytes_per_hop")
+            path_length = routing_info.get("path_length")
             if (
                 isinstance(bytes_per_hop, int)
                 and bytes_per_hop >= 0
@@ -1084,7 +1078,7 @@ class BaseCommand(ABC):
             ):
                 return bytes_per_hop * path_length
 
-            path_nodes = routing_info.get('path_nodes') or []
+            path_nodes = routing_info.get("path_nodes") or []
             if path_nodes:
                 total = 0
                 for node in path_nodes:
@@ -1094,18 +1088,18 @@ class BaseCommand(ABC):
                     total += len(node_str) // 2
                 return total
 
-        path_string = (getattr(message, 'path', None) or '').strip()
+        path_string = (getattr(message, "path", None) or "").strip()
         if not path_string:
             return 0
         if " via ROUTE_TYPE_" in path_string:
             path_string = path_string.split(" via ROUTE_TYPE_")[0]
         if "Direct" in path_string or "0 hops" in path_string:
             return 0
-        path_string = re.sub(r'\s*\([^)]*hops?[^)]*\)', '', path_string, flags=re.IGNORECASE).strip()
+        path_string = re.sub(r"\s*\([^)]*hops?[^)]*\)", "", path_string, flags=re.IGNORECASE).strip()
         if not path_string:
             return 0
-        if ',' in path_string:
-            tokens = [t.strip() for t in path_string.split(',') if t.strip()]
+        if "," in path_string:
+            tokens = [t.strip() for t in path_string.split(",") if t.strip()]
             if tokens:
                 return sum(len(t) // 2 for t in tokens)
         return len(path_string) // 2
@@ -1114,9 +1108,9 @@ class BaseCommand(ABC):
         """Get optional response text used when path-byte requirement fails."""
         failure_response = self.get_config_value(
             section,
-            'require_path_bytes_failure_response',
-            fallback='',
-            value_type='str',
+            "require_path_bytes_failure_response",
+            fallback="",
+            value_type="str",
         )
         if not failure_response:
             return None
@@ -1137,14 +1131,14 @@ class BaseCommand(ABC):
 
     def get_path_display_string(self, message: MeshMessage) -> str:
         """Get path string for display (test/ack placeholders). Prefers message.routing_info for multi-byte and direct."""
-        routing_info = getattr(message, 'routing_info', None)
+        routing_info = getattr(message, "routing_info", None)
         if routing_info is not None:
-            path_length = routing_info.get('path_length', 0)
+            path_length = routing_info.get("path_length", 0)
             if path_length == 0:
                 return "Direct"
-            path_nodes = routing_info.get('path_nodes', [])
+            path_nodes = routing_info.get("path_nodes", [])
             if path_nodes:
-                path_str = ','.join(str(n).lower() for n in path_nodes)
+                path_str = ",".join(str(n).lower() for n in path_nodes)
                 return f"{path_str} ({len(path_nodes)} hops)"
         if not message.path:
             return "Unknown"
@@ -1174,25 +1168,25 @@ class BaseCommand(ABC):
 
     def format_elapsed(self, message: MeshMessage) -> str:
         """Format message elapsed for display. Uses 'Sync Device Clock' when device clock is invalid."""
-        translator = getattr(self.bot, 'translator', None)
+        translator = getattr(self.bot, "translator", None)
         return format_elapsed_display(message.timestamp, translator)
 
     def get_hops_display_values(self, message: MeshMessage) -> tuple[str, str]:
         """Return hop count placeholders as numeric and pluralized strings."""
-        hops_val = getattr(message, 'hops', None)
-        routing_info = getattr(message, 'routing_info', None)
+        hops_val = getattr(message, "hops", None)
+        routing_info = getattr(message, "routing_info", None)
 
         if not isinstance(hops_val, int) and routing_info is not None:
-            hops_val = routing_info.get('path_length')
-            if hops_val is None and routing_info.get('path_nodes'):
-                hops_val = len(routing_info['path_nodes'])
+            hops_val = routing_info.get("path_length")
+            if hops_val is None and routing_info.get("path_nodes"):
+                hops_val = len(routing_info["path_nodes"])
 
         if not isinstance(hops_val, int):
             path_str = message.path or ""
-            hop_match = re.search(r'\((\d+)\s*hops?', path_str, re.IGNORECASE)
+            hop_match = re.search(r"\((\d+)\s*hops?", path_str, re.IGNORECASE)
             if hop_match:
                 hops_val = int(hop_match.group(1))
-            elif re.search(r'\bdirect\b|\b0\s*hops?\b', path_str, re.IGNORECASE):
+            elif re.search(r"\bdirect\b|\b0\s*hops?\b", path_str, re.IGNORECASE):
                 hops_val = 0
 
         if not isinstance(hops_val, int):
@@ -1212,18 +1206,19 @@ class BaseCommand(ABC):
         """
         hops, hops_label = self.get_hops_display_values(message)
         return {
-            'sender': message.sender_id or "Unknown",
-            'connection_info': self.build_enhanced_connection_info(message),
-            'path': self.get_path_display_string(message),
-            'hops': hops,
-            'hops_label': hops_label,
-            'timestamp': self.format_timestamp(message),
-            'snr': message.snr or "Unknown",
-            'rssi': message.rssi or "Unknown",
+            "sender": message.sender_id or "Unknown",
+            "connection_info": self.build_enhanced_connection_info(message),
+            "path": self.get_path_display_string(message),
+            "hops": hops,
+            "hops_label": hops_label,
+            "timestamp": self.format_timestamp(message),
+            "snr": message.snr or "Unknown",
+            "rssi": message.rssi or "Unknown",
         }
 
-    def format_response(self, message: MeshMessage, response_format: str,
-                        extra: Optional[dict[str, Any]] = None) -> str:
+    def format_response(
+        self, message: MeshMessage, response_format: str, extra: Optional[dict[str, Any]] = None
+    ) -> str:
         """Format a response string with message data.
 
         Args:
@@ -1250,17 +1245,17 @@ class BaseCommand(ABC):
 
     def requires_admin_access(self) -> bool:
         """Check if this command requires admin access"""
-        if not hasattr(self.bot, 'config') or not self.bot.config.has_section('Admin_ACL'):
+        if not hasattr(self.bot, "config") or not self.bot.config.has_section("Admin_ACL"):
             return False
 
         try:
             # Get list of admin commands from config
-            admin_commands = self.bot.config.get('Admin_ACL', 'admin_commands', fallback='')
+            admin_commands = self.bot.config.get("Admin_ACL", "admin_commands", fallback="")
             if not admin_commands:
                 return False
 
             # Check if this command name is in the admin commands list
-            admin_command_list = [cmd.strip() for cmd in admin_commands.split(',') if cmd.strip()]
+            admin_command_list = [cmd.strip() for cmd in admin_commands.split(",") if cmd.strip()]
             return self.name in admin_command_list
         except Exception as e:
             self.logger.warning(f"Error checking admin access requirement: {e}")
@@ -1277,12 +1272,12 @@ class BaseCommand(ABC):
         - Normalized comparison (lowercase)
         - Uses centralized validate_pubkey_format() function
         """
-        if not hasattr(self.bot, 'config') or not self.bot.config.has_section('Admin_ACL'):
+        if not hasattr(self.bot, "config") or not self.bot.config.has_section("Admin_ACL"):
             return False
 
         try:
             # Get admin pubkeys from config
-            admin_pubkeys = self.bot.config.get('Admin_ACL', 'admin_pubkeys', fallback='')
+            admin_pubkeys = self.bot.config.get("Admin_ACL", "admin_pubkeys", fallback="")
 
             # Check for empty or whitespace-only configuration
             if not admin_pubkeys.strip():
@@ -1291,7 +1286,7 @@ class BaseCommand(ABC):
 
             # Parse and VALIDATE admin pubkeys
             admin_pubkey_list = []
-            for key in admin_pubkeys.split(','):
+            for key in admin_pubkeys.split(","):
                 key = key.strip()
                 if not key:
                     continue
@@ -1308,11 +1303,10 @@ class BaseCommand(ABC):
                 return False
 
             # Get sender's public key - NEVER fall back to sender_id
-            sender_pubkey = getattr(message, 'sender_pubkey', None)
+            sender_pubkey = getattr(message, "sender_pubkey", None)
             if not sender_pubkey:
                 self.logger.warning(
-                    f"No sender public key available for {message.sender_id} - "
-                    "admin access denied (missing pubkey)"
+                    f"No sender public key available for {message.sender_id} - admin access denied (missing pubkey)"
                 )
                 return False
 
@@ -1330,14 +1324,10 @@ class BaseCommand(ABC):
 
             if not is_admin:
                 self.logger.warning(
-                    f"Access denied for {message.sender_id} "
-                    f"(pubkey: {sender_pubkey[:16]}...) - not in admin ACL"
+                    f"Access denied for {message.sender_id} (pubkey: {sender_pubkey[:16]}...) - not in admin ACL"
                 )
             else:
-                self.logger.info(
-                    f"Admin access granted for {message.sender_id} "
-                    f"(pubkey: {sender_pubkey[:16]}...)"
-                )
+                self.logger.info(f"Admin access granted for {message.sender_id} (pubkey: {sender_pubkey[:16]}...)")
 
             return is_admin
 

@@ -7,6 +7,7 @@ Processes incoming messages and routes them to appropriate command handlers
 import asyncio
 import copy
 import hmac as hmac_mod
+import random
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
@@ -183,16 +184,10 @@ class MessageHandler:
                 recent_rf_data.get("transport_code1"),
             )
 
-        if not (
-            rt == 0
-            and tc_code1 is not None
-            and scope_payload_type is not None
-            and scope_payload_hex
-        ):
+        if not (rt == 0 and tc_code1 is not None and scope_payload_type is not None and scope_payload_hex):
             if scope_keys:
                 self.logger.debug(
-                    "Scope check: route_type=%s (need 0=TC_FLOOD), "
-                    "tc_code1=%s, payload_type=%s, payload_hex=%s",
+                    "Scope check: route_type=%s (need 0=TC_FLOOD), tc_code1=%s, payload_type=%s, payload_hex=%s",
                     rt,
                     "set" if tc_code1 is not None else "None",
                     scope_payload_type,
@@ -215,8 +210,7 @@ class MessageHandler:
             )
         elif scope_keys:
             self.logger.debug(
-                "TC_FLOOD scope not matched: tc_code1=%s payload_type=%s "
-                "(configured scopes: %s)",
+                "TC_FLOOD scope not matched: tc_code1=%s payload_type=%s (configured scopes: %s)",
                 tc_code1,
                 scope_payload_type,
                 ", ".join(sorted(scope_keys.keys())),
@@ -442,9 +436,7 @@ class MessageHandler:
                                 routing_info = recent_rf_data["routing_info"]
                                 self.logger.debug(f"Found routing info: {routing_info}")
                             else:
-                                self.logger.debug(
-                                    "Ignoring routing info from an uncorrelated fallback packet"
-                                )
+                                self.logger.debug("Ignoring routing info from an uncorrelated fallback packet")
 
                 # If we have routing info, use it for path information
                 if routing_info:
@@ -669,6 +661,7 @@ class MessageHandler:
 
         except Exception as e:
             self.logger.error(f"Error handling contact message: {e}")
+            self.logger.error(f"{type(e).__name__} {__file__} {e.__traceback__.tb_lineno} ")
 
     async def handle_raw_data(self, event: Any, metadata: dict[str, Any] | None = None) -> None:
         """Handle raw data events (full packet data from debug mode).
@@ -841,11 +834,7 @@ class MessageHandler:
                         advert_data["public_key"],
                         self.logger,
                         snr=signal_info.get("snr") if signal_info else None,
-                        rssi=(
-                            signal_info.get("rssi", signal_info.get("signal_strength"))
-                            if signal_info
-                            else None
-                        ),
+                        rssi=(signal_info.get("rssi", signal_info.get("signal_strength")) if signal_info else None),
                         bytes_per_hop=packet_info.get("bytes_per_hop", 1) or 1,
                         packet_hash=packet_hash,
                         update_rssi=True,
@@ -1484,13 +1473,9 @@ class MessageHandler:
         recent_rf_data: dict[str, Any] | None = None
 
         if message_packet_prefix:
-            recent_rf_data = self.find_recent_rf_data(
-                message_packet_prefix, scope_eligible_only=scope_eligible_only
-            )
+            recent_rf_data = self.find_recent_rf_data(message_packet_prefix, scope_eligible_only=scope_eligible_only)
         elif message_pubkey:
-            recent_rf_data = self.find_recent_rf_data(
-                message_pubkey, scope_eligible_only=scope_eligible_only
-            )
+            recent_rf_data = self.find_recent_rf_data(message_pubkey, scope_eligible_only=scope_eligible_only)
 
         if not recent_rf_data and self.enhanced_correlation and not scope_eligible_only:
             correlation_key = message_packet_prefix or message_pubkey
@@ -1581,10 +1566,7 @@ class MessageHandler:
         # holds several packets from that sender the match is ambiguous, so take the
         # newest and mark it non-authoritative rather than attributing its route.
         if correlation_key:
-            pubkey_matches = [
-                data for data in recent_data
-                if (data.get("pubkey_prefix", "") or "") == correlation_key
-            ]
+            pubkey_matches = [data for data in recent_data if (data.get("pubkey_prefix", "") or "") == correlation_key]
             if pubkey_matches:
                 newest = max(pubkey_matches, key=lambda x: x["timestamp"])
                 unique = len(pubkey_matches) == 1
@@ -1596,7 +1578,8 @@ class MessageHandler:
                         self.logger.debug(
                             "%d cached packets share pubkey prefix %s; using the newest "
                             "for signal only, not for routing",
-                            len(pubkey_matches), correlation_key,
+                            len(pubkey_matches),
+                            correlation_key,
                         )
                     return accepted
 
@@ -1615,14 +1598,13 @@ class MessageHandler:
                 accepted = _accept(newest, RF_MATCH_PARTIAL if unique else RF_MATCH_FALLBACK)
                 if accepted:
                     if unique:
-                        self.logger.debug(
-                            f"Found partial packet prefix match for {correlation_key[:16]}..."
-                        )
+                        self.logger.debug(f"Found partial packet prefix match for {correlation_key[:16]}...")
                     else:
                         self.logger.debug(
                             "%d cached packets share the partial prefix %s...; using the "
                             "newest for signal only, not for routing",
-                            len(partial_matches), correlation_key[:16],
+                            len(partial_matches),
+                            correlation_key[:16],
                         )
                     return accepted
 
@@ -1633,8 +1615,7 @@ class MessageHandler:
                 candidates = [d for d in recent_data if self._is_rf_data_scope_eligible(d)]
                 if not candidates:
                     self.logger.debug(
-                        "No scope-eligible RF data in cache for fallback "
-                        "(need TC_FLOOD GRP_TXT with transport code)"
+                        "No scope-eligible RF data in cache for fallback (need TC_FLOOD GRP_TXT with transport code)"
                     )
                     return None
             most_recent = max(candidates, key=lambda x: x["timestamp"])
@@ -2277,9 +2258,7 @@ class MessageHandler:
                 extended_timeout=extended_timeout,
             )
             if scope_rf_data and scope_rf_data is not recent_rf_data:
-                self.logger.debug(
-                    "Using separate scope-eligible RF correlation (path/SNR source differs)"
-                )
+                self.logger.debug("Using separate scope-eligible RF correlation (path/SNR source differs)")
 
             packet_info: dict[str, Any] | None = None
             scope_packet_info: dict[str, Any] | None = None
@@ -2391,30 +2370,14 @@ class MessageHandler:
             scope_keys = getattr(cmd_mgr, "flood_scope_keys", {})
             scope_rf_is_correlated = rf_data_is_correlated(scope_rf_data)
             if scope_rf_data and scope_keys:
-                if scope_rf_is_correlated:
-                    reply_scope = self._resolve_reply_scope_from_rf_data(
-                        scope_rf_data, scope_packet_info, scope_keys
-                    )
-                else:
-                    self.logger.info(
-                        "Scope for this channel message is unknown: the only scope-eligible "
-                        "RF data is an uncorrelated fallback from another packet, so it "
-                        "cannot authorise a reply under flood_scopes"
-                    )
+                reply_scope = self._resolve_reply_scope_from_rf_data(scope_rf_data, scope_packet_info, scope_keys)
 
             # Allowlist enforcement: when flood_scopes is configured, only reply to
             # messages whose scope matched an entry.  Unscoped FLOOD is allowed only
             # when '*' (or equivalent) is explicitly listed.
-            allow_global = getattr(cmd_mgr, "flood_scope_allow_global", False)
-            # A '*'-only flood_scopes leaves scope_keys empty but still means an
-            # allowlist is configured (global only). Gating on scope_keys alone let
-            # that configuration skip authorisation entirely.
-            if (scope_keys or allow_global) and reply_scope is None:
-                if (
-                    scope_rf_data
-                    and scope_rf_is_correlated
-                    and self._is_rf_data_scope_eligible(scope_rf_data, scope_packet_info)
-                ):
+            if scope_keys and reply_scope is None:
+                allow_global = getattr(cmd_mgr, "flood_scope_allow_global", False)
+                if scope_rf_data and self._is_rf_data_scope_eligible(scope_rf_data, scope_packet_info):
                     self.logger.info("Ignoring TC_FLOOD: scope not in flood_scopes allowlist")
                     return
                 # '*' permits *unscoped global* traffic, not traffic of unknown scope,
@@ -2422,9 +2385,7 @@ class MessageHandler:
                 # ordinary FLOOD. The general RF correlation carries that evidence for
                 # the normal case; without it the scope is unknown and an allowlist
                 # should fail closed rather than assume global.
-                if allow_global and not self._is_confirmed_global_flood(
-                    recent_rf_data, packet_info
-                ):
+                if allow_global and not self._is_confirmed_global_flood(recent_rf_data, packet_info):
                     self.logger.info(
                         "Ignoring channel message: flood_scopes lists '*', but this "
                         "message's packet could not be confirmed as unscoped FLOOD "
@@ -2439,9 +2400,7 @@ class MessageHandler:
                             "flood_scopes allowlist (avoid replying on wrong scope)"
                         )
                     else:
-                        self.logger.debug(
-                            "Ignoring FLOOD: unscoped messages not permitted (add '*' to flood_scopes)"
-                        )
+                        self.logger.debug("Ignoring FLOOD: unscoped messages not permitted (add '*' to flood_scopes)")
                     return
 
             # Get the full public key from contacts if available
@@ -2476,11 +2435,7 @@ class MessageHandler:
             # Only a correlated packet's routing_info belongs to this message. The path
             # command reads message.routing_info directly, so an uncorrelated fallback
             # here would show a different packet's route to the user (#80).
-            if (
-                recent_rf_data
-                and recent_rf_data.get("routing_info")
-                and rf_data_is_correlated(recent_rf_data)
-            ):
+            if recent_rf_data and recent_rf_data.get("routing_info") and rf_data_is_correlated(recent_rf_data):
                 message.routing_info = recent_rf_data["routing_info"]
 
             # Path information is now set directly in the MeshMessage constructor from RF data
@@ -3504,12 +3459,56 @@ class MessageHandler:
             await self.bot.command_manager.handle_advert_command(message)
             return
 
+        if (
+            not message.is_dm
+            and random.random() > 0.66
+            and message.channel
+            and message.channel.lower() == "public"
+            and message.content
+            and (message.content.lower().startswith("test") or message.content.lower().startswith("ping"))
+        ):
+            a = [
+                "hey. Welcome to the mesh!",
+                "Yo,",
+                "Dude..",
+                "hello,",
+                "Hey,",
+                "Hi,",
+                "",
+                "it works!",
+                "test success.",
+                "tested. Welcome to the mesh.",
+                "Welcome to the mesh.",
+                "Pong!",
+            ]
+            b = ["not a testing zone.", "", "...", "", ""]
+            c = ["Try", "Use", "Check out", "For testing:", "Bot channels:", "", "Test over here:"]
+            d = [
+                "#test #testing",
+                "#meshbud #foobot",
+                "#testing #volcano",
+                "#test or #testing",
+                "#test #testing #meshbud #foobot #volcano",
+                "#bot #foobot",
+                "https://corescope.wcmesh.com/#/channels",
+            ]
+            sender = f"@[{message.sender_id}] " if message and message.sender_id else ""
+            message_text = (
+                sender + random.choice(a) + " " + random.choice(b) + " " + random.choice(c) + " " + random.choice(d)
+            )
+            self.logger.warn(f"DJL responding in {message.channel} to {message.content} with {message_text}")
+            await self.bot.command_manager.send_channel_message(message.channel, message_text)
+            return
+
         # Check for keywords and custom syntax
         keyword_matches = self.bot.command_manager.check_keywords(message)
 
         help_response_sent = False
         plugin_command_with_response_matched = False
         if keyword_matches and should_back_up_bot_or_non_bot_channel:
+            self.logger.warn(
+                f"keyword_matches {keyword_matches}: '{message.content}' from {message.sender_id} in {'DM' if message.is_dm else message.channel}"
+            )
             for keyword, response in keyword_matches:
                 # Use translator if available for logging
                 if hasattr(self.bot, "translator"):
@@ -3626,7 +3625,7 @@ class MessageHandler:
             return False
 
         # Don't reply to messages from so far away the sender wont see response
-        max_response_hops = max(1, self.bot.config.getint("Channels", "max_response_hops", fallback=64))
+        max_response_hops = max(1, self.bot.config.getint("channels", "max_response_hops", fallback=64))
         if message.hops is not None:
             try:
                 if int(message.hops) > max_response_hops:
@@ -3644,6 +3643,10 @@ class MessageHandler:
             if message.channel in self.bot.command_manager.monitor_channels:
                 return True  # Global allow - all commands can work
 
+            if not message.is_dm and message.channel and message.channel.lower() == "public" and message.content:
+                if message.content.lower().startswith("test"):
+                    return True
+
             # Check if ANY command allows this channel (for selective access)
             for command_name, command in self.bot.command_manager.commands.items():
                 if hasattr(command, "is_channel_allowed") and callable(command.is_channel_allowed):
@@ -3659,7 +3662,7 @@ class MessageHandler:
             return False
 
         # Check if DMs are enabled
-        if message.is_dm and not self.bot.config.getboolean("Channels", "respond_to_dms"):
+        if message.is_dm and not self.bot.config.getboolean("channels", "respond_to_dms"):
             self.logger.debug("DMs are disabled")
             return False
 

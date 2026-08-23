@@ -143,8 +143,7 @@ def _apply_werkzeug_websocket_fix() -> None:
     classifies as a dropped connection and silently ignores.
     """
     try:
-        from engineio.async_drivers import _websocket_wsgi
-
+        from engineio.async_drivers import _websocket_wsgi  # noqa: PLC0415
         _orig_call = _websocket_wsgi.SimpleWebSocketWSGI.__call__
 
         def _patched_call(self, environ, start_response):
@@ -3871,17 +3870,12 @@ class BotDataViewer:
                     )
                     self.logger.debug(f"Geocoding result for {name}: {location_info}")
                 except Exception as geocode_error:
-                    self.logger.error(
-                        f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}",
-                        exc_info=True,
-                    )
-                    return jsonify(
-                        {
-                            "success": False,
-                            "error": f"Geocoding exception: {geocode_error!s}",
-                            "location": {},
-                        }
-                    ), 500
+                    self.logger.error(f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}", exc_info=True)
+                    return jsonify({
+                        'success': False,
+                        'error': f'Geocoding exception: {str(geocode_error)}',
+                        'location': {}
+                    }), 500
 
                 # Check if geocoding returned any useful data
                 has_location_data = (
@@ -4587,7 +4581,6 @@ class BotDataViewer:
         # Feed management API endpoints
         def _schedule_tz():
             from modules.utils import get_config_timezone
-
             tz, _name = get_config_timezone(self.config, self.logger)
             return tz
 
@@ -4611,43 +4604,37 @@ class BotDataViewer:
         schedule_write_lock = threading.Lock()
 
         def _existing_schedules():
-            return {
-                e["schedule"] for e in read_entries(self.config_path, _schedule_tz())
-            }
+            return {e['schedule'] for e in read_entries(self.config_path, _schedule_tz())}
 
-        @self.app.route("/api/scheduled-messages")
+        @self.app.route('/api/scheduled-messages')
         def api_scheduled_messages():
             """List scheduled messages with their next run times."""
             try:
-                return jsonify(
-                    {"entries": read_entries(self.config_path, _schedule_tz())}
-                )
+                return jsonify({'entries': read_entries(self.config_path, _schedule_tz())})
             except Exception as e:
                 self.logger.error(f"Error reading scheduled messages: {e}")
-                return jsonify({"error": str(e)}), 500
+                return jsonify({'error': str(e)}), 500
 
-        @self.app.route("/api/scheduled-messages/preview", methods=["POST"])
+        @self.app.route('/api/scheduled-messages/preview', methods=['POST'])
         def api_scheduled_messages_preview():
             """Validate a schedule and return its next run times (powers the builder)."""
             try:
                 data = request.get_json(silent=True) or {}
                 try:
-                    count = int(data.get("count", 5))
+                    count = int(data.get('count', 5))
                 except (TypeError, ValueError):
-                    return jsonify({"error": "count must be an integer"}), 400
+                    return jsonify({'error': 'count must be an integer'}), 400
                 if not 1 <= count <= 20:
-                    return jsonify({"error": "count must be between 1 and 20"}), 400
-                return jsonify(
-                    describe_schedule(
-                        data.get("schedule", ""),
-                        _schedule_tz(),
-                        message=data.get("message", ""),
-                        count=count,
-                    )
-                )
+                    return jsonify({'error': 'count must be between 1 and 20'}), 400
+                return jsonify(describe_schedule(
+                    data.get('schedule', ''),
+                    _schedule_tz(),
+                    message=data.get('message', ''),
+                    count=count,
+                ))
             except Exception as e:
                 self.logger.error(f"Error previewing schedule: {e}")
-                return jsonify({"error": str(e)}), 500
+                return jsonify({'error': str(e)}), 500
 
         def _save_scheduled_message(data, *, replacing=None):
             """Shared create/update: validate, write config.ini, queue a reload."""
@@ -4655,49 +4642,41 @@ class BotDataViewer:
                 return _save_scheduled_message_locked(data, replacing=replacing)
 
         def _save_scheduled_message_locked(data, *, replacing=None):
-            schedule = (data.get("schedule") or "").strip()
-            channel = (data.get("channel") or "").strip()
-            message = (data.get("message") or "").strip()
-            scope = (data.get("scope") or "").strip() or None
+            schedule = (data.get('schedule') or '').strip()
+            channel = (data.get('channel') or '').strip()
+            message = (data.get('message') or '').strip()
+            scope = (data.get('scope') or '').strip() or None
 
             field_error = validate_entry(channel, message, scope)
             if field_error:
-                return jsonify({"success": False, "error": field_error}), 400
+                return jsonify({'success': False, 'error': field_error}), 400
 
             described = describe_schedule(schedule, _schedule_tz(), message=message)
-            if not described.get("valid"):
-                return jsonify({"success": False, "error": described.get("error")}), 400
+            if not described.get('valid'):
+                return jsonify({'success': False, 'error': described.get('error')}), 400
 
             existing = _existing_schedules()
 
             # Checked here rather than in the route so it shares this snapshot and the
             # surrounding lock.
             if replacing is not None and replacing not in existing:
-                return jsonify(
-                    {
-                        "success": False,
-                        "error": f"No scheduled message for '{replacing}'",
-                    }
-                ), 404
+                return jsonify({
+                    'success': False,
+                    'error': f"No scheduled message for '{replacing}'",
+                }), 404
 
             # Schedules are INI keys, so two entries cannot share one. Renaming onto
             # another entry's key would silently overwrite it.
             if schedule in existing and schedule != replacing:
-                return jsonify(
-                    {
-                        "success": False,
-                        "error": (
-                            f"A scheduled message already exists for '{schedule}'. "
-                            "Edit that one, or use a different schedule."
-                        ),
-                    }
-                ), 409
+                return jsonify({
+                    'success': False,
+                    'error': (
+                        f"A scheduled message already exists for '{schedule}'. "
+                        "Edit that one, or use a different schedule."
+                    ),
+                }), 409
 
-            updates = {
-                SCHEDULED_MESSAGES_SECTION: {
-                    schedule: compose_value(channel, message, scope)
-                }
-            }
+            updates = {SCHEDULED_MESSAGES_SECTION: {schedule: compose_value(channel, message, scope)}}
             deletes = None
             if replacing and replacing != schedule:
                 deletes = {SCHEDULED_MESSAGES_SECTION: [replacing]}
@@ -4705,15 +4684,13 @@ class BotDataViewer:
             try:
                 summary = update_ini_values(self.config_path, updates, deletes)
             except IniValueError as exc:
-                return jsonify({"success": False, "error": str(exc)}), 400
+                return jsonify({'success': False, 'error': str(exc)}), 400
             except OSError as exc:
                 self.logger.error("Failed to write scheduled message: %s", exc)
-                return jsonify(
-                    {
-                        "success": False,
-                        "error": "Could not write config.ini — check file permissions",
-                    }
-                ), 500
+                return jsonify({
+                    'success': False,
+                    'error': 'Could not write config.ini — check file permissions',
+                }), 500
 
             reloaded = _queue_config_reload()
             if not reloaded:
@@ -4724,109 +4701,87 @@ class BotDataViewer:
                 )
             self.logger.info(
                 "Scheduled message saved: %r -> %s:%s (backup=%s)",
-                schedule,
-                channel,
-                message[:40],
-                os.path.basename(summary.get("backup_path") or "") or "none",
+                schedule, channel, message[:40],
+                os.path.basename(summary.get('backup_path') or '') or 'none',
             )
-            return jsonify(
-                {
-                    "success": True,
-                    "reload_queued": reloaded,
-                    "message": (
-                        "Saved. The bot reloads its schedule within a few seconds."
-                        if reloaded
-                        else "Saved to config.ini, but the bot could not be told to reload. "
-                        "It will pick the change up on next restart."
-                    ),
-                    "entry": {
-                        "schedule": schedule,
-                        "channel": channel,
-                        "scope": scope,
-                        "message": message,
-                        **described,
-                    },
-                }
-            )
+            return jsonify({
+                'success': True,
+                'reload_queued': reloaded,
+                'message': (
+                    'Saved. The bot reloads its schedule within a few seconds.'
+                    if reloaded else
+                    'Saved to config.ini, but the bot could not be told to reload. '
+                    'It will pick the change up on next restart.'
+                ),
+                'entry': {'schedule': schedule, 'channel': channel,
+                          'scope': scope, 'message': message, **described},
+            })
 
-        @self.app.route("/api/scheduled-messages", methods=["POST"])
+        @self.app.route('/api/scheduled-messages', methods=['POST'])
         def api_create_scheduled_message():
             """Create a scheduled message."""
             try:
                 return _save_scheduled_message(request.get_json(silent=True) or {})
             except Exception as e:
                 self.logger.error(f"Error creating scheduled message: {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
+                return jsonify({'success': False, 'error': str(e)}), 500
 
-        @self.app.route("/api/scheduled-messages", methods=["PUT"])
+        @self.app.route('/api/scheduled-messages', methods=['PUT'])
         def api_update_scheduled_message():
             """Update a scheduled message, including changing its schedule."""
             try:
                 data = request.get_json(silent=True) or {}
-                original = (data.get("original_schedule") or "").strip()
+                original = (data.get('original_schedule') or '').strip()
                 if not original:
-                    return jsonify(
-                        {"success": False, "error": "original_schedule is required"}
-                    ), 400
+                    return jsonify({'success': False, 'error': 'original_schedule is required'}), 400
                 # Existence is verified inside the lock, against the same snapshot the
                 # duplicate check uses: a concurrent delete between an outside check and
                 # the write would otherwise resurrect the entry as a new one.
                 return _save_scheduled_message(data, replacing=original)
             except Exception as e:
                 self.logger.error(f"Error updating scheduled message: {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
+                return jsonify({'success': False, 'error': str(e)}), 500
 
-        @self.app.route("/api/scheduled-messages", methods=["DELETE"])
+        @self.app.route('/api/scheduled-messages', methods=['DELETE'])
         def api_delete_scheduled_message():
             """Delete a scheduled message."""
             try:
                 data = request.get_json(silent=True) or {}
-                schedule = (data.get("schedule") or "").strip()
+                schedule = (data.get('schedule') or '').strip()
                 if not schedule:
-                    return jsonify(
-                        {"success": False, "error": "schedule is required"}
-                    ), 400
+                    return jsonify({'success': False, 'error': 'schedule is required'}), 400
                 with schedule_write_lock:
                     if schedule not in _existing_schedules():
-                        return jsonify(
-                            {
-                                "success": False,
-                                "error": f"No scheduled message for '{schedule}'",
-                            }
-                        ), 404
+                        return jsonify({
+                            'success': False,
+                            'error': f"No scheduled message for '{schedule}'",
+                        }), 404
                     try:
                         update_ini_values(
-                            self.config_path,
-                            {},
-                            {SCHEDULED_MESSAGES_SECTION: [schedule]},
+                            self.config_path, {}, {SCHEDULED_MESSAGES_SECTION: [schedule]}
                         )
                     except OSError as exc:
                         self.logger.error("Failed to delete scheduled message: %s", exc)
-                        return jsonify(
-                            {
-                                "success": False,
-                                "error": "Could not write config.ini — check file permissions",
-                            }
-                        ), 500
+                        return jsonify({
+                            'success': False,
+                            'error': 'Could not write config.ini — check file permissions',
+                        }), 500
                 reloaded = _queue_config_reload()
                 self.logger.info("Scheduled message deleted: %r", schedule)
-                return jsonify(
-                    {
-                        "success": True,
-                        "reload_queued": reloaded,
-                        "message": (
-                            "Deleted."
-                            if reloaded
-                            else "Deleted from config.ini, but the bot could not be told to "
-                            "reload. It will stop sending after the next restart."
-                        ),
-                    }
-                )
+                return jsonify({
+                    'success': True,
+                    'reload_queued': reloaded,
+                    'message': (
+                        'Deleted.' if reloaded else
+                        'Deleted from config.ini, but the bot could not be told to '
+                        'reload. It will stop sending after the next restart.'
+                    ),
+                })
             except Exception as e:
                 self.logger.error(f"Error deleting scheduled message: {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
+                return jsonify({'success': False, 'error': str(e)}), 500
 
-        @self.app.route("/api/feeds")
+        @self.app.route('/api/feeds')
         def api_feeds():
             """Get all feed subscriptions with statistics"""
             try:
@@ -9129,7 +9084,8 @@ class BotDataViewer:
                         c = c.strip().lower()
                         if c:
                             # Remove # prefix if present for normalization
-                            c = c.removeprefix("#")
+                            if c.startswith('#'):
+                                c = c[1:]
                             channels.add(c)
 
             # 2. Import channels from [Channels_List] section

@@ -117,6 +117,7 @@ class CommandManager:
             if getattr(bot, "_local_root", None) is not None
             else str(bot.bot_root / "local" / "commands")
         )
+        self.logger.warn(f"bot {bot} local_commands_dir {local_commands_dir} ")
         self.plugin_loader = PluginLoader(bot, local_commands_dir=local_commands_dir)
         self.commands = self.plugin_loader.load_all_plugins()
 
@@ -140,7 +141,7 @@ class CommandManager:
 
     def _flood_scopes_config_raw(self) -> str:
         """Raw flood_scopes value; [Channels] is canonical, [Bot] accepted with a warning."""
-        for section in ("Channels", "Bot"):
+        for section in ("channels", "Bot"):
             if self.bot.config.has_section(section) and self.bot.config.has_option(section, "flood_scopes"):
                 raw = (self.bot.config.get(section, "flood_scopes") or "").strip()
                 if not raw:
@@ -189,23 +190,23 @@ class CommandManager:
 
     @staticmethod
     def _normalize_channel_name_for_scope_config(channel: str) -> str:
-        """Normalize channel names for [Channels] flood_scope.<channel> lookups."""
+        """Normalize channel names for [channels] flood_scope.<channel> lookups."""
         return channel.strip().removeprefix("#").lower()
 
     def _outgoing_flood_scope_override(self) -> str:
         """[Channels] outgoing_flood_scope_override when set, else empty string."""
-        if self.bot.config.has_section("Channels") and self.bot.config.has_option(
+        if self.bot.config.has_section("channels") and self.bot.config.has_option(
             "Channels", "outgoing_flood_scope_override"
         ):
-            return (self.bot.config.get("Channels", "outgoing_flood_scope_override") or "").strip()
+            return (self.bot.config.get("channels", "outgoing_flood_scope_override") or "").strip()
         return ""
 
     def _channel_flood_scope(self, channel: str | None) -> str | None:
         """Return [Channels] flood_scope.<channel> when configured, including global markers."""
-        if not channel or not self.bot.config.has_section("Channels"):
+        if not channel or not self.bot.config.has_section("channels"):
             return None
         channel_key = self._normalize_channel_name_for_scope_config(channel)
-        for key, value in self.bot.config.items("Channels"):
+        for key, value in self.bot.config.items("channels"):
             if not key.startswith("flood_scope."):
                 continue
             configured_channel = key[len("flood_scope.") :]
@@ -598,7 +599,7 @@ class CommandManager:
         """Load monitored channels from config.
         Values may be quoted, e.g. \"#bot,#bot-everett,#bots\" or unquoted.
         """
-        raw = self.bot.config.get("Channels", "monitor_channels", fallback="")
+        raw = self.bot.config.get("channels", "monitor_channels", fallback="")
         channels = strip_optional_quotes(raw)
         channel_list = [channel.strip() for channel in channels.split(",") if channel.strip()]
 
@@ -621,7 +622,7 @@ class CommandManager:
         DMs always get all triggers. Use to reduce channel floods by making heavy
         triggers DM-only. Names are case-insensitive.
         """
-        raw = self.bot.config.get("Channels", "channel_keywords", fallback="").strip()
+        raw = self.bot.config.get("channels", "channel_keywords", fallback="").strip()
         if not raw:
             return None
         return [k.strip().lower() for k in raw.split(",") if k.strip()]
@@ -792,7 +793,7 @@ class CommandManager:
                     # Check channel restrictions for help keyword (same as other keywords/commands)
                     # DMs are allowed if respond_to_dms is enabled
                     if message.is_dm:
-                        if not self.bot.config.getboolean("Channels", "respond_to_dms", fallback=True):
+                        if not self.bot.config.getboolean("channels", "respond_to_dms", fallback=True):
                             break  # DMs disabled, skip help keyword
                     else:
                         # For channel messages, honor the help command's channel access:
@@ -869,7 +870,7 @@ class CommandManager:
             # Check channel restrictions for plain keywords (same as commands)
             # DMs are allowed if respond_to_dms is enabled
             if message.is_dm:
-                if not self.bot.config.getboolean("Channels", "respond_to_dms", fallback=True):
+                if not self.bot.config.getboolean("channels", "respond_to_dms", fallback=True):
                     continue  # DMs disabled, skip this keyword
             else:
                 # For channel messages, check if channel is in monitor_channels
@@ -968,7 +969,7 @@ class CommandManager:
 
         # Channel restrictions (mirror the plain keyword restrictions)
         if message.is_dm:
-            if not self.bot.config.getboolean("Channels", "respond_to_dms", fallback=True):
+            if not self.bot.config.getboolean("channels", "respond_to_dms", fallback=True):
                 return None
         else:
             # Optional per-trigger channel list: channel.<key> or channels.<key> (e.g. channel.momjoke = #jokes)
