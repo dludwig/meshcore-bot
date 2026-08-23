@@ -144,9 +144,10 @@ def _apply_werkzeug_websocket_fix() -> None:
     """
     try:
         from engineio.async_drivers import _websocket_wsgi  # noqa: PLC0415
+
         _orig_call = _websocket_wsgi.SimpleWebSocketWSGI.__call__
 
-        def _patched_call(self, environ, start_response):
+        def _patched_call(self, environ, start_response):  # noqa: ANN001
             result = _orig_call(self, environ, start_response)
             try:
                 start_response("200 OK", [("Content-Length", "0")])
@@ -171,11 +172,7 @@ def _strip_ansi_codes(text: str) -> str:
 
 
 from modules.config_snapshot import config_to_redacted_sections
-from modules.feed_filter_eval import (
-    get_nested_value,
-    item_passes_filter_config,
-    parse_microsoft_date,
-)
+from modules.feed_filter_eval import get_nested_value, item_passes_filter_config, parse_microsoft_date
 from modules.feed_format import format_feed_message, sort_feed_items
 from modules.feed_manager import (
     DEFAULT_MAX_FEED_RESPONSE_BYTES,
@@ -253,14 +250,10 @@ class BotDataViewer:
         "dashboard_snapshot",
     }
 
-    def __init__(
-        self, db_path="meshcore_bot.db", repeater_db_path=None, config_path="config.ini"
-    ):
+    def __init__(self, db_path="meshcore_bot.db", repeater_db_path=None, config_path="config.ini"):
         # Set bot root directory (project root) for path validation
         # This is the directory containing the modules folder
-        self.bot_root = Path(
-            os.path.join(os.path.dirname(__file__), "..", "..")
-        ).resolve()
+        self.bot_root = Path(os.path.join(os.path.dirname(__file__), "..", "..")).resolve()
         # Resolve relative config path so viewer finds config when started as subprocess (cwd may differ)
         if not os.path.isabs(config_path):
             config_path = str(self.bot_root / config_path)
@@ -275,11 +268,7 @@ class BotDataViewer:
         # code root, 2 dirs above app.py) as the base caused a mismatch when config.ini lived
         # elsewhere (e.g. a separate deployment directory), resulting in a blank realtime monitor
         # because the web viewer and bot opened different database files.
-        self._config_base = (
-            Path(config_path).parent.resolve()
-            if os.path.exists(config_path)
-            else self.bot_root
-        )
+        self._config_base = Path(config_path).parent.resolve() if os.path.exists(config_path) else self.bot_root
 
         self._setup_logging()
 
@@ -303,9 +292,7 @@ class BotDataViewer:
 
             Compress(self.app)
         except ImportError:
-            self.logger.warning(
-                "flask-compress not installed; web viewer responses will be sent uncompressed"
-            )
+            self.logger.warning("flask-compress not installed; web viewer responses will be sent uncompressed")
 
         # Flask-SocketIO configuration following 5.x best practices
         # CORS origins are configured after config is loaded; create without app for now
@@ -392,26 +379,15 @@ class BotDataViewer:
             self.multibyte_monitor_enabled = self.config.getboolean(
                 "Web_Viewer", "multibyte_monitor_enabled", fallback=False
             )
-        except (
-            configparser.NoSectionError,
-            configparser.NoOptionError,
-            ValueError,
-            TypeError,
-        ):
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError, TypeError):
             self.multibyte_monitor_enabled = False
 
         self._init_dashboard_service()
 
         # Configure CORS for SocketIO — default to same-origin (no cross-origin)
-        cors_raw = self.config.get(
-            "Web_Viewer", "cors_allowed_origins", fallback=""
-        ).strip()
+        cors_raw = self.config.get("Web_Viewer", "cors_allowed_origins", fallback="").strip()
         if cors_raw:
-            cors_origins = (
-                cors_raw
-                if cors_raw == "*"
-                else [o.strip() for o in cors_raw.split(",") if o.strip()]
-            )
+            cors_origins = cors_raw if cors_raw == "*" else [o.strip() for o in cors_raw.split(",") if o.strip()]
             self._socketio_kwargs["cors_allowed_origins"] = cors_origins
         # Initialize SocketIO with Flask app now that config is loaded
         self.socketio.init_app(self.app, **self._socketio_kwargs)
@@ -442,9 +418,7 @@ class BotDataViewer:
         # aggregate queries off the request path)
         self._start_dashboard_refresher()
 
-        self.logger.info(
-            "BotDataViewer initialized with Flask-SocketIO 5.x best practices"
-        )
+        self.logger.info("BotDataViewer initialized with Flask-SocketIO 5.x best practices")
 
     def _setup_logging(self):
         """Setup logging; file handler only when [Logging] log_file is set.
@@ -458,27 +432,19 @@ class BotDataViewer:
         log_file = ""
         log_max_bytes = 5 * 1024 * 1024
         log_backup_count = 3
-        if getattr(self, "config", None) is not None and self.config.has_section(
-            "Logging"
-        ):
+        if getattr(self, "config", None) is not None and self.config.has_section("Logging"):
             log_file = self.config.get("Logging", "log_file", fallback="").strip()
             try:
-                log_max_bytes = self.config.getint(
-                    "Logging", "log_max_bytes", fallback=log_max_bytes
-                )
+                log_max_bytes = self.config.getint("Logging", "log_max_bytes", fallback=log_max_bytes)
             except (configparser.Error, ValueError, TypeError):
                 pass
             try:
-                log_backup_count = self.config.getint(
-                    "Logging", "log_backup_count", fallback=log_backup_count
-                )
+                log_backup_count = self.config.getint("Logging", "log_backup_count", fallback=log_backup_count)
             except (configparser.Error, ValueError, TypeError):
                 pass
 
         log_level_name = "INFO"
-        if getattr(self, "config", None) is not None and self.config.has_section(
-            "Logging"
-        ):
+        if getattr(self, "config", None) is not None and self.config.has_section("Logging"):
             log_level_name = (
                 self.config.get(
                     "Logging",
@@ -499,9 +465,7 @@ class BotDataViewer:
         # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()
 
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
         # Console handler (captured by journald under systemd)
         console_handler = logging.StreamHandler()
@@ -515,9 +479,7 @@ class BotDataViewer:
         self.logger.propagate = False
 
         if not log_file:
-            self.logger.info(
-                "No log file specified, using console/journal logging only"
-            )
+            self.logger.info("No log file specified, using console/journal logging only")
             return
 
         # Place viewer log beside the bot log (same directory as log_file)
@@ -579,50 +541,27 @@ class BotDataViewer:
             """Inject variables available to all templates. Never raises so templates always render."""
             try:
                 try:
-                    greeter_enabled = self.config.getboolean(
-                        "Greeter_Command", "enabled", fallback=False
-                    )
-                except (
-                    configparser.NoSectionError,
-                    configparser.NoOptionError,
-                    ValueError,
-                    TypeError,
-                ):
+                    greeter_enabled = self.config.getboolean("Greeter_Command", "enabled", fallback=False)
+                except (configparser.NoSectionError, configparser.NoOptionError, ValueError, TypeError):
                     greeter_enabled = False
                 try:
                     feed_manager_enabled = self.config.getboolean(
                         "Feed_Manager", "feed_manager_enabled", fallback=False
                     )
-                except (
-                    configparser.NoSectionError,
-                    configparser.NoOptionError,
-                    ValueError,
-                    TypeError,
-                ):
+                except (configparser.NoSectionError, configparser.NoOptionError, ValueError, TypeError):
                     feed_manager_enabled = False
                 try:
                     bot_name = (
-                        self.config.get("Bot", "bot_name", fallback="MeshCore Bot")
-                        or ""
+                        self.config.get("Bot", "bot_name", fallback="MeshCore Bot") or ""
                     ).strip() or "MeshCore Bot"
                 except (configparser.NoSectionError, configparser.NoOptionError):
                     bot_name = "MeshCore Bot"
                 try:
-                    radio_zombie = (
-                        self.db_manager.get_metadata("bot.radio_zombie") == "true"
-                    )
-                    radio_zombie_since = (
-                        self.db_manager.get_metadata("bot.radio_zombie_since") or None
-                    )
-                    radio_offline = (
-                        self.db_manager.get_metadata("bot.radio_offline") == "true"
-                    )
-                    radio_offline_since = (
-                        self.db_manager.get_metadata("bot.radio_offline_since") or None
-                    )
-                    bot_initializing = (
-                        self.db_manager.get_metadata("bot.initializing") == "true"
-                    )
+                    radio_zombie = self.db_manager.get_metadata("bot.radio_zombie") == "true"
+                    radio_zombie_since = self.db_manager.get_metadata("bot.radio_zombie_since") or None
+                    radio_offline = self.db_manager.get_metadata("bot.radio_offline") == "true"
+                    radio_offline_since = self.db_manager.get_metadata("bot.radio_offline_since") or None
+                    bot_initializing = self.db_manager.get_metadata("bot.initializing") == "true"
                 except Exception:
                     radio_zombie = False
                     radio_zombie_since = None
@@ -730,8 +669,7 @@ class BotDataViewer:
                     graph = MeshGraph(self._mesh_graph_bot, capture=False)
                 except Exception as e:
                     self.logger.error(
-                        f"Mesh graph unavailable; path decoding will fall back to "
-                        f"geographic selection only: {e}"
+                        f"Mesh graph unavailable; path decoding will fall back to geographic selection only: {e}"
                     )
                     return None
                 self._mesh_graph_bot.mesh_graph = graph
@@ -780,9 +718,7 @@ class BotDataViewer:
         force_refresh: bool = False,
     ) -> list[dict[str, Any]]:
         """Return lifetime-derived multi-byte edges filtered for the API view."""
-        all_edges = self._aggregate_multibyte_evidence_edges(
-            force_refresh=force_refresh
-        )
+        all_edges = self._aggregate_multibyte_evidence_edges(force_refresh=force_refresh)
         return self._filter_multibyte_evidence_edges(
             all_edges,
             days=days,
@@ -797,9 +733,7 @@ class BotDataViewer:
         force_refresh: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """Return filtered edges plus the lifetime graph's prefix resolution."""
-        all_edges = self._aggregate_multibyte_evidence_edges(
-            force_refresh=force_refresh
-        )
+        all_edges = self._aggregate_multibyte_evidence_edges(force_refresh=force_refresh)
         prefix_hex_chars = max(
             (len(edge["from_prefix"]) for edge in all_edges),
             default=2,
@@ -820,21 +754,13 @@ class BotDataViewer:
         min_observations: int | None,
     ) -> list[dict[str, Any]]:
         """Apply view filters without changing lifetime edge identity or counts."""
-        cutoff_naive = (
-            datetime.now() - timedelta(days=days) if days is not None else None
-        )
-        cutoff_utc = (
-            datetime.now(timezone.utc) - timedelta(days=days)
-            if days is not None
-            else None
-        )
+        cutoff_naive = datetime.now() - timedelta(days=days) if days is not None else None
+        cutoff_utc = datetime.now(timezone.utc) - timedelta(days=days) if days is not None else None
         result = []
         for edge in edges:
             if cutoff_naive is not None and edge["last_seen"]:
                 try:
-                    last_seen = datetime.fromisoformat(
-                        str(edge["last_seen"]).replace("Z", "+00:00")
-                    )
+                    last_seen = datetime.fromisoformat(str(edge["last_seen"]).replace("Z", "+00:00"))
                 except (TypeError, ValueError):
                     # Preserve the historical behavior for malformed timestamps:
                     # they remain visible rather than silently losing graph data.
@@ -843,22 +769,14 @@ class BotDataViewer:
                     if last_seen.tzinfo is None:
                         if last_seen < cutoff_naive:
                             continue
-                    elif (
-                        cutoff_utc is not None
-                        and last_seen.astimezone(timezone.utc) < cutoff_utc
-                    ):
+                    elif cutoff_utc is not None and last_seen.astimezone(timezone.utc) < cutoff_utc:
                         continue
-            if (
-                min_observations is not None
-                and edge["observation_count"] < min_observations
-            ):
+            if min_observations is not None and edge["observation_count"] < min_observations:
                 continue
             result.append(edge)
         return result
 
-    def _aggregate_multibyte_evidence_edges(
-        self, *, force_refresh: bool = False
-    ) -> list[dict[str, Any]]:
+    def _aggregate_multibyte_evidence_edges(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
         """Return a bounded-age, single-flight lifetime multi-byte aggregate."""
 
         def previous_failure(message: str) -> RuntimeError:
@@ -880,14 +798,8 @@ class BotDataViewer:
             if retry_suppressed:
                 if cached is not None and not force_refresh:
                     return cached
-                raise previous_failure(
-                    "Multi-byte mesh aggregation retry suppressed after failure"
-                )
-            if (
-                not force_refresh
-                and cached is not None
-                and cache_age < self._mesh_graph_cache_seconds
-            ):
+                raise previous_failure("Multi-byte mesh aggregation retry suppressed after failure")
+            if not force_refresh and cached is not None and cache_age < self._mesh_graph_cache_seconds:
                 return cached
 
             if self._multibyte_graph_cache_computing:
@@ -901,9 +813,7 @@ class BotDataViewer:
                 if self._multibyte_graph_cache_failure is not None:
                     if cached is not None and not force_refresh:
                         return cached
-                    raise previous_failure(
-                        "Concurrent multi-byte mesh aggregation failed"
-                    )
+                    raise previous_failure("Concurrent multi-byte mesh aggregation failed")
                 if cached is not None:
                     return cached
 
@@ -916,9 +826,7 @@ class BotDataViewer:
         except Exception as exc:
             self.logger.warning(
                 "Multi-byte mesh aggregation failed%s",
-                "; serving cached data"
-                if stale is not None and not force_refresh
-                else "",
+                "; serving cached data" if stale is not None and not force_refresh else "",
                 exc_info=True,
             )
             with self._multibyte_graph_cache_condition:
@@ -1051,14 +959,10 @@ class BotDataViewer:
                 target["path_count"] += source["path_count"]
                 target["hop_position_sum"] += source["hop_position_sum"]
                 if source["first_seen"] and (
-                    target["first_seen"] is None
-                    or source["first_seen"] < target["first_seen"]
+                    target["first_seen"] is None or source["first_seen"] < target["first_seen"]
                 ):
                     target["first_seen"] = source["first_seen"]
-                if source["last_seen"] and (
-                    target["last_seen"] is None
-                    or source["last_seen"] > target["last_seen"]
-                ):
+                if source["last_seen"] and (target["last_seen"] is None or source["last_seen"] > target["last_seen"]):
                     target["last_seen"] = source["last_seen"]
 
         result = []
@@ -1073,8 +977,7 @@ class BotDataViewer:
                     "path_count": agg["path_count"],
                     "first_seen": agg["first_seen"],
                     "last_seen": agg["last_seen"],
-                    "avg_hop_position": agg["hop_position_sum"]
-                    / agg["observation_count"],
+                    "avg_hop_position": agg["hop_position_sum"] / agg["observation_count"],
                     "geographic_distance": None,
                     "evidence": "multibyte",
                 }
@@ -1119,9 +1022,7 @@ class BotDataViewer:
 
         # Both directions are already emitted per link, so no reversing here.
         prefixes = {
-            (edge["from_prefix"], edge["to_prefix"])
-            for edge in edges
-            if edge["from_prefix"] and edge["to_prefix"]
+            (edge["from_prefix"], edge["to_prefix"]) for edge in edges if edge["from_prefix"] and edge["to_prefix"]
         }
         public_keys = {
             (edge["from_public_key"], edge["to_public_key"])
@@ -1177,10 +1078,7 @@ class BotDataViewer:
                 continue
             snr_count = row["snr_count"] or 0
             mean_snr = (row["snr_sum"] / snr_count) if snr_count else None
-            for from_key, to_key in (
-                (self_key, neighbor_key),
-                (neighbor_key, self_key),
-            ):
+            for from_key, to_key in ((self_key, neighbor_key), (neighbor_key, self_key)):
                 edges.append(
                     {
                         "from_prefix": from_key[:chars],
@@ -1216,9 +1114,7 @@ class BotDataViewer:
         is exactly the filtering these edges need.
         """
         all_edges = self._compute_neighbor_evidence_edges()
-        filtered = self._filter_multibyte_evidence_edges(
-            all_edges, days=days, min_observations=min_observations
-        )
+        filtered = self._filter_multibyte_evidence_edges(all_edges, days=days, min_observations=min_observations)
         return filtered, self.NEIGHBOR_PREFIX_HEX_CHARS
 
     def _resolve_path(self, path_input: str) -> dict[str, Any]:
@@ -1229,12 +1125,7 @@ class BotDataViewer:
         repeaters without coordinates; the shared engine guards that.
         """
         if not hasattr(self, "db_manager") or not self.db_manager:
-            return {
-                "node_ids": [],
-                "repeaters": [],
-                "valid": False,
-                "error": "Database manager not initialized",
-            }
+            return {"node_ids": [], "repeaters": [], "valid": False, "error": "Database manager not initialized"}
         from modules.path_inference import decode_path_nodes
 
         nodes = decode_path_nodes(
@@ -1248,12 +1139,7 @@ class BotDataViewer:
         )
         node_ids = [n["node_id"] for n in nodes]
         if not node_ids:
-            return {
-                "node_ids": [],
-                "repeaters": [],
-                "valid": False,
-                "error": "No valid hex values found",
-            }
+            return {"node_ids": [], "repeaters": [], "valid": False, "error": "No valid hex values found"}
         return {"node_ids": node_ids, "repeaters": nodes, "valid": True}
 
     def _setup_routes(self):
@@ -1263,14 +1149,8 @@ class BotDataViewer:
         @self.app.errorhandler(500)
         def internal_error(e):
             self.logger.exception("Unhandled exception (500): %s", e)
-            if (
-                request.path.startswith("/api/")
-                or request.accept_mimetypes.best == "application/json"
-            ):
-                return make_response(
-                    jsonify({"error": "An internal error occurred — see server logs"}),
-                    500,
-                )
+            if request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json":
+                return make_response(jsonify({"error": "An internal error occurred — see server logs"}), 500)
             return make_response(
                 render_template(
                     "error.html",
@@ -1331,9 +1211,7 @@ class BotDataViewer:
             if request.headers.get("X-Requested-With"):
                 return  # Custom header present — same-origin or CORS-approved
             if request.path.startswith("/api/"):
-                return make_response(
-                    jsonify({"error": "Missing X-Requested-With header"}), 403
-                )
+                return make_response(jsonify({"error": "Missing X-Requested-With header"}), 403)
 
         @self.app.after_request
         def set_security_headers(response):
@@ -1388,11 +1266,7 @@ class BotDataViewer:
             # The full exception is already logged server-side; clients only need a
             # generic message.  Preserve 'error' key presence so callers can detect
             # failure, but strip internal details (file paths, DB errors, etc.).
-            if (
-                response.status_code >= 500
-                and response.content_type
-                and "json" in response.content_type
-            ):
+            if response.status_code >= 500 and response.content_type and "json" in response.content_type:
                 try:
                     data = response.get_json(silent=True)
                     if data and isinstance(data, dict) and "error" in data:
@@ -1490,12 +1364,6 @@ class BotDataViewer:
             return render_template("schedule.html")
 
         @self.app.route("/radio")
-        @self.app.route("/schedule")
-        def schedule_page():
-            """Scheduled message management page"""
-            return render_template("schedule.html")
-
-        @self.app.route("/radio")
         def radio():
             """Radio settings page.
 
@@ -1506,16 +1374,10 @@ class BotDataViewer:
             bot_name = ""
             name_managed = False
             if self.config:
-                auto_manage = self.config.get(
-                    "Bot", "auto_manage_contacts", fallback="device"
-                ).lower()
-                bot_name = (
-                    self.config.get("Bot", "bot_name", fallback="") or ""
-                ).strip()
+                auto_manage = self.config.get("Bot", "auto_manage_contacts", fallback="device").lower()
+                bot_name = (self.config.get("Bot", "bot_name", fallback="") or "").strip()
                 try:
-                    auto_update_name = self.config.getboolean(
-                        "Bot", "auto_update_device_name", fallback=True
-                    )
+                    auto_update_name = self.config.getboolean("Bot", "auto_update_device_name", fallback=True)
                 except ValueError:
                     auto_update_name = True
                 name_managed = bool(bot_name) and auto_update_name
@@ -1592,9 +1454,7 @@ class BotDataViewer:
                             errors[key] = err
                         else:
                             tsec = field.get("section") or section
-                            updates.setdefault(tsec, {})[key] = to_config_string(
-                                field, coerced
-                            )
+                            updates.setdefault(tsec, {})[key] = to_config_string(field, coerced)
                     else:
                         updates[section][str(key)] = "" if val is None else str(val)
 
@@ -1627,12 +1487,7 @@ class BotDataViewer:
                         if key_err:
                             return jsonify({"success": False, "error": key_err}), 400
                         if rkey.lower() in seen_disp:
-                            return jsonify(
-                                {
-                                    "success": False,
-                                    "error": f'Duplicate key "{rkey}" in {ds["label"]}',
-                                }
-                            ), 400
+                            return jsonify({"success": False, "error": f'Duplicate key "{rkey}" in {ds["label"]}'}), 400
                         seen_disp.add(rkey.lower())
                         full = f"{prefix}{rkey}"
                         new_full[full] = rval
@@ -1640,17 +1495,12 @@ class BotDataViewer:
                     # Merge into the target section (own section keeps schema fields).
                     updates.setdefault(dsec, {}).update(new_full)
                     # Delete existing managed keys that are no longer present.
-                    existing = (
-                        self.config.items(dsec, raw=True)
-                        if self.config.has_section(dsec)
-                        else []
-                    )
+                    existing = self.config.items(dsec, raw=True) if self.config.has_section(dsec) else []
                     pl = prefix.lower()
                     del_keys = [
                         k
                         for k, _ in existing
-                        if (not prefix or k.lower().startswith(pl))
-                        and k.lower() not in seen_full
+                        if (not prefix or k.lower().startswith(pl)) and k.lower() not in seen_full
                     ]
                     deletes.setdefault(dsec, []).extend(del_keys)
 
@@ -1676,41 +1526,24 @@ class BotDataViewer:
                             if field is not None:
                                 ok, coerced, err = validate_field(field, val)
                                 if not ok:
-                                    return jsonify(
-                                        {
-                                            "success": False,
-                                            "error": f"{rb['label']} #{i}: {err}",
-                                        }
-                                    ), 400
-                                updates[section][full] = to_config_string(
-                                    field, coerced
-                                )
+                                    return jsonify({"success": False, "error": f"{rb['label']} #{i}: {err}"}), 400
+                                updates[section][full] = to_config_string(field, coerced)
                             else:
                                 updates[section][full] = "" if val is None else str(val)
                             written.add(full.lower())
                         en = f"{bid}{i}_{enabled_field}"
-                        updates[section][en] = (
-                            "true" if block.get("enabled", True) else "false"
-                        )
+                        updates[section][en] = "true" if block.get("enabled", True) else "false"
                         written.add(en.lower())
                     # Delete any existing block keys (old higher indices / removed).
                     brx = re.compile(rf"^{re.escape(bid)}\d+_", re.IGNORECASE)
-                    existing = (
-                        self.config.items(section, raw=True)
-                        if self.config.has_section(section)
-                        else []
-                    )
+                    existing = self.config.items(section, raw=True) if self.config.has_section(section) else []
                     for k, _ in existing:
                         if brx.match(k) and k.lower() not in written:
                             deletes.setdefault(section, []).append(k)
 
-                store = get_settings_store(
-                    self.config, self.config_path, self.db_manager
-                )
+                store = get_settings_store(self.config, self.config_path, self.db_manager)
                 result = store.write_sections(updates, deletes)
-                backup_path = (
-                    result.get("backup_path", "") if isinstance(result, dict) else ""
-                )
+                backup_path = result.get("backup_path", "") if isinstance(result, dict) else ""
 
                 # A service's start/stop only takes effect on bot restart.
                 restart_required = kind == "service" and enabled != entry["enabled"]
@@ -1750,9 +1583,7 @@ class BotDataViewer:
                 return jsonify({"success": False, "error": str(exc)}), 400
             except Exception:
                 self.logger.exception("Error saving plugin settings")
-                return jsonify(
-                    {"success": False, "error": "Internal error — see server logs"}
-                ), 500
+                return jsonify({"success": False, "error": "Internal error — see server logs"}), 500
 
         @self.app.route("/api/plugins/reload-status")
         def api_plugins_reload_status():
@@ -1858,16 +1689,10 @@ class BotDataViewer:
             # Validate SMTP host for SSRF protection
             # allow_local_smtp=true permits private/internal SMTP hosts (e.g., local Postfix)
             allow_local_smtp = _get("allow_local_smtp").lower() == "true"
-            if not validate_external_url(
-                f"http://{smtp_host}", allow_private=allow_local_smtp
-            ):
+            if not validate_external_url(f"http://{smtp_host}", allow_private=allow_local_smtp):
                 if allow_local_smtp:
                     return jsonify({"error": "Invalid or unsafe SMTP host"}), 400
-                return jsonify(
-                    {
-                        "error": "Invalid or unsafe SMTP host (private/internal IP blocked)"
-                    }
-                ), 400
+                return jsonify({"error": "Invalid or unsafe SMTP host (private/internal IP blocked)"}), 400
 
             try:
                 msg = EmailMessage()
@@ -1897,12 +1722,7 @@ class BotDataViewer:
                         s.send_message(msg)
 
                 self.logger.info(f"Test email sent to {recipients}")
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": f"Test email sent to {', '.join(recipients)}",
-                    }
-                )
+                return jsonify({"success": True, "message": f"Test email sent to {', '.join(recipients)}"})
 
             except Exception as e:
                 self.logger.error(f"Test email failed: {e}")
@@ -2023,18 +1843,14 @@ class BotDataViewer:
                     if self.config.getboolean(
                         "Connection",
                         "radio_zombie_alert_enabled",
-                        fallback=self.config.getboolean(
-                            "Bot", "radio_zombie_alert_enabled", fallback=False
-                        ),
+                        fallback=self.config.getboolean("Bot", "radio_zombie_alert_enabled", fallback=False),
                     )
                     else "false"
                 ),
                 "alert_email": self.config.get(
                     "Connection",
                     "radio_zombie_alert_email",
-                    fallback=self.config.get(
-                        "Bot", "radio_zombie_alert_email", fallback=""
-                    ),
+                    fallback=self.config.get("Bot", "radio_zombie_alert_email", fallback=""),
                 ),
             }
             return jsonify({"meta": meta, "config_ini": ini})
@@ -2055,9 +1871,7 @@ class BotDataViewer:
                 if field in data:
                     self.db_manager.set_metadata(f"zombie.{field}", str(data[field]))
                     saved.append(field)
-            self.logger.info(
-                "Zombie alert config updated (metadata): %s", ", ".join(saved)
-            )
+            self.logger.info("Zombie alert config updated (metadata): %s", ", ".join(saved))
 
             write_to_config = str(data.get("write_to_config", "")).lower() == "true"
             config_saved = False
@@ -2068,14 +1882,10 @@ class BotDataViewer:
                     ini_updates: dict[str, str] = {}
                     if "alert_enabled" in data:
                         ini_updates["radio_zombie_alert_enabled"] = (
-                            "true"
-                            if str(data["alert_enabled"]).lower() == "true"
-                            else "false"
+                            "true" if str(data["alert_enabled"]).lower() == "true" else "false"
                         )
                     if "alert_email" in data:
-                        ini_updates["radio_zombie_alert_email"] = str(
-                            data["alert_email"]
-                        )
+                        ini_updates["radio_zombie_alert_email"] = str(data["alert_email"])
                     if ini_updates:
                         # Persist first: alert_email is free-form client JSON, so
                         # a rejected value must not leave the in-memory config
@@ -2090,9 +1900,7 @@ class BotDataViewer:
                     self.logger.warning("Rejected zombie alert config value: %s", exc)
                     return jsonify({"success": False, "error": str(exc)}), 400
                 except OSError as exc:
-                    self.logger.error(
-                        "Failed to write zombie alert settings to config.ini: %s", exc
-                    )
+                    self.logger.error("Failed to write zombie alert settings to config.ini: %s", exc)
                     return jsonify(
                         {
                             "success": False,
@@ -2100,9 +1908,7 @@ class BotDataViewer:
                         }
                     ), 500
 
-            return jsonify(
-                {"success": True, "saved": saved, "config_saved": config_saved}
-            )
+            return jsonify({"success": True, "saved": saved, "config_saved": config_saved})
 
         # ── Zombie recover ───────────────────────────────────────────────────
 
@@ -2123,17 +1929,10 @@ class BotDataViewer:
                     bot._radio_fail_count = 0
                     bot._last_radio_probe = 0  # force probe on next cycle
                 self.logger.info("Zombie state cleared via web UI recover action")
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": "Zombie state cleared; bot will resume",
-                    }
-                )
+                return jsonify({"success": True, "message": "Zombie state cleared; bot will resume"})
             except Exception:
                 self.logger.exception("Error clearing zombie state")
-                return jsonify(
-                    {"success": False, "error": "Internal error — see server logs"}
-                ), 500
+                return jsonify({"success": False, "error": "Internal error — see server logs"}), 500
 
         # ── Radio debug config ───────────────────────────────────────────────
 
@@ -2147,17 +1946,8 @@ class BotDataViewer:
             """
             meta_val = self.db_manager.get_metadata("radio.debug")
             meta_enabled = meta_val if isinstance(meta_val, str) else ""
-            ini_enabled = (
-                "true"
-                if self.config.getboolean("Connection", "radio_debug", fallback=False)
-                else "false"
-            )
-            return jsonify(
-                {
-                    "meta": {"enabled": meta_enabled},
-                    "config_ini": {"enabled": ini_enabled},
-                }
-            )
+            ini_enabled = "true" if self.config.getboolean("Connection", "radio_debug", fallback=False) else "false"
+            return jsonify({"meta": {"enabled": meta_enabled}, "config_ini": {"enabled": ini_enabled}})
 
         @self.app.route("/api/config/radio-debug", methods=["POST"])
         def api_config_radio_debug_post() -> "Response":
@@ -2174,14 +1964,10 @@ class BotDataViewer:
             try:
                 data = request.get_json(silent=True) or {}
                 enabled = str(data.get("enabled", "false")).lower() == "true"
-                write_to_config = (
-                    str(data.get("write_to_config", "false")).lower() == "true"
-                )
+                write_to_config = str(data.get("write_to_config", "false")).lower() == "true"
                 do_reconnect = str(data.get("reconnect", "false")).lower() == "true"
 
-                self.db_manager.set_metadata(
-                    "radio.debug", "true" if enabled else "false"
-                )
+                self.db_manager.set_metadata("radio.debug", "true" if enabled else "false")
                 config_saved = False
 
                 if write_to_config:
@@ -2190,17 +1976,11 @@ class BotDataViewer:
                             self.config.add_section("Connection")
                         val = "true" if enabled else "false"
                         self.config.set("Connection", "radio_debug", val)
-                        update_ini_values(
-                            self.config_path, {"Connection": {"radio_debug": val}}
-                        )
+                        update_ini_values(self.config_path, {"Connection": {"radio_debug": val}})
                         config_saved = True
-                        self.logger.info(
-                            "radio_debug=%s written to config.ini by web UI", val
-                        )
+                        self.logger.info("radio_debug=%s written to config.ini by web UI", val)
                     except OSError as exc:
-                        self.logger.error(
-                            "Failed to write radio_debug to config.ini: %s", exc
-                        )
+                        self.logger.error("Failed to write radio_debug to config.ini: %s", exc)
                         return jsonify(
                             {
                                 "success": False,
@@ -2217,15 +1997,9 @@ class BotDataViewer:
                         )
                         conn.commit()
                         op_id = cursor.lastrowid
-                    self.logger.info(
-                        "Radio reconnect queued (op_id=%s) to apply radio_debug=%s",
-                        op_id,
-                        enabled,
-                    )
+                    self.logger.info("Radio reconnect queued (op_id=%s) to apply radio_debug=%s", op_id, enabled)
 
-                return jsonify(
-                    {"success": True, "config_saved": config_saved, "op_id": op_id}
-                )
+                return jsonify({"success": True, "config_saved": config_saved, "op_id": op_id})
             except Exception as exc:
                 self.logger.exception("Error saving radio debug config")
                 return jsonify({"success": False, "error": str(exc)}), 500
@@ -2238,18 +2012,10 @@ class BotDataViewer:
             try:
                 return jsonify(
                     {
-                        "probe_interval_seconds": self.db_manager.get_metadata(
-                            "radio.probe_interval_seconds"
-                        )
-                        or self.config.getint(
-                            "Connection", "radio_probe_interval_seconds", fallback=300
-                        ),
-                        "probe_fail_threshold": self.db_manager.get_metadata(
-                            "radio.probe_fail_threshold"
-                        )
-                        or self.config.getint(
-                            "Connection", "radio_probe_fail_threshold", fallback=3
-                        ),
+                        "probe_interval_seconds": self.db_manager.get_metadata("radio.probe_interval_seconds")
+                        or self.config.getint("Connection", "radio_probe_interval_seconds", fallback=300),
+                        "probe_fail_threshold": self.db_manager.get_metadata("radio.probe_fail_threshold")
+                        or self.config.getint("Connection", "radio_probe_fail_threshold", fallback=3),
                     }
                 )
             except Exception as exc:
@@ -2266,67 +2032,39 @@ class BotDataViewer:
 
                 # Validate ranges
                 if not (300 <= probe_interval <= 900):
-                    return jsonify(
-                        {
-                            "success": False,
-                            "error": "probe_interval_seconds must be 300-900",
-                        }
-                    ), 400
+                    return jsonify({"success": False, "error": "probe_interval_seconds must be 300-900"}), 400
                 if not (1 <= probe_fail_threshold <= 10):
-                    return jsonify(
-                        {"success": False, "error": "probe_fail_threshold must be 1-10"}
-                    ), 400
+                    return jsonify({"success": False, "error": "probe_fail_threshold must be 1-10"}), 400
 
                 saved = []
-                self.db_manager.set_metadata(
-                    "radio.probe_interval_seconds", str(probe_interval)
-                )
+                self.db_manager.set_metadata("radio.probe_interval_seconds", str(probe_interval))
                 saved.append("probe_interval_seconds")
-                self.db_manager.set_metadata(
-                    "radio.probe_fail_threshold", str(probe_fail_threshold)
-                )
+                self.db_manager.set_metadata("radio.probe_fail_threshold", str(probe_fail_threshold))
                 saved.append("probe_fail_threshold")
 
-                self.logger.info(
-                    "Radio probe config updated (metadata): %s", ", ".join(saved)
-                )
+                self.logger.info("Radio probe config updated (metadata): %s", ", ".join(saved))
 
                 # Optionally save to config.ini
                 config_saved = False
                 if data.get("save_to_config", False):
                     try:
-                        self.config.set(
-                            "Connection",
-                            "radio_probe_interval_seconds",
-                            str(probe_interval),
-                        )
-                        self.config.set(
-                            "Connection",
-                            "radio_probe_fail_threshold",
-                            str(probe_fail_threshold),
-                        )
+                        self.config.set("Connection", "radio_probe_interval_seconds", str(probe_interval))
+                        self.config.set("Connection", "radio_probe_fail_threshold", str(probe_fail_threshold))
                         update_ini_values(
                             self.config_path,
                             {
                                 "Connection": {
                                     "radio_probe_interval_seconds": str(probe_interval),
-                                    "radio_probe_fail_threshold": str(
-                                        probe_fail_threshold
-                                    ),
+                                    "radio_probe_fail_threshold": str(probe_fail_threshold),
                                 }
                             },
                         )
                         config_saved = True
                         self.logger.info("Radio probe settings written to config.ini")
                     except Exception as exc:
-                        self.logger.error(
-                            "Failed to write radio probe settings to config.ini: %s",
-                            exc,
-                        )
+                        self.logger.error("Failed to write radio probe settings to config.ini: %s", exc)
 
-                return jsonify(
-                    {"success": True, "saved": saved, "config_saved": config_saved}
-                )
+                return jsonify({"success": True, "saved": saved, "config_saved": config_saved})
             except Exception as exc:
                 self.logger.exception("Error saving radio probe config")
                 return jsonify({"success": False, "error": str(exc)}), 500
@@ -2339,25 +2077,12 @@ class BotDataViewer:
             try:
                 return jsonify(
                     {
-                        "offline_threshold": self.db_manager.get_metadata(
-                            "radio.offline_threshold"
-                        )
-                        or self.config.getint(
-                            "Connection", "radio_offline_threshold", fallback=3
-                        ),
-                        "alert_enabled": self.db_manager.get_metadata(
-                            "radio.offline_alert_enabled"
-                        )
-                        == "true"
-                        or self.config.getboolean(
-                            "Connection", "radio_offline_alert_enabled", fallback=False
-                        ),
-                        "alert_email": self.db_manager.get_metadata(
-                            "radio.offline_alert_email"
-                        )
-                        or self.config.get(
-                            "Connection", "radio_offline_alert_email", fallback=""
-                        ),
+                        "offline_threshold": self.db_manager.get_metadata("radio.offline_threshold")
+                        or self.config.getint("Connection", "radio_offline_threshold", fallback=3),
+                        "alert_enabled": self.db_manager.get_metadata("radio.offline_alert_enabled") == "true"
+                        or self.config.getboolean("Connection", "radio_offline_alert_enabled", fallback=False),
+                        "alert_email": self.db_manager.get_metadata("radio.offline_alert_email")
+                        or self.config.get("Connection", "radio_offline_alert_email", fallback=""),
                     }
                 )
             except Exception as exc:
@@ -2375,26 +2100,17 @@ class BotDataViewer:
 
                 # Validate ranges
                 if not (1 <= offline_threshold <= 10):
-                    return jsonify(
-                        {"success": False, "error": "offline_threshold must be 1-10"}
-                    ), 400
+                    return jsonify({"success": False, "error": "offline_threshold must be 1-10"}), 400
 
                 saved = []
-                self.db_manager.set_metadata(
-                    "radio.offline_threshold", str(offline_threshold)
-                )
+                self.db_manager.set_metadata("radio.offline_threshold", str(offline_threshold))
                 saved.append("offline_threshold")
-                self.db_manager.set_metadata(
-                    "radio.offline_alert_enabled", "true" if alert_enabled else "false"
-                )
+                self.db_manager.set_metadata("radio.offline_alert_enabled", "true" if alert_enabled else "false")
                 saved.append("alert_enabled")
                 self.db_manager.set_metadata("radio.offline_alert_email", alert_email)
                 saved.append("alert_email")
 
-                self.logger.info(
-                    "Radio offline alert config updated (metadata): %s",
-                    ", ".join(saved),
-                )
+                self.logger.info("Radio offline alert config updated (metadata): %s", ", ".join(saved))
 
                 # Optionally save to config.ini
                 config_saved = False
@@ -2413,18 +2129,11 @@ class BotDataViewer:
                         for ini_key, ini_val in offline_ini.items():
                             self.config.set("Connection", ini_key, ini_val)
                         config_saved = True
-                        self.logger.info(
-                            "Radio offline alert settings written to config.ini"
-                        )
+                        self.logger.info("Radio offline alert settings written to config.ini")
                     except Exception as exc:
-                        self.logger.error(
-                            "Failed to write radio offline alert settings to config.ini: %s",
-                            exc,
-                        )
+                        self.logger.error("Failed to write radio offline alert settings to config.ini: %s", exc)
 
-                return jsonify(
-                    {"success": True, "saved": saved, "config_saved": config_saved}
-                )
+                return jsonify({"success": True, "saved": saved, "config_saved": config_saved})
             except Exception as exc:
                 self.logger.exception("Error saving radio offline alert config")
                 return jsonify({"success": False, "error": str(exc)}), 500
@@ -2442,17 +2151,10 @@ class BotDataViewer:
                     bot._radio_offline = False
                     bot._send_consecutive_failures = 0
                 self.logger.info("Radio-offline state cleared via web UI action")
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": "Radio-offline flag cleared; sends will resume",
-                    }
-                )
+                return jsonify({"success": True, "message": "Radio-offline flag cleared; sends will resume"})
             except Exception:
                 self.logger.exception("Error clearing radio-offline state")
-                return jsonify(
-                    {"success": False, "error": "Internal error — see server logs"}
-                ), 500
+                return jsonify({"success": False, "error": "Internal error — see server logs"}), 500
 
         # ── Maintenance status ───────────────────────────────────────────────
 
@@ -2463,15 +2165,11 @@ class BotDataViewer:
                 bot = getattr(self, "bot", None)
                 scheduler = getattr(bot, "scheduler", None) if bot else None
                 if scheduler is None or not hasattr(scheduler, "run_db_backup"):
-                    return jsonify(
-                        {"success": False, "error": "Scheduler not available"}
-                    ), 503
+                    return jsonify({"success": False, "error": "Scheduler not available"}), 503
                 scheduler.run_db_backup()
                 # Read outcome written by _run_db_backup
                 path = self.db_manager.get_metadata("maint.status.db_backup_path") or ""
-                outcome = (
-                    self.db_manager.get_metadata("maint.status.db_backup_outcome") or ""
-                )
+                outcome = self.db_manager.get_metadata("maint.status.db_backup_outcome") or ""
                 if outcome.startswith("error"):
                     return jsonify({"success": False, "error": outcome}), 500
                 return jsonify({"success": True, "path": path, "outcome": outcome})
@@ -2494,13 +2192,9 @@ class BotDataViewer:
                     return jsonify({"error": "db_file is required"}), 400
 
                 # Validate path is within the configured backup directory
-                backup_dir_str = (
-                    self.db_manager.get_metadata("maint.db_backup_dir") or ""
-                )
+                backup_dir_str = self.db_manager.get_metadata("maint.db_backup_dir") or ""
                 if not backup_dir_str or not os.path.isdir(backup_dir_str):
-                    return jsonify(
-                        {"error": "No valid backup directory configured"}
-                    ), 400
+                    return jsonify({"error": "No valid backup directory configured"}), 400
 
                 # Validate path is within the configured backup directory
                 # First check for dangerous system paths, then check if path is within backup dir
@@ -2527,11 +2221,7 @@ class BotDataViewer:
                     src.relative_to(backup_dir)
                 except ValueError:
                     # Path is outside backup directory - return 403
-                    return jsonify(
-                        {
-                            "error": "Restore path must be within the configured backup directory"
-                        }
-                    ), 403
+                    return jsonify({"error": "Restore path must be within the configured backup directory"}), 403
 
                 if not src.exists():
                     return jsonify({"error": f"File not found: {db_file}"}), 400
@@ -2547,9 +2237,7 @@ class BotDataViewer:
                         max_bytes=max_restore_bytes,
                     )
                 except (DatabaseRestoreError, OSError, ValueError) as exc:
-                    self.logger.warning(
-                        "Database restore staging rejected for %s: %s", src, exc
-                    )
+                    self.logger.warning("Database restore staging rejected for %s: %s", src, exc)
                     return jsonify({"error": str(exc)}), 400
 
                 self.logger.warning(
@@ -2578,9 +2266,7 @@ class BotDataViewer:
         def api_maintenance_list_backups():
             """List available backup files from the configured backup directory."""
             try:
-                backup_dir_str = (
-                    self.db_manager.get_metadata("maint.db_backup_dir") or ""
-                )
+                backup_dir_str = self.db_manager.get_metadata("maint.db_backup_dir") or ""
                 if not backup_dir_str or not os.path.isdir(backup_dir_str):
                     return jsonify({"backups": []})
                 backup_dir = Path(backup_dir_str)
@@ -2652,21 +2338,11 @@ class BotDataViewer:
                     if tf is None:
                         tables_filter = None
                     elif not isinstance(tf, list):
-                        return jsonify(
-                            {"error": "tables must be a list of table names or null"}
-                        ), 400
+                        return jsonify({"error": "tables must be a list of table names or null"}), 400
                     elif len(tf) == 0:
-                        return jsonify(
-                            {
-                                "error": "tables cannot be empty; omit tables to purge all tables"
-                            }
-                        ), 400
+                        return jsonify({"error": "tables cannot be empty; omit tables to purge all tables"}), 400
                     else:
-                        bad = [
-                            x
-                            for x in tf
-                            if not isinstance(x, str) or x not in _PURGEABLE
-                        ]
+                        bad = [x for x in tf if not isinstance(x, str) or x not in _PURGEABLE]
                         if bad:
                             return jsonify(
                                 {
@@ -2703,27 +2379,20 @@ class BotDataViewer:
                 }
 
                 if tables_filter is None:
-                    ops_to_run = [
-                        (table, column, _params_for[table][0])
-                        for table, column in _purge_ops
-                    ]
+                    ops_to_run = [(table, column, _params_for[table][0]) for table, column in _purge_ops]
                 else:
                     want = set(tables_filter)
                     ops_to_run = [
-                        (table, column, _params_for[table][0])
-                        for table, column in _purge_ops
-                        if table in want
+                        (table, column, _params_for[table][0]) for table, column in _purge_ops if table in want
                     ]
 
                 for table, column, cutoff in ops_to_run:
                     try:
-                        deleted[table] = (
-                            self.db_manager.delete_timestamp_rows_in_chunks(
-                                table,
-                                column,
-                                cutoff,
-                                progress_label=f"manual {table.replace('_', ' ')} purge",
-                            )
+                        deleted[table] = self.db_manager.delete_timestamp_rows_in_chunks(
+                            table,
+                            column,
+                            cutoff,
+                            progress_label=f"manual {table.replace('_', ' ')} purge",
                         )
                     except Exception:
                         deleted[table] = 0
@@ -2768,9 +2437,7 @@ class BotDataViewer:
         def admin_config():
             """Resolved config viewer — shows effective config.ini values with sensitive fields redacted."""
             sections = config_to_redacted_sections(self.config)
-            return render_template(
-                "admin_config.html", sections=sections, config_path=self.config_path
-            )
+            return render_template("admin_config.html", sections=sections, config_path=self.config_path)
 
         @self.app.route("/mesh")
         def mesh():
@@ -2784,26 +2451,17 @@ class BotDataViewer:
         @self.app.route("/apple-touch-icon.png")
         def apple_touch_icon():
             """Apple touch icon"""
-            return send_from_directory(
-                os.path.join(os.path.dirname(__file__), "static", "ico"),
-                "apple-touch-icon.png",
-            )
+            return send_from_directory(os.path.join(os.path.dirname(__file__), "static", "ico"), "apple-touch-icon.png")
 
         @self.app.route("/favicon-32x32.png")
         def favicon_32x32():
             """32x32 favicon"""
-            return send_from_directory(
-                os.path.join(os.path.dirname(__file__), "static", "ico"),
-                "favicon-32x32.png",
-            )
+            return send_from_directory(os.path.join(os.path.dirname(__file__), "static", "ico"), "favicon-32x32.png")
 
         @self.app.route("/favicon-16x16.png")
         def favicon_16x16():
             """16x16 favicon"""
-            return send_from_directory(
-                os.path.join(os.path.dirname(__file__), "static", "ico"),
-                "favicon-16x16.png",
-            )
+            return send_from_directory(os.path.join(os.path.dirname(__file__), "static", "ico"), "favicon-16x16.png")
 
         @self.app.route("/site.webmanifest")
         def site_webmanifest():
@@ -2817,9 +2475,7 @@ class BotDataViewer:
         @self.app.route("/favicon.ico")
         def favicon():
             """Default favicon"""
-            return send_from_directory(
-                os.path.join(os.path.dirname(__file__), "static", "ico"), "favicon.ico"
-            )
+            return send_from_directory(os.path.join(os.path.dirname(__file__), "static", "ico"), "favicon.ico")
 
         # API Routes
         @self.app.route("/api/health")
@@ -2832,9 +2488,7 @@ class BotDataViewer:
                 client_count = len(self.connected_clients)
 
             radio_zombie = self.db_manager.get_metadata("bot.radio_zombie") == "true"
-            radio_zombie_since = (
-                self.db_manager.get_metadata("bot.radio_zombie_since") or None
-            )
+            radio_zombie_since = self.db_manager.get_metadata("bot.radio_zombie_since") or None
 
             return jsonify(
                 {
@@ -2853,21 +2507,11 @@ class BotDataViewer:
         def api_banner_status():
             """Return current banner states for live JS polling."""
             try:
-                radio_zombie = (
-                    self.db_manager.get_metadata("bot.radio_zombie") == "true"
-                )
-                radio_zombie_since = (
-                    self.db_manager.get_metadata("bot.radio_zombie_since") or None
-                )
-                radio_offline = (
-                    self.db_manager.get_metadata("bot.radio_offline") == "true"
-                )
-                radio_offline_since = (
-                    self.db_manager.get_metadata("bot.radio_offline_since") or None
-                )
-                bot_initializing = (
-                    self.db_manager.get_metadata("bot.initializing") == "true"
-                )
+                radio_zombie = self.db_manager.get_metadata("bot.radio_zombie") == "true"
+                radio_zombie_since = self.db_manager.get_metadata("bot.radio_zombie_since") or None
+                radio_offline = self.db_manager.get_metadata("bot.radio_offline") == "true"
+                radio_offline_since = self.db_manager.get_metadata("bot.radio_offline_since") or None
+                bot_initializing = self.db_manager.get_metadata("bot.initializing") == "true"
             except Exception:
                 radio_zombie = False
                 radio_zombie_since = None
@@ -2911,13 +2555,9 @@ class BotDataViewer:
                     health_data["uptime_seconds"] = time.time() - start_time
 
                 # Inject zombie radio state from shared metadata
-                radio_zombie = (
-                    self.db_manager.get_metadata("bot.radio_zombie") == "true"
-                )
+                radio_zombie = self.db_manager.get_metadata("bot.radio_zombie") == "true"
                 health_data["radio_zombie"] = radio_zombie
-                health_data["radio_zombie_since"] = (
-                    self.db_manager.get_metadata("bot.radio_zombie_since") or None
-                )
+                health_data["radio_zombie_since"] = self.db_manager.get_metadata("bot.radio_zombie_since") or None
                 if radio_zombie:
                     health_data["status"] = "degraded"
 
@@ -2955,9 +2595,7 @@ class BotDataViewer:
                 response = jsonify(stats)
                 response.headers["Deprecation"] = "true"
                 response.headers["Sunset"] = STATS_ENDPOINT_SUNSET
-                response.headers["Link"] = (
-                    '</api/dashboard/summary>; rel="successor-version"'
-                )
+                response.headers["Link"] = '</api/dashboard/summary>; rel="successor-version"'
                 return response
             except Exception as e:
                 self.logger.error(f"Error getting stats: {e}")
@@ -3092,10 +2730,7 @@ class BotDataViewer:
                     }
                 if hasattr(bot, "channel_rate_limiter") and bot.channel_rate_limiter:
                     stats["channels"] = bot.channel_rate_limiter.get_stats()
-                if (
-                    hasattr(bot, "nominatim_rate_limiter")
-                    and bot.nominatim_rate_limiter
-                ):
+                if hasattr(bot, "nominatim_rate_limiter") and bot.nominatim_rate_limiter:
                     stats["nominatim"] = bot.nominatim_rate_limiter.get_stats()
                 return jsonify(stats)
             except Exception as e:
@@ -3136,9 +2771,7 @@ class BotDataViewer:
                     except (TypeError, ValueError):
                         page = 1
                     try:
-                        page_size = max(
-                            1, min(200, int(request.args.get("page_size", "100")))
-                        )
+                        page_size = max(1, min(200, int(request.args.get("page_size", "100"))))
                     except (TypeError, ValueError):
                         page_size = 100
                 search = request.args.get("search", "").strip()[:100]
@@ -3193,9 +2826,7 @@ class BotDataViewer:
                 node_type = request.args.get("node_type", "all")
                 if node_type not in ("all", "repeater", "roomserver"):
                     node_type = "all"
-                data = self._get_multibyte_rollout_data(
-                    since=since, node_type=node_type
-                )
+                data = self._get_multibyte_rollout_data(since=since, node_type=node_type)
                 return jsonify(data)
             except Exception as e:
                 self.logger.error(f"Error getting multibyte rollout data: {e}")
@@ -3239,9 +2870,7 @@ class BotDataViewer:
                 prefix_hex_chars = request.args.get("prefix_hex_chars", type=int)
                 days = request.args.get("days", type=int)
                 if prefix_hex_chars not in (2, 4, 6):
-                    prefix_hex_chars = (
-                        self.config.getint("Bot", "prefix_bytes", fallback=1) * 2
-                    )
+                    prefix_hex_chars = self.config.getint("Bot", "prefix_bytes", fallback=1) * 2
                 if prefix_hex_chars <= 0:
                     prefix_hex_chars = 2
                 conn = self._get_db_connection()
@@ -3420,23 +3049,17 @@ class BotDataViewer:
                 edges = []
                 for row in rows:
                     fp, tp = row["from_prefix"], row["to_prefix"]
-                    prefix_hex_chars = max(
-                        prefix_hex_chars, len(fp) if fp else 0, len(tp) if tp else 0
-                    )
+                    prefix_hex_chars = max(prefix_hex_chars, len(fp) if fp else 0, len(tp) if tp else 0)
                     # Edges keyed at 4+ hex chars were necessarily created (or promoted)
                     # by a multi-byte path observation; 2-char keys carry only ambiguous
                     # single-byte evidence.
-                    is_multibyte = (
-                        bool(fp) and bool(tp) and len(fp) >= 4 and len(tp) >= 4
-                    )
+                    is_multibyte = bool(fp) and bool(tp) and len(fp) >= 4 and len(tp) >= 4
                     from_lower = fp.lower() if fp else ""
                     to_lower = tp.lower() if tp else ""
                     from_key = (row["from_public_key"] or "").lower()
                     to_key = (row["to_public_key"] or "").lower()
                     if (from_lower, to_lower) in neighbor_keys.prefixes or (
-                        from_key
-                        and to_key
-                        and (from_key, to_key) in neighbor_keys.public_keys
+                        from_key and to_key and (from_key, to_key) in neighbor_keys.public_keys
                     ):
                         edge_evidence = "neighbors"
                     elif is_multibyte:
@@ -3458,9 +3081,7 @@ class BotDataViewer:
                         }
                     )
 
-                return jsonify(
-                    {"edges": edges, "prefix_hex_chars": prefix_hex_chars or 2}
-                )
+                return jsonify({"edges": edges, "prefix_hex_chars": prefix_hex_chars or 2})
             except Exception as e:
                 self.logger.error(f"Error getting mesh edges: {e}")
                 return jsonify({"error": str(e)}), 500
@@ -3524,33 +3145,21 @@ class BotDataViewer:
                     ORDER BY connection_count DESC, prefix
                     LIMIT 10
                 """)
-                top_connected = [
-                    (row["prefix"], row["connection_count"])
-                    for row in cursor.fetchall()
-                ]
+                top_connected = [(row["prefix"], row["connection_count"]) for row in cursor.fetchall()]
 
                 stats = {
                     "node_count": node_count,
                     "total_edges": edge_stats["total_edges"] or 0,
                     "total_observations": edge_stats["total_observations"] or 0,
                     "avg_observations": round(edge_stats["avg_observations"] or 0, 2),
-                    "avg_distance": round(edge_stats["avg_distance"] or 0, 2)
-                    if edge_stats["avg_distance"]
-                    else None,
-                    "min_distance": round(edge_stats["min_distance"] or 0, 2)
-                    if edge_stats["min_distance"]
-                    else None,
-                    "max_distance": round(edge_stats["max_distance"] or 0, 2)
-                    if edge_stats["max_distance"]
-                    else None,
+                    "avg_distance": round(edge_stats["avg_distance"] or 0, 2) if edge_stats["avg_distance"] else None,
+                    "min_distance": round(edge_stats["min_distance"] or 0, 2) if edge_stats["min_distance"] else None,
+                    "max_distance": round(edge_stats["max_distance"] or 0, 2) if edge_stats["max_distance"] else None,
                     "edges_with_from_key": edge_stats["edges_with_from_key"] or 0,
                     "edges_with_to_key": edge_stats["edges_with_to_key"] or 0,
                     "edges_with_both_keys": edge_stats["edges_with_both_keys"] or 0,
                     "multibyte_edges": edge_stats["multibyte_edges"] or 0,
-                    "top_connected": [
-                        {"prefix": prefix, "count": count}
-                        for prefix, count in top_connected
-                    ],
+                    "top_connected": [{"prefix": prefix, "count": count} for prefix, count in top_connected],
                     "recent_edges_24h": edge_stats["recent_edges_24h"] or 0,
                 }
 
@@ -3604,11 +3213,7 @@ class BotDataViewer:
             try:
                 if not current_app.config.get("TESTING"):
                     token = request.headers.get("X-Stream-Token", "")
-                    expected = (
-                        self.db_manager.get_metadata("internal.stream_token")
-                        if self.db_manager
-                        else None
-                    )
+                    expected = self.db_manager.get_metadata("internal.stream_token") if self.db_manager else None
                     if not expected or not token or token != expected:
                         return jsonify({"error": "Unauthorized"}), 401
 
@@ -3717,9 +3322,7 @@ class BotDataViewer:
                     return Response(
                         buf.getvalue(),
                         mimetype="text/csv",
-                        headers={
-                            "Content-Disposition": f'attachment; filename="contacts_{since}.csv"'
-                        },
+                        headers={"Content-Disposition": f'attachment; filename="contacts_{since}.csv"'},
                     )
                 else:
                     import json as _json
@@ -3728,9 +3331,7 @@ class BotDataViewer:
                     return Response(
                         body,
                         mimetype="application/json",
-                        headers={
-                            "Content-Disposition": f'attachment; filename="contacts_{since}.json"'
-                        },
+                        headers={"Content-Disposition": f'attachment; filename="contacts_{since}.json"'},
                     )
             except Exception as e:
                 self.logger.error(f"Error exporting contacts: {e}")
@@ -3792,18 +3393,14 @@ class BotDataViewer:
                     return Response(
                         buf.getvalue(),
                         mimetype="text/csv",
-                        headers={
-                            "Content-Disposition": f'attachment; filename="paths_{since}.csv"'
-                        },
+                        headers={"Content-Disposition": f'attachment; filename="paths_{since}.csv"'},
                     )
                 else:
                     body = _json.dumps(rows, indent=2, default=str)
                     return Response(
                         body,
                         mimetype="application/json",
-                        headers={
-                            "Content-Disposition": f'attachment; filename="paths_{since}.json"'
-                        },
+                        headers={"Content-Disposition": f'attachment; filename="paths_{since}.json"'},
                     )
             except Exception as e:
                 self.logger.error(f"Error exporting paths: {e}")
@@ -3843,9 +3440,7 @@ class BotDataViewer:
 
                 # Check if we have valid coordinates
                 if lat is None or lon is None or lat == 0.0 or lon == 0.0:
-                    return jsonify(
-                        {"error": "Contact does not have valid coordinates"}
-                    ), 400
+                    return jsonify({"error": "Contact does not have valid coordinates"}), 400
 
                 # Perform geocoding
                 self.logger.info(
@@ -3865,23 +3460,19 @@ class BotDataViewer:
                 repeater_manager = self._get_repeater_manager()
 
                 try:
-                    location_info = (
-                        repeater_manager._get_full_location_from_coordinates(lat, lon)
-                    )
+                    location_info = repeater_manager._get_full_location_from_coordinates(lat, lon)
                     self.logger.debug(f"Geocoding result for {name}: {location_info}")
                 except Exception as geocode_error:
-                    self.logger.error(f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}", exc_info=True)
-                    return jsonify({
-                        'success': False,
-                        'error': f'Geocoding exception: {str(geocode_error)}',
-                        'location': {}
-                    }), 500
+                    self.logger.error(
+                        f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}", exc_info=True
+                    )
+                    return jsonify(
+                        {"success": False, "error": f"Geocoding exception: {str(geocode_error)}", "location": {}}
+                    ), 500
 
                 # Check if geocoding returned any useful data
                 has_location_data = (
-                    location_info.get("city")
-                    or location_info.get("state")
-                    or location_info.get("country")
+                    location_info.get("city") or location_info.get("state") or location_info.get("country")
                 )
 
                 if not has_location_data:
@@ -3903,12 +3494,7 @@ class BotDataViewer:
                     SET city = ?, state = ?, country = ?
                     WHERE public_key = ?
                 """,
-                    (
-                        location_info.get("city"),
-                        location_info.get("state"),
-                        location_info.get("country"),
-                        public_key,
-                    ),
+                    (location_info.get("city"), location_info.get("state"), location_info.get("country"), public_key),
                 )
 
                 conn.commit()
@@ -3922,18 +3508,10 @@ class BotDataViewer:
                 if location_info.get("country"):
                     found_parts.append(f"country: {location_info['country']}")
 
-                success_message = (
-                    f"Successfully geocoded {name} - Found {', '.join(found_parts)}"
-                )
+                success_message = f"Successfully geocoded {name} - Found {', '.join(found_parts)}"
                 self.logger.info(f"Successfully geocoded {name}: {location_info}")
 
-                return jsonify(
-                    {
-                        "success": True,
-                        "location": location_info,
-                        "message": success_message,
-                    }
-                )
+                return jsonify({"success": True, "location": location_info, "message": success_message})
 
             except Exception as e:
                 self.logger.error(f"Error geocoding contact: {e}", exc_info=True)
@@ -3984,16 +3562,10 @@ class BotDataViewer:
                 conn.commit()
 
                 action = "starred" if new_star_status else "unstarred"
-                self.logger.info(
-                    f"Contact {contact['name']} ({public_key[:16]}...) {action}"
-                )
+                self.logger.info(f"Contact {contact['name']} ({public_key[:16]}...) {action}")
 
                 return jsonify(
-                    {
-                        "success": True,
-                        "is_starred": bool(new_star_status),
-                        "message": f"Contact {action} successfully",
-                    }
+                    {"success": True, "is_starred": bool(new_star_status), "message": f"Contact {action} successfully"}
                 )
 
             except Exception as e:
@@ -4027,9 +3599,7 @@ class BotDataViewer:
                         bytes_per_hop = None
 
                 # Decode the path (use bytes_per_hop when provided, e.g. from packet/contact)
-                decoded_path = self._decode_path_hex(
-                    path_hex, bytes_per_hop=bytes_per_hop
-                )
+                decoded_path = self._decode_path_hex(path_hex, bytes_per_hop=bytes_per_hop)
 
                 return jsonify({"success": True, "path": decoded_path})
 
@@ -4073,24 +3643,16 @@ class BotDataViewer:
                 deleted_counts = {}
 
                 # Delete from complete_contact_tracking
-                cursor.execute(
-                    "DELETE FROM complete_contact_tracking WHERE public_key = ?",
-                    (public_key,),
-                )
+                cursor.execute("DELETE FROM complete_contact_tracking WHERE public_key = ?", (public_key,))
                 deleted_counts["complete_contact_tracking"] = cursor.rowcount
 
                 # Delete from daily_stats
-                cursor.execute(
-                    "DELETE FROM daily_stats WHERE public_key = ?", (public_key,)
-                )
+                cursor.execute("DELETE FROM daily_stats WHERE public_key = ?", (public_key,))
                 deleted_counts["daily_stats"] = cursor.rowcount
 
                 # Delete from repeater_contacts if it exists
                 try:
-                    cursor.execute(
-                        "DELETE FROM repeater_contacts WHERE public_key = ?",
-                        (public_key,),
-                    )
+                    cursor.execute("DELETE FROM repeater_contacts WHERE public_key = ?", (public_key,))
                     deleted_counts["repeater_contacts"] = cursor.rowcount
                 except sqlite3.OperationalError:
                     # Table might not exist, that's okay
@@ -4181,34 +3743,17 @@ class BotDataViewer:
                 )
                 keys = [r["public_key"] for r in cursor.fetchall()]
                 if not keys:
-                    return jsonify(
-                        {
-                            "success": True,
-                            "deleted": 0,
-                            "message": "No contacts matched the threshold",
-                        }
-                    )
+                    return jsonify({"success": True, "deleted": 0, "message": "No contacts matched the threshold"})
                 placeholders = ",".join("?" * len(keys))
-                cursor.execute(
-                    f"DELETE FROM complete_contact_tracking WHERE public_key IN ({placeholders})",
-                    keys,
-                )
+                cursor.execute(f"DELETE FROM complete_contact_tracking WHERE public_key IN ({placeholders})", keys)
                 deleted = cursor.rowcount
-                cursor.execute(
-                    f"DELETE FROM daily_stats WHERE public_key IN ({placeholders})",
-                    keys,
-                )
+                cursor.execute(f"DELETE FROM daily_stats WHERE public_key IN ({placeholders})", keys)
                 try:
-                    cursor.execute(
-                        f"DELETE FROM repeater_contacts WHERE public_key IN ({placeholders})",
-                        keys,
-                    )
+                    cursor.execute(f"DELETE FROM repeater_contacts WHERE public_key IN ({placeholders})", keys)
                 except sqlite3.OperationalError:
                     pass
                 conn.commit()
-                self.logger.info(
-                    f"Purged {deleted} contact(s) not heard in {days}+ days"
-                )
+                self.logger.info(f"Purged {deleted} contact(s) not heard in {days}+ days")
                 return jsonify(
                     {
                         "success": True,
@@ -4232,9 +3777,7 @@ class BotDataViewer:
                 cursor = conn.cursor()
 
                 # Check if greeter tables exist
-                cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='greeter_rollout'"
-                )
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='greeter_rollout'")
                 if not cursor.fetchone():
                     return jsonify(
                         {
@@ -4291,20 +3834,12 @@ class BotDataViewer:
 
                 # Get greeter settings from config
                 settings = {
-                    "enabled": self.config.getboolean(
-                        "Greeter_Command", "enabled", fallback=False
-                    ),
+                    "enabled": self.config.getboolean("Greeter_Command", "enabled", fallback=False),
                     "greeting_message": self.config.get(
-                        "Greeter_Command",
-                        "greeting_message",
-                        fallback="Welcome to the mesh, {sender}!",
+                        "Greeter_Command", "greeting_message", fallback="Welcome to the mesh, {sender}!"
                     ),
-                    "rollout_days": self.config.getint(
-                        "Greeter_Command", "rollout_days", fallback=7
-                    ),
-                    "include_mesh_info": self.config.getboolean(
-                        "Greeter_Command", "include_mesh_info", fallback=True
-                    ),
+                    "rollout_days": self.config.getint("Greeter_Command", "rollout_days", fallback=7),
+                    "include_mesh_info": self.config.getboolean("Greeter_Command", "include_mesh_info", fallback=True),
                     "mesh_info_format": self.config.get(
                         "Greeter_Command",
                         "mesh_info_format",
@@ -4317,9 +3852,7 @@ class BotDataViewer:
 
                 # Generate sample greeting — use str.replace() instead of .format()
                 # to avoid KeyError / info leaks from user-controlled templates
-                sample_greeting = settings["greeting_message"].replace(
-                    "{sender}", "SampleUser"
-                )
+                sample_greeting = settings["greeting_message"].replace("{sender}", "SampleUser")
                 if settings["include_mesh_info"]:
                     sample_mesh_info = (
                         settings["mesh_info_format"]
@@ -4331,9 +3864,7 @@ class BotDataViewer:
                     sample_greeting += sample_mesh_info
 
                 # Check if message_stats table exists for last seen data
-                cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='message_stats'"
-                )
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='message_stats'")
                 has_message_stats = cursor.fetchone() is not None
 
                 # Get greeted users - use GROUP BY to ensure only one entry per (sender_id, channel)
@@ -4355,30 +3886,16 @@ class BotDataViewer:
                 for row in greeted_users_rows:
                     # Access row data - handle both dict-style (Row) and tuple access
                     try:
-                        sender_id = (
-                            row["sender_id"]
-                            if isinstance(row, dict) or hasattr(row, "__getitem__")
-                            else row[0]
-                        )
-                        channel_raw = (
-                            row["channel"]
-                            if isinstance(row, dict) or hasattr(row, "__getitem__")
-                            else row[1]
-                        )
+                        sender_id = row["sender_id"] if isinstance(row, dict) or hasattr(row, "__getitem__") else row[0]
+                        channel_raw = row["channel"] if isinstance(row, dict) or hasattr(row, "__getitem__") else row[1]
                         greeted_at = (
-                            row["greeted_at"]
-                            if isinstance(row, dict) or hasattr(row, "__getitem__")
-                            else row[2]
+                            row["greeted_at"] if isinstance(row, dict) or hasattr(row, "__getitem__") else row[2]
                         )
                         rollout_marked = (
-                            row["rollout_marked"]
-                            if isinstance(row, dict) or hasattr(row, "__getitem__")
-                            else row[3]
+                            row["rollout_marked"] if isinstance(row, dict) or hasattr(row, "__getitem__") else row[3]
                         )
                     except (KeyError, IndexError, TypeError) as e:
-                        self.logger.error(
-                            f"Error accessing row data: {e}, row type: {type(row)}"
-                        )
+                        self.logger.error(f"Error accessing row data: {e}, row type: {type(row)}")
                         continue
 
                     sender_id = str(sender_id) if sender_id else ""
@@ -4390,9 +3907,7 @@ class BotDataViewer:
                         # Get the most recent channel message (not DM) for this user
                         # If per_channel_greetings is enabled, match the specific channel
                         # Otherwise, get the most recent message from any channel
-                        if (
-                            channel_raw
-                        ):  # Use the raw channel value, not the formatted one
+                        if channel_raw:  # Use the raw channel value, not the formatted one
                             cursor.execute(
                                 """
                                 SELECT MAX(timestamp) as last_seen
@@ -4469,9 +3984,7 @@ class BotDataViewer:
                 rollout = cursor.fetchone()
 
                 if not rollout:
-                    return jsonify(
-                        {"success": False, "error": "No active rollout found"}
-                    ), 404
+                    return jsonify({"success": False, "error": "No active rollout found"}), 404
 
                 rollout_id = rollout["id"]
 
@@ -4487,13 +4000,9 @@ class BotDataViewer:
 
                 conn.commit()
 
-                self.logger.info(
-                    f"Greeter rollout {rollout_id} ended manually via web viewer"
-                )
+                self.logger.info(f"Greeter rollout {rollout_id} ended manually via web viewer")
 
-                return jsonify(
-                    {"success": True, "message": "Onboarding period ended successfully"}
-                )
+                return jsonify({"success": True, "message": "Onboarding period ended successfully"})
 
             except Exception as e:
                 self.logger.error(f"Error ending rollout: {e}", exc_info=True)
@@ -4512,9 +4021,7 @@ class BotDataViewer:
                     return jsonify({"error": "sender_id is required"}), 400
 
                 sender_id = data["sender_id"]
-                channel = data.get(
-                    "channel"
-                )  # Optional - if None, removes global greeting
+                channel = data.get("channel")  # Optional - if None, removes global greeting
 
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
@@ -4560,16 +4067,9 @@ class BotDataViewer:
 
                 conn.commit()
 
-                self.logger.info(
-                    f"User {sender_id} marked as ungreeted (channel: {channel or 'global'})"
-                )
+                self.logger.info(f"User {sender_id} marked as ungreeted (channel: {channel or 'global'})")
 
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": f"User {sender_id} marked as ungreeted",
-                    }
-                )
+                return jsonify({"success": True, "message": f"User {sender_id} marked as ungreeted"})
 
             except Exception as e:
                 self.logger.error(f"Error ungreeting user: {e}", exc_info=True)
@@ -4581,6 +4081,7 @@ class BotDataViewer:
         # Feed management API endpoints
         def _schedule_tz():
             from modules.utils import get_config_timezone
+
             tz, _name = get_config_timezone(self.config, self.logger)
             return tz
 
@@ -4589,8 +4090,7 @@ class BotDataViewer:
             try:
                 with self.db_manager.connection() as conn:
                     conn.cursor().execute(
-                        "INSERT INTO channel_operations (operation_type, status) "
-                        "VALUES ('config_reload', 'pending')"
+                        "INSERT INTO channel_operations (operation_type, status) VALUES ('config_reload', 'pending')"
                     )
                     conn.commit()
                 return True
@@ -4604,37 +4104,39 @@ class BotDataViewer:
         schedule_write_lock = threading.Lock()
 
         def _existing_schedules():
-            return {e['schedule'] for e in read_entries(self.config_path, _schedule_tz())}
+            return {e["schedule"] for e in read_entries(self.config_path, _schedule_tz())}
 
-        @self.app.route('/api/scheduled-messages')
+        @self.app.route("/api/scheduled-messages")
         def api_scheduled_messages():
             """List scheduled messages with their next run times."""
             try:
-                return jsonify({'entries': read_entries(self.config_path, _schedule_tz())})
+                return jsonify({"entries": read_entries(self.config_path, _schedule_tz())})
             except Exception as e:
                 self.logger.error(f"Error reading scheduled messages: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
-        @self.app.route('/api/scheduled-messages/preview', methods=['POST'])
+        @self.app.route("/api/scheduled-messages/preview", methods=["POST"])
         def api_scheduled_messages_preview():
             """Validate a schedule and return its next run times (powers the builder)."""
             try:
                 data = request.get_json(silent=True) or {}
                 try:
-                    count = int(data.get('count', 5))
+                    count = int(data.get("count", 5))
                 except (TypeError, ValueError):
-                    return jsonify({'error': 'count must be an integer'}), 400
+                    return jsonify({"error": "count must be an integer"}), 400
                 if not 1 <= count <= 20:
-                    return jsonify({'error': 'count must be between 1 and 20'}), 400
-                return jsonify(describe_schedule(
-                    data.get('schedule', ''),
-                    _schedule_tz(),
-                    message=data.get('message', ''),
-                    count=count,
-                ))
+                    return jsonify({"error": "count must be between 1 and 20"}), 400
+                return jsonify(
+                    describe_schedule(
+                        data.get("schedule", ""),
+                        _schedule_tz(),
+                        message=data.get("message", ""),
+                        count=count,
+                    )
+                )
             except Exception as e:
                 self.logger.error(f"Error previewing schedule: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({"error": str(e)}), 500
 
         def _save_scheduled_message(data, *, replacing=None):
             """Shared create/update: validate, write config.ini, queue a reload."""
@@ -4642,39 +4144,43 @@ class BotDataViewer:
                 return _save_scheduled_message_locked(data, replacing=replacing)
 
         def _save_scheduled_message_locked(data, *, replacing=None):
-            schedule = (data.get('schedule') or '').strip()
-            channel = (data.get('channel') or '').strip()
-            message = (data.get('message') or '').strip()
-            scope = (data.get('scope') or '').strip() or None
+            schedule = (data.get("schedule") or "").strip()
+            channel = (data.get("channel") or "").strip()
+            message = (data.get("message") or "").strip()
+            scope = (data.get("scope") or "").strip() or None
 
             field_error = validate_entry(channel, message, scope)
             if field_error:
-                return jsonify({'success': False, 'error': field_error}), 400
+                return jsonify({"success": False, "error": field_error}), 400
 
             described = describe_schedule(schedule, _schedule_tz(), message=message)
-            if not described.get('valid'):
-                return jsonify({'success': False, 'error': described.get('error')}), 400
+            if not described.get("valid"):
+                return jsonify({"success": False, "error": described.get("error")}), 400
 
             existing = _existing_schedules()
 
             # Checked here rather than in the route so it shares this snapshot and the
             # surrounding lock.
             if replacing is not None and replacing not in existing:
-                return jsonify({
-                    'success': False,
-                    'error': f"No scheduled message for '{replacing}'",
-                }), 404
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": f"No scheduled message for '{replacing}'",
+                    }
+                ), 404
 
             # Schedules are INI keys, so two entries cannot share one. Renaming onto
             # another entry's key would silently overwrite it.
             if schedule in existing and schedule != replacing:
-                return jsonify({
-                    'success': False,
-                    'error': (
-                        f"A scheduled message already exists for '{schedule}'. "
-                        "Edit that one, or use a different schedule."
-                    ),
-                }), 409
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            f"A scheduled message already exists for '{schedule}'. "
+                            "Edit that one, or use a different schedule."
+                        ),
+                    }
+                ), 409
 
             updates = {SCHEDULED_MESSAGES_SECTION: {schedule: compose_value(channel, message, scope)}}
             deletes = None
@@ -4684,104 +4190,118 @@ class BotDataViewer:
             try:
                 summary = update_ini_values(self.config_path, updates, deletes)
             except IniValueError as exc:
-                return jsonify({'success': False, 'error': str(exc)}), 400
+                return jsonify({"success": False, "error": str(exc)}), 400
             except OSError as exc:
                 self.logger.error("Failed to write scheduled message: %s", exc)
-                return jsonify({
-                    'success': False,
-                    'error': 'Could not write config.ini — check file permissions',
-                }), 500
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Could not write config.ini — check file permissions",
+                    }
+                ), 500
 
             reloaded = _queue_config_reload()
             if not reloaded:
                 # Written to disk but the running bot still has the old jobs. Saying
                 # "saved" alone would imply it is live.
-                self.logger.warning(
-                    "Scheduled message written but the config reload could not be queued"
-                )
+                self.logger.warning("Scheduled message written but the config reload could not be queued")
             self.logger.info(
                 "Scheduled message saved: %r -> %s:%s (backup=%s)",
-                schedule, channel, message[:40],
-                os.path.basename(summary.get('backup_path') or '') or 'none',
+                schedule,
+                channel,
+                message[:40],
+                os.path.basename(summary.get("backup_path") or "") or "none",
             )
-            return jsonify({
-                'success': True,
-                'reload_queued': reloaded,
-                'message': (
-                    'Saved. The bot reloads its schedule within a few seconds.'
-                    if reloaded else
-                    'Saved to config.ini, but the bot could not be told to reload. '
-                    'It will pick the change up on next restart.'
-                ),
-                'entry': {'schedule': schedule, 'channel': channel,
-                          'scope': scope, 'message': message, **described},
-            })
+            return jsonify(
+                {
+                    "success": True,
+                    "reload_queued": reloaded,
+                    "message": (
+                        "Saved. The bot reloads its schedule within a few seconds."
+                        if reloaded
+                        else "Saved to config.ini, but the bot could not be told to reload. "
+                        "It will pick the change up on next restart."
+                    ),
+                    "entry": {
+                        "schedule": schedule,
+                        "channel": channel,
+                        "scope": scope,
+                        "message": message,
+                        **described,
+                    },
+                }
+            )
 
-        @self.app.route('/api/scheduled-messages', methods=['POST'])
+        @self.app.route("/api/scheduled-messages", methods=["POST"])
         def api_create_scheduled_message():
             """Create a scheduled message."""
             try:
                 return _save_scheduled_message(request.get_json(silent=True) or {})
             except Exception as e:
                 self.logger.error(f"Error creating scheduled message: {e}")
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
 
-        @self.app.route('/api/scheduled-messages', methods=['PUT'])
+        @self.app.route("/api/scheduled-messages", methods=["PUT"])
         def api_update_scheduled_message():
             """Update a scheduled message, including changing its schedule."""
             try:
                 data = request.get_json(silent=True) or {}
-                original = (data.get('original_schedule') or '').strip()
+                original = (data.get("original_schedule") or "").strip()
                 if not original:
-                    return jsonify({'success': False, 'error': 'original_schedule is required'}), 400
+                    return jsonify({"success": False, "error": "original_schedule is required"}), 400
                 # Existence is verified inside the lock, against the same snapshot the
                 # duplicate check uses: a concurrent delete between an outside check and
                 # the write would otherwise resurrect the entry as a new one.
                 return _save_scheduled_message(data, replacing=original)
             except Exception as e:
                 self.logger.error(f"Error updating scheduled message: {e}")
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
 
-        @self.app.route('/api/scheduled-messages', methods=['DELETE'])
+        @self.app.route("/api/scheduled-messages", methods=["DELETE"])
         def api_delete_scheduled_message():
             """Delete a scheduled message."""
             try:
                 data = request.get_json(silent=True) or {}
-                schedule = (data.get('schedule') or '').strip()
+                schedule = (data.get("schedule") or "").strip()
                 if not schedule:
-                    return jsonify({'success': False, 'error': 'schedule is required'}), 400
+                    return jsonify({"success": False, "error": "schedule is required"}), 400
                 with schedule_write_lock:
                     if schedule not in _existing_schedules():
-                        return jsonify({
-                            'success': False,
-                            'error': f"No scheduled message for '{schedule}'",
-                        }), 404
+                        return jsonify(
+                            {
+                                "success": False,
+                                "error": f"No scheduled message for '{schedule}'",
+                            }
+                        ), 404
                     try:
-                        update_ini_values(
-                            self.config_path, {}, {SCHEDULED_MESSAGES_SECTION: [schedule]}
-                        )
+                        update_ini_values(self.config_path, {}, {SCHEDULED_MESSAGES_SECTION: [schedule]})
                     except OSError as exc:
                         self.logger.error("Failed to delete scheduled message: %s", exc)
-                        return jsonify({
-                            'success': False,
-                            'error': 'Could not write config.ini — check file permissions',
-                        }), 500
+                        return jsonify(
+                            {
+                                "success": False,
+                                "error": "Could not write config.ini — check file permissions",
+                            }
+                        ), 500
                 reloaded = _queue_config_reload()
                 self.logger.info("Scheduled message deleted: %r", schedule)
-                return jsonify({
-                    'success': True,
-                    'reload_queued': reloaded,
-                    'message': (
-                        'Deleted.' if reloaded else
-                        'Deleted from config.ini, but the bot could not be told to '
-                        'reload. It will stop sending after the next restart.'
-                    ),
-                })
+                return jsonify(
+                    {
+                        "success": True,
+                        "reload_queued": reloaded,
+                        "message": (
+                            "Deleted."
+                            if reloaded
+                            else "Deleted from config.ini, but the bot could not be told to "
+                            "reload. It will stop sending after the next restart."
+                        ),
+                    }
+                )
             except Exception as e:
                 self.logger.error(f"Error deleting scheduled message: {e}")
-                return jsonify({'success': False, 'error': str(e)}), 500
+                return jsonify({"success": False, "error": str(e)}), 500
 
-        @self.app.route('/api/feeds')
+        @self.app.route("/api/feeds")
         def api_feeds():
             """Get all feed subscriptions with statistics"""
             try:
@@ -4867,11 +4387,7 @@ class BotDataViewer:
                 return jsonify({"default_format": default_format})
             except Exception as e:
                 self.logger.error(f"Error getting default format: {e}")
-                return jsonify(
-                    {
-                        "default_format": "{emoji} {body|truncate:100} - {date}\n{link|truncate:50}"
-                    }
-                )
+                return jsonify({"default_format": "{emoji} {body|truncate:100} - {date}\n{link|truncate:50}"})
 
         @self.app.route("/api/feeds/preview", methods=["POST"])
         def api_preview_feed():
@@ -4899,12 +4415,7 @@ class BotDataViewer:
                 # Fetch and format feed items
                 try:
                     preview_items = self._preview_feed_items(
-                        feed_url,
-                        feed_type,
-                        output_format,
-                        api_config,
-                        filter_config,
-                        sort_config,
+                        feed_url, feed_type, output_format, api_config, filter_config, sort_config
                     )
                 except ValueError as e:
                     # SSRF validation error - return 400
@@ -5043,13 +4554,9 @@ class BotDataViewer:
                 if channel_idx is None:
                     channel_idx = self._get_lowest_available_channel_index()
                     if channel_idx is None:
-                        max_channels = self.config.getint(
-                            "Bot", "max_channels", fallback=40
-                        )
+                        max_channels = self.config.getint("Bot", "max_channels", fallback=40)
                         return jsonify(
-                            {
-                                "error": f"No available channel slots. All {max_channels} channels are in use."
-                            }
+                            {"error": f"No available channel slots. All {max_channels} channels are in use."}
                         ), 400
 
                 # Determine if it's a hashtag channel
@@ -5058,30 +4565,20 @@ class BotDataViewer:
                 # Validate custom channel has key
                 if not is_hashtag and not channel_key:
                     return jsonify(
-                        {
-                            "error": "Channel key is required for custom channels (channels without # prefix)"
-                        }
+                        {"error": "Channel key is required for custom channels (channels without # prefix)"}
                     ), 400
 
                 # Validate key format if provided
                 if channel_key:
                     if len(channel_key) != 32:
-                        return jsonify(
-                            {
-                                "error": "Channel key must be exactly 32 hexadecimal characters"
-                            }
-                        ), 400
+                        return jsonify({"error": "Channel key must be exactly 32 hexadecimal characters"}), 400
                     if not all(c in "0123456789abcdefABCDEF" for c in channel_key):
                         return jsonify(
-                            {
-                                "error": "Channel key must contain only hexadecimal characters (0-9, a-f, A-F)"
-                            }
+                            {"error": "Channel key must contain only hexadecimal characters (0-9, a-f, A-F)"}
                         ), 400
 
                 # Try to create channel via bot's channel manager
-                result = self._add_channel_for_web(
-                    channel_idx, channel_name, channel_key if not is_hashtag else None
-                )
+                result = self._add_channel_for_web(channel_idx, channel_name, channel_key if not is_hashtag else None)
 
                 if result.get("success"):
                     if result.get("pending"):
@@ -5091,19 +4588,13 @@ class BotDataViewer:
                                 "success": True,
                                 "pending": True,
                                 "operation_id": result.get("operation_id"),
-                                "message": result.get(
-                                    "message", "Channel operation queued"
-                                ),
+                                "message": result.get("message", "Channel operation queued"),
                             }
                         )
                     else:
-                        return jsonify(
-                            {"success": True, "message": "Channel created successfully"}
-                        )
+                        return jsonify({"success": True, "message": "Channel created successfully"})
                 else:
-                    return jsonify(
-                        {"error": result.get("error", "Failed to create channel")}
-                    ), 500
+                    return jsonify({"error": result.get("error", "Failed to create channel")}), 500
 
             except Exception as e:
                 self.logger.error(f"Error creating channel: {e}")
@@ -5122,19 +4613,13 @@ class BotDataViewer:
                                 "success": True,
                                 "pending": True,
                                 "operation_id": result.get("operation_id"),
-                                "message": result.get(
-                                    "message", "Channel operation queued"
-                                ),
+                                "message": result.get("message", "Channel operation queued"),
                             }
                         )
                     else:
-                        return jsonify(
-                            {"success": True, "message": "Channel deleted successfully"}
-                        )
+                        return jsonify({"success": True, "message": "Channel deleted successfully"})
                 else:
-                    return jsonify(
-                        {"error": result.get("error", "Failed to delete channel")}
-                    ), 500
+                    return jsonify({"error": result.get("error", "Failed to delete channel")}), 500
             except Exception as e:
                 self.logger.error(f"Error deleting channel: {e}")
                 return jsonify({"error": str(e)}), 500
@@ -5191,9 +4676,7 @@ class BotDataViewer:
                 # Check if channel exists
                 channel_num = self._get_channel_number(channel_name)
 
-                return jsonify(
-                    {"exists": channel_num is not None, "channel_num": channel_num}
-                )
+                return jsonify({"exists": channel_num is not None, "channel_num": channel_num})
             except Exception as e:
                 self.logger.error(f"Error validating channel: {e}")
                 return jsonify({"error": str(e)}), 500
@@ -5207,12 +4690,7 @@ class BotDataViewer:
                     return jsonify({"error": "No data provided"}), 400
 
                 # This would use channel_manager
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": "Channel update requires bot connection",
-                    }
-                )
+                return jsonify({"success": True, "message": "Channel update requires bot connection"})
             except Exception as e:
                 self.logger.error(f"Error updating channel: {e}")
                 return jsonify({"error": str(e)}), 500
@@ -5243,9 +4721,7 @@ class BotDataViewer:
             try:
                 value = self.db_manager.get_metadata("radio_connected")
                 connected = value == "1" if value is not None else None
-                return jsonify(
-                    {"connected": connected, "status_known": value is not None}
-                )
+                return jsonify({"connected": connected, "status_known": value is not None})
             except Exception as e:
                 self.logger.error(f"Error getting radio status: {e}")
                 return jsonify({"error": str(e)}), 500
@@ -5261,13 +4737,7 @@ class BotDataViewer:
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify(
-                    {
-                        "success": True,
-                        "operation_id": op_id,
-                        "message": "Radio reboot queued",
-                    }
-                )
+                return jsonify({"success": True, "operation_id": op_id, "message": "Radio reboot queued"})
             except Exception as e:
                 self.logger.error(f"Error queuing radio reboot: {e}")
                 return jsonify({"error": str(e)}), 500
@@ -5279,21 +4749,16 @@ class BotDataViewer:
                 data = request.get_json(silent=True) or {}
                 action = data.get("action", "")
                 if action not in ("connect", "disconnect"):
-                    return jsonify(
-                        {"error": "action must be 'connect' or 'disconnect'"}
-                    ), 400
+                    return jsonify({"error": "action must be 'connect' or 'disconnect'"}), 400
                 op_type = "radio_connect" if action == "connect" else "radio_disconnect"
                 with self.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
-                        "INSERT INTO channel_operations (operation_type, status) VALUES (?, 'pending')",
-                        (op_type,),
+                        "INSERT INTO channel_operations (operation_type, status) VALUES (?, 'pending')", (op_type,)
                     )
                     conn.commit()
                     op_id = cursor.lastrowid
-                return jsonify(
-                    {"success": True, "pending": True, "operation_id": op_id}
-                )
+                return jsonify({"success": True, "pending": True, "operation_id": op_id})
             except Exception as e:
                 self.logger.error(f"Error queuing radio connect/disconnect: {e}")
                 return jsonify({"error": str(e)}), 500
@@ -5323,17 +4788,11 @@ class BotDataViewer:
                 allowed = {"path_hash_mode"}
                 payload = {k: v for k, v in data.items() if k in allowed}
                 if not payload:
-                    return jsonify(
-                        {"error": "No valid fields provided (path_hash_mode)"}
-                    ), 400
+                    return jsonify({"error": "No valid fields provided (path_hash_mode)"}), 400
                 if "path_hash_mode" in payload:
                     mode = int(payload["path_hash_mode"])
                     if not (0 <= mode <= 2):
-                        return jsonify(
-                            {
-                                "error": "path_hash_mode must be 0-2 (bytes per hop = mode + 1)"
-                            }
-                        ), 400
+                        return jsonify({"error": "path_hash_mode must be 0-2 (bytes per hop = mode + 1)"}), 400
                     payload["path_hash_mode"] = mode
                 with self.db_manager.connection() as conn:
                     cursor = conn.cursor()
@@ -5393,11 +4852,7 @@ class BotDataViewer:
                 }
                 payload = {k: v for k, v in data.items() if k in allowed}
                 if not payload:
-                    return jsonify(
-                        {
-                            "error": f"No valid fields (expected one of: {', '.join(sorted(allowed))})"
-                        }
-                    ), 400
+                    return jsonify({"error": f"No valid fields (expected one of: {', '.join(sorted(allowed))})"}), 400
 
                 if "freq" in payload:
                     freq = float(payload["freq"])
@@ -5407,9 +4862,7 @@ class BotDataViewer:
                 if "bw" in payload:
                     bw = float(payload["bw"])
                     if bw not in (62.5, 125.0, 250.0, 500.0):
-                        return jsonify(
-                            {"error": "bw must be 62.5, 125, 250, or 500 kHz"}
-                        ), 400
+                        return jsonify({"error": "bw must be 62.5, 125, 250, or 500 kHz"}), 400
                     payload["bw"] = bw
                 if "sf" in payload:
                     sf = int(payload["sf"])
@@ -5432,9 +4885,7 @@ class BotDataViewer:
                         return jsonify({"error": "name must be 1–32 bytes"}), 400
                     payload["name"] = name
                 if ("lat" in payload) != ("lon" in payload):
-                    return jsonify(
-                        {"error": "lat and lon must be provided together"}
-                    ), 400
+                    return jsonify({"error": "lat and lon must be provided together"}), 400
                 if "lat" in payload:
                     lat = float(payload["lat"])
                     lon = float(payload["lon"])
@@ -5447,35 +4898,23 @@ class BotDataViewer:
                 if "adv_loc_policy" in payload:
                     policy = int(payload["adv_loc_policy"])
                     if policy not in (0, 1):
-                        return jsonify(
-                            {"error": "adv_loc_policy must be 0 (private) or 1 (share)"}
-                        ), 400
+                        return jsonify({"error": "adv_loc_policy must be 0 (private) or 1 (share)"}), 400
                     payload["adv_loc_policy"] = policy
                 if "multi_acks" in payload:
                     acks = int(payload["multi_acks"])
                     if not (0 <= acks <= 3):
                         return jsonify({"error": "multi_acks must be 0–3"}), 400
                     payload["multi_acks"] = acks
-                for telem_key in (
-                    "telemetry_mode_base",
-                    "telemetry_mode_loc",
-                    "telemetry_mode_env",
-                ):
+                for telem_key in ("telemetry_mode_base", "telemetry_mode_loc", "telemetry_mode_env"):
                     if telem_key in payload:
                         mode = int(payload[telem_key])
                         if not (0 <= mode <= 2):
                             return jsonify(
-                                {
-                                    "error": f"{telem_key} must be 0 (deny), 1 (per-contact), or 2 (allow all)"
-                                }
+                                {"error": f"{telem_key} must be 0 (deny), 1 (per-contact), or 2 (allow all)"}
                             ), 400
                         payload[telem_key] = mode
                 if ("rx_delay" in payload) != ("airtime_factor" in payload):
-                    return jsonify(
-                        {
-                            "error": "rx_delay and airtime_factor must be provided together"
-                        }
-                    ), 400
+                    return jsonify({"error": "rx_delay and airtime_factor must be provided together"}), 400
                 if "rx_delay" in payload:
                     rx_delay = float(payload["rx_delay"])
                     airtime_factor = float(payload["airtime_factor"])
@@ -5488,9 +4927,7 @@ class BotDataViewer:
 
                 radio_fields = {"freq", "bw", "sf", "cr"}
                 if radio_fields & set(payload) and not radio_fields <= set(payload):
-                    return jsonify(
-                        {"error": "freq, bw, sf, and cr must all be provided together"}
-                    ), 400
+                    return jsonify({"error": "freq, bw, sf, and cr must all be provided together"}), 400
 
                 with self.db_manager.connection() as conn:
                     cursor = conn.cursor()
@@ -5541,9 +4978,7 @@ class BotDataViewer:
 
                 # Reject unauthenticated SocketIO connections when auth is enabled (BUG-001)
                 if self.web_viewer_password and not session.get("authenticated"):
-                    self.logger.warning(
-                        f"Rejected unauthenticated SocketIO connection from {client_id}"
-                    )
+                    self.logger.warning(f"Rejected unauthenticated SocketIO connection from {client_id}")
                     with suppress(Exception):
                         disconnect()
                     return False
@@ -5553,9 +4988,7 @@ class BotDataViewer:
                 with self._clients_lock:
                     # Check client limit
                     if len(self.connected_clients) >= self.max_clients:
-                        self.logger.warning(
-                            f"Client limit reached ({self.max_clients}), rejecting connection"
-                        )
+                        self.logger.warning(f"Client limit reached ({self.max_clients}), rejecting connection")
                         try:
                             disconnect()
                         except Exception as e:
@@ -5574,9 +5007,7 @@ class BotDataViewer:
                     }
 
                     # Connection status is shown via the green indicator in the navbar, no toast needed
-                    self.logger.info(
-                        f"Client {client_id} connected. Total clients: {len(self.connected_clients)}"
-                    )
+                    self.logger.info(f"Client {client_id} connected. Total clients: {len(self.connected_clients)}")
             except Exception as e:
                 self.logger.error(f"Error in handle_connect: {e}", exc_info=True)
                 return False
@@ -5595,14 +5026,10 @@ class BotDataViewer:
                         )
                     elif client_id:
                         # Client disconnected but wasn't in our tracking dict (might have been cleaned up)
-                        self.logger.debug(
-                            f"Client {client_id} disconnected (not in tracking dict)"
-                        )
+                        self.logger.debug(f"Client {client_id} disconnected (not in tracking dict)")
                     else:
                         # No client_id available - this can happen during error states
-                        self.logger.debug(
-                            "Disconnect event received but client_id is None"
-                        )
+                        self.logger.debug("Disconnect event received but client_id is None")
             except Exception as e:
                 # Don't emit errors during disconnect as the connection may be broken
                 self.logger.error(f"Error in handle_disconnect: {e}", exc_info=True)
@@ -5619,17 +5046,11 @@ class BotDataViewer:
                 self.logger.debug(f"Client {client_id} subscribed to commands")
                 # Replay recent command history so the page isn't blank on load (BUG-023 fix)
                 try:
-                    with closing(
-                        sqlite3.connect(
-                            self.db_path, timeout=10, check_same_thread=False
-                        )
-                    ) as _conn:
+                    with closing(sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)) as _conn:
                         _conn.row_factory = sqlite3.Row
                         _cur = _conn.cursor()
                         _cur.execute(
-                            "SELECT data FROM packet_stream"
-                            " WHERE type = 'command'"
-                            " ORDER BY timestamp DESC LIMIT 50"
+                            "SELECT data FROM packet_stream WHERE type = 'command' ORDER BY timestamp DESC LIMIT 50"
                         )
                         rows = list(reversed(_cur.fetchall()))
                     for row in rows:
@@ -5638,13 +5059,9 @@ class BotDataViewer:
                         except (json.JSONDecodeError, KeyError, TypeError):
                             pass
                 except Exception as e:
-                    self.logger.warning(
-                        f"Error replaying command history: {e}", exc_info=True
-                    )
+                    self.logger.warning(f"Error replaying command history: {e}", exc_info=True)
             except Exception as e:
-                self.logger.error(
-                    f"Error in handle_subscribe_commands: {e}", exc_info=True
-                )
+                self.logger.error(f"Error in handle_subscribe_commands: {e}", exc_info=True)
 
         @self.socketio.on("subscribe_packets")
         def handle_subscribe_packets():
@@ -5657,11 +5074,7 @@ class BotDataViewer:
                 self.logger.debug(f"Client {client_id} subscribed to packets")
                 # Replay recent packet/command/routing history so the page isn't blank on load
                 try:
-                    with closing(
-                        sqlite3.connect(
-                            self.db_path, timeout=10, check_same_thread=False
-                        )
-                    ) as _conn:
+                    with closing(sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)) as _conn:
                         _conn.row_factory = sqlite3.Row
                         _cur = _conn.cursor()
                         _cur.execute(
@@ -5673,22 +5086,14 @@ class BotDataViewer:
                     for row in rows:
                         try:
                             data = json.loads(row["data"])
-                            evt = (
-                                "command_data"
-                                if row["type"] == "command"
-                                else "packet_data"
-                            )
+                            evt = "command_data" if row["type"] == "command" else "packet_data"
                             emit(evt, data)
                         except (json.JSONDecodeError, KeyError, TypeError):
                             pass
                 except Exception as e:
-                    self.logger.warning(
-                        f"Error replaying packet history: {e}", exc_info=True
-                    )
+                    self.logger.warning(f"Error replaying packet history: {e}", exc_info=True)
             except Exception as e:
-                self.logger.error(
-                    f"Error in handle_subscribe_packets: {e}", exc_info=True
-                )
+                self.logger.error(f"Error in handle_subscribe_packets: {e}", exc_info=True)
 
         @self.socketio.on("subscribe_mesh")
         def handle_subscribe_mesh():
@@ -5713,17 +5118,11 @@ class BotDataViewer:
                 self.logger.debug(f"Client {client_id} subscribed to messages")
                 # Replay recent channel messages so the page isn't blank on load
                 try:
-                    with closing(
-                        sqlite3.connect(
-                            self.db_path, timeout=10, check_same_thread=False
-                        )
-                    ) as _conn:
+                    with closing(sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)) as _conn:
                         _conn.row_factory = sqlite3.Row
                         _cur = _conn.cursor()
                         _cur.execute(
-                            "SELECT data FROM packet_stream"
-                            " WHERE type = 'message'"
-                            " ORDER BY timestamp DESC LIMIT 50"
+                            "SELECT data FROM packet_stream WHERE type = 'message' ORDER BY timestamp DESC LIMIT 50"
                         )
                         rows = list(reversed(_cur.fetchall()))
                     for row in rows:
@@ -5732,13 +5131,9 @@ class BotDataViewer:
                         except (json.JSONDecodeError, KeyError, TypeError):
                             pass
                 except Exception as e:
-                    self.logger.warning(
-                        f"Error replaying message history: {e}", exc_info=True
-                    )
+                    self.logger.warning(f"Error replaying message history: {e}", exc_info=True)
             except Exception as e:
-                self.logger.error(
-                    f"Error in handle_subscribe_messages: {e}", exc_info=True
-                )
+                self.logger.error(f"Error in handle_subscribe_messages: {e}", exc_info=True)
 
         @self.socketio.on("subscribe_logs")
         def handle_subscribe_logs():
@@ -5752,16 +5147,10 @@ class BotDataViewer:
                 # Send recent log history so the page isn't blank on load
                 log_file = ""
                 try:
-                    log_file = self.config.get(
-                        "Logging", "log_file", fallback=""
-                    ).strip()
+                    log_file = self.config.get("Logging", "log_file", fallback="").strip()
                     if log_file:
                         log_file = str(resolve_path(log_file, self._config_base))
-                except (
-                    configparser.Error,
-                    OSError,
-                    ValueError,
-                ):  # bad config or inaccessible path
+                except (configparser.Error, OSError, ValueError):  # bad config or inaccessible path
                     pass
                 if log_file and os.path.exists(log_file):
                     try:
@@ -5811,9 +5200,7 @@ class BotDataViewer:
 
             if subscribed_clients:
                 self.socketio.emit("command_data", command_data, room=None)
-                self.logger.debug(
-                    f"Broadcasted command data to {len(subscribed_clients)} clients"
-                )
+                self.logger.debug(f"Broadcasted command data to {len(subscribed_clients)} clients")
         except Exception as e:
             self.logger.error(f"Error handling command data: {e}")
 
@@ -5830,9 +5217,7 @@ class BotDataViewer:
 
             if subscribed_clients:
                 self.socketio.emit("packet_data", packet_data, room=None)
-                self.logger.debug(
-                    f"Broadcasted packet data to {len(subscribed_clients)} clients"
-                )
+                self.logger.debug(f"Broadcasted packet data to {len(subscribed_clients)} clients")
         except Exception as e:
             self.logger.error(f"Error handling packet data: {e}")
 
@@ -5848,11 +5233,7 @@ class BotDataViewer:
                 ]
 
             if subscribed_clients:
-                event_type = (
-                    "mesh_edge_added"
-                    if edge_data.get("is_new", False)
-                    else "mesh_edge_updated"
-                )
+                event_type = "mesh_edge_added" if edge_data.get("is_new", False) else "mesh_edge_updated"
                 self.socketio.emit(event_type, edge_data, room=None)
         except Exception as e:
             self.logger.error(f"Error handling mesh edge data: {e}", exc_info=True)
@@ -5891,15 +5272,9 @@ class BotDataViewer:
         """Broadcast a log line to clients subscribed to the log stream."""
         try:
             with self._clients_lock:
-                subscribed = [
-                    cid
-                    for cid, info in self.connected_clients.items()
-                    if info.get("subscribed_logs", False)
-                ]
+                subscribed = [cid for cid, info in self.connected_clients.items() if info.get("subscribed_logs", False)]
             if subscribed:
-                self.socketio.emit(
-                    "log_line", {"line": _strip_ansi_codes(line.rstrip())}, room=None
-                )
+                self.socketio.emit("log_line", {"line": _strip_ansi_codes(line.rstrip())}, room=None)
         except Exception as e:
             self.logger.error(f"Error broadcasting log line: {e}")
 
@@ -5960,9 +5335,7 @@ class BotDataViewer:
         def poll_database():
             import time as _time
 
-            last_timestamp = (
-                _time.time() - 300
-            )  # start 5 min back; subscribe handlers replay full history
+            last_timestamp = _time.time() - 300  # start 5 min back; subscribe handlers replay full history
             consecutive_errors = 0
             max_consecutive_errors = 10
 
@@ -5992,28 +5365,20 @@ class BotDataViewer:
                     if not db_file.exists():
                         consecutive_errors += 1
                         if consecutive_errors == 1 or consecutive_errors % 10 == 0:
-                            self.logger.warning(
-                                f"Database file does not exist: {self.db_path}"
-                            )
+                            self.logger.warning(f"Database file does not exist: {self.db_path}")
                         time.sleep(5)
                         continue
 
                     if not os.access(self.db_path, os.R_OK):
                         consecutive_errors += 1
                         if consecutive_errors == 1 or consecutive_errors % 10 == 0:
-                            self.logger.warning(
-                                f"Database file is not readable: {self.db_path}"
-                            )
+                            self.logger.warning(f"Database file is not readable: {self.db_path}")
                         time.sleep(5)
                         continue
 
                     # Connect to database with timeout to prevent hanging
                     try:
-                        with closing(
-                            sqlite3.connect(
-                                self.db_path, timeout=60, check_same_thread=False
-                            )
-                        ) as conn:
+                        with closing(sqlite3.connect(self.db_path, timeout=60, check_same_thread=False)) as conn:
                             conn.row_factory = sqlite3.Row
                             cursor = conn.cursor()
 
@@ -6043,16 +5408,12 @@ class BotDataViewer:
                                     elif data_type == "packet":
                                         self._handle_packet_data(data)
                                     elif data_type == "routing":
-                                        self._handle_packet_data(
-                                            data
-                                        )  # Treat routing as packet data
+                                        self._handle_packet_data(data)  # Treat routing as packet data
                                     elif data_type == "message":
                                         self._handle_message_data(data)
 
                                 except Exception as e:
-                                    self.logger.warning(
-                                        f"Error processing database data: {e}"
-                                    )
+                                    self.logger.warning(f"Error processing database data: {e}")
 
                             # Update last timestamp
                             if rows:
@@ -6062,15 +5423,10 @@ class BotDataViewer:
                             consecutive_errors = 0
                     except sqlite3.OperationalError as conn_error:
                         error_msg = str(conn_error)
-                        if (
-                            "locked" in error_msg.lower()
-                            or "database is locked" in error_msg.lower()
-                        ):
+                        if "locked" in error_msg.lower() or "database is locked" in error_msg.lower():
                             consecutive_errors += 1
                             if consecutive_errors == 1 or consecutive_errors % 10 == 0:
-                                self.logger.warning(
-                                    f"Database is locked, waiting: {self.db_path}"
-                                )
+                                self.logger.warning(f"Database is locked, waiting: {self.db_path}")
                             time.sleep(2)
                             continue
                         raise  # Re-raise non-locked OperationalErrors for outer handler to log/backoff
@@ -6103,22 +5459,12 @@ class BotDataViewer:
                                 f"Database polling persistent error (attempt {consecutive_errors}): {error_msg}"
                             )
                         # Exponential backoff for persistent errors
-                        time.sleep(
-                            min(
-                                60,
-                                2
-                                ** min(consecutive_errors - max_consecutive_errors, 5),
-                            )
-                        )
+                        time.sleep(min(60, 2 ** min(consecutive_errors - max_consecutive_errors, 5)))
                     elif consecutive_errors > 3:
-                        self.logger.warning(
-                            f"Database polling error (attempt {consecutive_errors}): {error_msg}"
-                        )
+                        self.logger.warning(f"Database polling error (attempt {consecutive_errors}): {error_msg}")
                         time.sleep(5)  # Wait longer on repeated errors
                     else:
-                        self.logger.debug(
-                            f"Database polling error (attempt {consecutive_errors}): {error_msg}"
-                        )
+                        self.logger.debug(f"Database polling error (attempt {consecutive_errors}): {error_msg}")
                         time.sleep(1)  # Wait longer on error
 
                 except Exception as e:
@@ -6126,20 +5472,11 @@ class BotDataViewer:
                     if consecutive_errors >= max_consecutive_errors:
                         if consecutive_errors == max_consecutive_errors:
                             self.logger.error(
-                                f"Database polling unexpected error (attempt {consecutive_errors}): {e}",
-                                exc_info=True,
+                                f"Database polling unexpected error (attempt {consecutive_errors}): {e}", exc_info=True
                             )
-                        time.sleep(
-                            min(
-                                60,
-                                2
-                                ** min(consecutive_errors - max_consecutive_errors, 5),
-                            )
-                        )
+                        time.sleep(min(60, 2 ** min(consecutive_errors - max_consecutive_errors, 5)))
                     else:
-                        self.logger.warning(
-                            f"Database polling unexpected error (attempt {consecutive_errors}): {e}"
-                        )
+                        self.logger.warning(f"Database polling unexpected error (attempt {consecutive_errors}): {e}")
                         time.sleep(2)
 
         # Start polling thread
@@ -6156,8 +5493,7 @@ class BotDataViewer:
         )
         with self._clients_lock:
             return any(
-                any(client.get(key, False) for key in subscription_keys)
-                for client in self.connected_clients.values()
+                any(client.get(key, False) for key in subscription_keys) for client in self.connected_clients.values()
             )
 
     def _config_int(self, section: str, option: str, fallback: int) -> int:
@@ -6177,29 +5513,18 @@ class BotDataViewer:
             self.dashboard_snapshot_enabled = True
 
         self.dashboard_snapshot_interval = max(
-            15,
-            self._config_int("Web_Viewer", "dashboard_snapshot_interval_seconds", 60),
+            15, self._config_int("Web_Viewer", "dashboard_snapshot_interval_seconds", 60)
         )
         self.dashboard_stats = DashboardStatsService(
             self.logger,
-            history_days=self._config_int(
-                "Web_Viewer", "dashboard_snapshot_history_days", 400
-            ),
-            packet_backfill_rows=self._config_int(
-                "Web_Viewer", "dashboard_packet_backfill_rows", 2000
-            ),
+            history_days=self._config_int("Web_Viewer", "dashboard_snapshot_history_days", 400),
+            packet_backfill_rows=self._config_int("Web_Viewer", "dashboard_packet_backfill_rows", 2000),
             interval_seconds=self.dashboard_snapshot_interval,
             # Retention drives which window labels the UI is allowed to offer,
             # so read the same keys the cleanup jobs enforce.
-            stats_retention_days=self._config_int(
-                "Stats_Command", "data_retention_days", 7
-            ),
-            packet_retention_days=self._config_int(
-                "Data_Retention", "packet_stream_retention_days", 3
-            ),
-            adverts_retention_days=self._config_int(
-                "Data_Retention", "daily_stats_retention_days", 90
-            ),
+            stats_retention_days=self._config_int("Stats_Command", "data_retention_days", 7),
+            packet_retention_days=self._config_int("Data_Retention", "packet_stream_retention_days", 3),
+            adverts_retention_days=self._config_int("Data_Retention", "daily_stats_retention_days", 90),
             multibyte_contacts_fn=self._count_contacts_7d_multibyte,
         )
 
@@ -6221,9 +5546,7 @@ class BotDataViewer:
             self.logger.debug(f"Could not count 7d contacts: {e}")
             return None
 
-        chunk_buckets = self._bucket_hop_chunks(
-            self._get_cached_contact_multibyte_hop_chunks(cursor, recent_days=7)
-        )
+        chunk_buckets = self._bucket_hop_chunks(self._get_cached_contact_multibyte_hop_chunks(cursor, recent_days=7))
         mb_advert_pks: set[str] = set()
         try:
             cursor.execute(
@@ -6249,9 +5572,7 @@ class BotDataViewer:
             multibyte = sum(
                 1
                 for row in cursor.fetchall()
-                if self._contact_has_multibyte_path_evidence(
-                    row[0], row[1], row[2], mb_advert_pks, chunk_buckets
-                )
+                if self._contact_has_multibyte_path_evidence(row[0], row[1], row[2], mb_advert_pks, chunk_buckets)
             )
         except sqlite3.Error as e:
             self.logger.debug(f"Could not compute contacts_7d_multibyte_path: {e}")
@@ -6294,9 +5615,7 @@ class BotDataViewer:
                 try:
                     with closing(self._dashboard_connection()) as conn:
                         if not self.dashboard_stats.try_claim_lease(conn):
-                            self.logger.debug(
-                                "Another viewer holds the dashboard snapshot lease; skipping tick"
-                            )
+                            self.logger.debug("Another viewer holds the dashboard snapshot lease; skipping tick")
                             continue
                         result = self.dashboard_stats.refresh(conn)
                     consecutive_errors = 0
@@ -6309,26 +5628,14 @@ class BotDataViewer:
                 except Exception as e:
                     consecutive_errors += 1
                     if consecutive_errors == 1:
-                        self.logger.error(
-                            f"Dashboard snapshot refresh failed: {e}", exc_info=True
-                        )
+                        self.logger.error(f"Dashboard snapshot refresh failed: {e}", exc_info=True)
                     else:
-                        self.logger.warning(
-                            f"Dashboard snapshot refresh failed ({consecutive_errors}): {e}"
-                        )
-                    delay = min(
-                        600,
-                        self.dashboard_snapshot_interval
-                        * (2 ** min(consecutive_errors, 5)),
-                    )
+                        self.logger.warning(f"Dashboard snapshot refresh failed ({consecutive_errors}): {e}")
+                    delay = min(600, self.dashboard_snapshot_interval * (2 ** min(consecutive_errors, 5)))
 
-        thread = threading.Thread(
-            target=refresher, name="dashboard-snapshot", daemon=True
-        )
+        thread = threading.Thread(target=refresher, name="dashboard-snapshot", daemon=True)
         thread.start()
-        self.logger.info(
-            f"Dashboard snapshot refresher started (every {self.dashboard_snapshot_interval}s)"
-        )
+        self.logger.info(f"Dashboard snapshot refresher started (every {self.dashboard_snapshot_interval}s)")
 
     def _start_cleanup_scheduler(self):
         """Start background thread for periodic database cleanup"""
@@ -6389,9 +5696,7 @@ class BotDataViewer:
                     "Data_Retention", "packet_stream_retention_days"
                 ):
                     with suppress(ValueError, TypeError):
-                        days_to_keep = self.config.getint(
-                            "Data_Retention", "packet_stream_retention_days"
-                        )
+                        days_to_keep = self.config.getint("Data_Retention", "packet_stream_retention_days")
 
             cutoff_time = time.time() - (days_to_keep * 24 * 60 * 60)
             batch_size, pause_seconds = retention_delete_settings(self.config)
@@ -6407,25 +5712,16 @@ class BotDataViewer:
             )
             if total_deleted > 0:
                 self.logger.info(
-                    f"Cleaned up {total_deleted} old packet stream entries "
-                    f"(older than {days_to_keep} days)"
+                    f"Cleaned up {total_deleted} old packet stream entries (older than {days_to_keep} days)"
                 )
 
         except sqlite3.OperationalError as e:
-            self.logger.warning(
-                f"Database busy during cleanup (will retry next cycle): {e}"
-            )
+            self.logger.warning(f"Database busy during cleanup (will retry next cycle): {e}")
         except Exception as e:
-            self.logger.error(
-                f"Error cleaning up old packet stream data: {e}", exc_info=True
-            )
+            self.logger.error(f"Error cleaning up old packet stream data: {e}", exc_info=True)
 
     def _get_database_stats(
-        self,
-        top_users_window="all",
-        top_commands_window="all",
-        top_paths_window="all",
-        top_channels_window="all",
+        self, top_users_window="all", top_commands_window="all", top_paths_window="all", top_channels_window="all"
     ):
         """Get comprehensive database statistics for dashboard"""
         conn = None
@@ -6443,11 +5739,7 @@ class BotDataViewer:
             with self._clients_lock:
                 client_count = len(self.connected_clients)
 
-            stats = {
-                "timestamp": time.time(),
-                "connected_clients": client_count,
-                "tables": tables,
-            }
+            stats = {"timestamp": time.time(), "connected_clients": client_count, "tables": tables}
 
             # Contact and tracking statistics
             if "complete_contact_tracking" in tables:
@@ -6475,9 +5767,7 @@ class BotDataViewer:
                 if "observed_paths" in tables:
                     try:
                         chunk_buckets = self._bucket_hop_chunks(
-                            self._get_cached_contact_multibyte_hop_chunks(
-                                cursor, recent_days=7
-                            )
+                            self._get_cached_contact_multibyte_hop_chunks(cursor, recent_days=7)
                         )
                         # Use date() — julianday(iso8601) often returns NULL for Python isoformat() strings
                         cursor.execute(
@@ -6488,15 +5778,9 @@ class BotDataViewer:
                             AND date(last_seen) >= date('now', 'localtime', '-7 days')
                             """
                         )
-                        mb_advert_pks = {
-                            row["public_key"]
-                            for row in cursor.fetchall()
-                            if row["public_key"]
-                        }
+                        mb_advert_pks = {row["public_key"] for row in cursor.fetchall() if row["public_key"]}
                     except Exception as e:
-                        self.logger.debug(
-                            f"Could not load multibyte path sets for 7d stats: {e}"
-                        )
+                        self.logger.debug(f"Could not load multibyte path sets for 7d stats: {e}")
                 try:
                     cursor.execute(
                         """
@@ -6517,9 +5801,7 @@ class BotDataViewer:
                             mb_7d += 1
                     stats["contacts_7d_multibyte_path"] = mb_7d
                 except Exception as e:
-                    self.logger.debug(
-                        f"Could not compute contacts_7d_multibyte_path: {e}"
-                    )
+                    self.logger.debug(f"Could not compute contacts_7d_multibyte_path: {e}")
 
                 cursor.execute("""
                     SELECT COUNT(*) FROM complete_contact_tracking
@@ -6575,13 +5857,9 @@ class BotDataViewer:
                     stats["incoming_packets_7d"] = row[0] or 0
                     stats["incoming_packets_7d_multibyte_path"] = row[1] or 0
                     stats["incoming_packets_from"] = row[2]
-                    stats["incoming_packets_window_label"] = humanize_span(
-                        time.time() - row[2] if row[2] else None
-                    )
+                    stats["incoming_packets_window_label"] = humanize_span(time.time() - row[2] if row[2] else None)
                 except Exception as e:
-                    self.logger.debug(
-                        f"Could not compute incoming packet multibyte stats: {e}"
-                    )
+                    self.logger.debug(f"Could not compute incoming packet multibyte stats: {e}")
 
             # Advertisement statistics using daily tracking table
             if "daily_stats" in tables:
@@ -6649,9 +5927,7 @@ class BotDataViewer:
                 cursor.execute("SELECT COUNT(*) FROM repeater_contacts")
                 stats["repeater_contacts"] = cursor.fetchone()[0]
 
-                cursor.execute(
-                    "SELECT COUNT(*) FROM repeater_contacts WHERE is_active = 1"
-                )
+                cursor.execute("SELECT COUNT(*) FROM repeater_contacts WHERE is_active = 1")
                 stats["active_repeater_contacts"] = cursor.fetchone()[0]
 
             # Cache statistics
@@ -6672,9 +5948,7 @@ class BotDataViewer:
                 stats[f"{table}_count"] = count
 
                 # Get active entries (not expired)
-                cursor.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE expires_at > datetime('now')"
-                )
+                cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE expires_at > datetime('now')")
                 active_count = cursor.fetchone()[0]
                 stats["active_cache_entries"] += active_count
                 stats[f"{table}_active"] = active_count
@@ -6700,9 +5974,7 @@ class BotDataViewer:
                 cursor.execute("SELECT COUNT(DISTINCT sender_id) FROM message_stats")
                 stats["unique_users_total"] = cursor.fetchone()[0]
 
-                cursor.execute(
-                    "SELECT COUNT(DISTINCT channel) FROM message_stats WHERE channel IS NOT NULL"
-                )
+                cursor.execute("SELECT COUNT(DISTINCT channel) FROM message_stats WHERE channel IS NOT NULL")
                 stats["unique_channels_total"] = cursor.fetchone()[0]
 
                 # Top users (most frequent message senders) - filter by time window
@@ -6724,9 +5996,7 @@ class BotDataViewer:
                     LIMIT 15
                 """
                 cursor.execute(query)
-                stats["top_users"] = [
-                    {"user": row[0], "count": row[1]} for row in cursor.fetchall()
-                ]
+                stats["top_users"] = [{"user": row[0], "count": row[1]} for row in cursor.fetchall()]
 
                 # Top channels by message count - filter by time window
                 if top_channels_window == "24h":
@@ -6748,8 +6018,7 @@ class BotDataViewer:
                 """
                 cursor.execute(query)
                 stats["top_channels"] = [
-                    {"channel": row[0], "messages": row[1], "users": row[2]}
-                    for row in cursor.fetchall()
+                    {"channel": row[0], "messages": row[1], "users": row[2]} for row in cursor.fetchall()
                 ]
 
             if "command_stats" in tables:
@@ -6781,9 +6050,7 @@ class BotDataViewer:
                     LIMIT 15
                 """
                 cursor.execute(query)
-                stats["top_commands"] = [
-                    {"command": row[0], "count": row[1]} for row in cursor.fetchall()
-                ]
+                stats["top_commands"] = [{"command": row[0], "count": row[1]} for row in cursor.fetchall()]
 
                 # Bot reply rates (commands that got responses) - calculate for different time windows
                 # 24 hour reply rate
@@ -6798,9 +6065,7 @@ class BotDataViewer:
                 """)
                 total_24h = cursor.fetchone()[0]
                 if total_24h > 0:
-                    stats["bot_reply_rate_24h"] = round(
-                        (replied_24h / total_24h) * 100, 1
-                    )
+                    stats["bot_reply_rate_24h"] = round((replied_24h / total_24h) * 100, 1)
                 else:
                     stats["bot_reply_rate_24h"] = 0
 
@@ -6832,9 +6097,7 @@ class BotDataViewer:
                 """)
                 total_30d = cursor.fetchone()[0]
                 if total_30d > 0:
-                    stats["bot_reply_rate_30d"] = round(
-                        (replied_30d / total_30d) * 100, 1
-                    )
+                    stats["bot_reply_rate_30d"] = round((replied_30d / total_30d) * 100, 1)
                 else:
                     stats["bot_reply_rate_30d"] = 0
 
@@ -6874,12 +6137,7 @@ class BotDataViewer:
                 """
                 cursor.execute(query)
                 stats["top_paths"] = [
-                    {
-                        "user": row[0],
-                        "path_length": row[1],
-                        "path_string": row[2],
-                        "timestamp": row[3],
-                    }
+                    {"user": row[0], "path_length": row[1], "path_string": row[2], "timestamp": row[3]}
                     for row in cursor.fetchall()
                 ]
 
@@ -6897,9 +6155,7 @@ class BotDataViewer:
                     WHERE signal_strength IS NOT NULL AND last_heard > datetime('now', 'localtime', '-24 hours')
                 """)
                 avg_signal = cursor.fetchone()[0]
-                stats["avg_signal_strength_24h"] = (
-                    round(avg_signal, 1) if avg_signal else 0
-                )
+                stats["avg_signal_strength_24h"] = round(avg_signal, 1) if avg_signal else 0
 
             # Geographic distribution - only count currently tracked contacts heard in the last 30 days
             # Normalize country names to avoid duplicates (e.g., "United States" vs "United States of America")
@@ -6951,9 +6207,7 @@ class BotDataViewer:
             cursor = conn.cursor()
 
             # Get all tables
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             table_names = [row[0] for row in cursor.fetchall()]
 
             # Filter tables by ALLOWED_TABLES whitelist for security
@@ -6977,32 +6231,20 @@ class BotDataViewer:
                     # Estimate size (rough calculation)
                     estimated_size = record_count * len(columns) * 50  # Rough estimate
                     size_str = (
-                        f"{estimated_size:,} bytes"
-                        if estimated_size < 1024
-                        else f"{estimated_size / 1024:.1f} KB"
+                        f"{estimated_size:,} bytes" if estimated_size < 1024 else f"{estimated_size / 1024:.1f} KB"
                     )
 
                     # Get table description based on name
                     description = self._get_table_description(table_name)
 
                     tables.append(
-                        {
-                            "name": table_name,
-                            "record_count": record_count,
-                            "size": size_str,
-                            "description": description,
-                        }
+                        {"name": table_name, "record_count": record_count, "size": size_str, "description": description}
                     )
 
                 except Exception as e:
                     self.logger.debug(f"Error getting info for table {table_name}: {e}")
                     tables.append(
-                        {
-                            "name": table_name,
-                            "record_count": 0,
-                            "size": "Unknown",
-                            "description": "Error reading table",
-                        }
+                        {"name": table_name, "record_count": 0, "size": "Unknown", "description": "Error reading table"}
                     )
 
             # Get database file size
@@ -7029,13 +6271,7 @@ class BotDataViewer:
 
         except Exception as e:
             self.logger.error(f"Error getting database info: {e}")
-            return {
-                "total_tables": 0,
-                "total_records": 0,
-                "last_updated": "Error",
-                "db_size": "Unknown",
-                "tables": [],
-            }
+            return {"total_tables": 0, "total_records": 0, "last_updated": "Error", "db_size": "Unknown", "tables": []}
         finally:
             if conn:
                 conn.close()
@@ -7151,9 +6387,7 @@ class BotDataViewer:
                 out.append(seg.lower())
         return out
 
-    def _collect_multibyte_hop_chunks(
-        self, cursor, recent_days: int | None = None
-    ) -> set[str]:
+    def _collect_multibyte_hop_chunks(self, cursor, recent_days: int | None = None) -> set[str]:
         """Hop prefixes from multibyte paths in observed_paths (for repeater/room pubkey matching).
 
         If ``recent_days`` is set (e.g. 7), only paths whose ``last_seen`` falls within that
@@ -7190,9 +6424,7 @@ class BotDataViewer:
             self.logger.debug(f"Could not load multibyte hop chunks: {e}")
         return chunks
 
-    def _get_cached_contact_multibyte_hop_chunks(
-        self, cursor, recent_days: int | None = None
-    ) -> set[str]:
+    def _get_cached_contact_multibyte_hop_chunks(self, cursor, recent_days: int | None = None) -> set[str]:
         """Return contact badge evidence without rebuilding it per page request.
 
         Memoized per ``recent_days`` window: the contacts list wants all-time
@@ -7347,9 +6579,7 @@ class BotDataViewer:
                 return True
         return False
 
-    def _compute_single_byte_relay_metrics(
-        self, cursor, path_time_cond: str
-    ) -> dict[str, dict]:
+    def _compute_single_byte_relay_metrics(self, cursor, path_time_cond: str) -> dict[str, dict]:
         """Per-1-byte-prefix relay metrics derived from single-byte advert paths.
 
         Senders who also appear in multibyte advert paths in the same window are excluded —
@@ -7389,11 +6619,7 @@ class BotDataViewer:
                     if len(chunk) != 2:
                         continue
                     if chunk not in metrics:
-                        metrics[chunk] = {
-                            "relay_score": 0,
-                            "sources": set(),
-                            "to_prefixes": set(),
-                        }
+                        metrics[chunk] = {"relay_score": 0, "sources": set(), "to_prefixes": set()}
                     metrics[chunk]["relay_score"] += obs
                     metrics[chunk]["sources"].add(row["public_key"])
                     if row["to_prefix"]:
@@ -7411,9 +6637,7 @@ class BotDataViewer:
             self.logger.debug(f"Could not compute single-byte relay metrics: {e}")
             return {}
 
-    def _compute_legacy_degree(
-        self, cursor, unupgraded_pks: set[str], mc_since_cond: str
-    ) -> dict[str, int]:
+    def _compute_legacy_degree(self, cursor, unupgraded_pks: set[str], mc_since_cond: str) -> dict[str, int]:
         """Count mesh_connections edges where both endpoints are unupgraded (single_byte) nodes.
 
         Uses from_public_key / to_public_key for precise matching — no 1-byte collision ambiguity.
@@ -7439,9 +6663,7 @@ class BotDataViewer:
             self.logger.debug(f"Could not compute legacy degree: {e}")
             return {}
 
-    def _get_multibyte_rollout_data(
-        self, since: str = "30d", node_type: str = "all"
-    ) -> dict:
+    def _get_multibyte_rollout_data(self, since: str = "30d", node_type: str = "all") -> dict:
         """Return multibyte hash rollout analytics for repeaters and/or room servers.
 
         since: 24h | 7d | 30d | 90d | all — window applied to last_heard in complete_contact_tracking.
@@ -7472,16 +6694,13 @@ class BotDataViewer:
             }
             if since in datetime_offsets:
                 where_clause = (
-                    f"WHERE {role_filter}"
-                    f" AND c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
+                    f"WHERE {role_filter} AND c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
                 )
             else:
                 where_clause = f"WHERE {role_filter}"
 
             # Check for observed_paths table
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='observed_paths'"
-            )
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='observed_paths'")
             has_observed_paths = cursor.fetchone() is not None
 
             # Collect multibyte hop chunks for prefix matching, scoped to the same window as the
@@ -7490,9 +6709,7 @@ class BotDataViewer:
             _chunk_recent_days = _since_to_days.get(since)  # None → all-time for 'all'
             multibyte_hop_chunks: set[str] = set()
             if has_observed_paths:
-                multibyte_hop_chunks = self._collect_multibyte_hop_chunks(
-                    cursor, recent_days=_chunk_recent_days
-                )
+                multibyte_hop_chunks = self._collect_multibyte_hop_chunks(cursor, recent_days=_chunk_recent_days)
             chunk_buckets = self._bucket_hop_chunks(multibyte_hop_chunks)
 
             # Per-repeater path traffic totals (advert paths only)
@@ -7578,9 +6795,7 @@ class BotDataViewer:
                             "observation_count": int(prow["observation_count"])
                             if prow["observation_count"] is not None
                             else 1,
-                            "last_seen": prow["last_seen"]
-                            if prow["last_seen"] is not None
-                            else None,
+                            "last_seen": prow["last_seen"] if prow["last_seen"] is not None else None,
                         }
                     )
 
@@ -7608,9 +6823,7 @@ class BotDataViewer:
                     obph = None
 
                 if badge == "multibyte":
-                    status = (
-                        "multibyte_direct" if obph in (2, 3) else "multibyte_relayed"
-                    )
+                    status = "multibyte_direct" if obph in (2, 3) else "multibyte_relayed"
                 elif badge == "one_byte":
                     status = "single_byte"
                 else:
@@ -7618,9 +6831,7 @@ class BotDataViewer:
 
                 status_counts[status] += 1
 
-                loc_parts = [
-                    p for p in [row["city"], row["state"], row["country"]] if p
-                ]
+                loc_parts = [p for p in [row["city"], row["state"], row["country"]] if p]
 
                 pt = path_traffic.get(pk or "", {})
                 all_repeaters.append(
@@ -7656,22 +6867,16 @@ class BotDataViewer:
 
             sb_metrics: dict[str, dict] = {}
             if has_observed_paths and unupgraded_pks:
-                sb_metrics = self._compute_single_byte_relay_metrics(
-                    cursor, path_time_cond
-                )
+                sb_metrics = self._compute_single_byte_relay_metrics(cursor, path_time_cond)
 
             legacy_degree: dict[str, int] = {}
             try:
-                cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='mesh_connections'"
-                )
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='mesh_connections'")
                 if cursor.fetchone() is not None and unupgraded_pks:
                     mc_since_cond = ""
                     if since in datetime_offsets:
                         mc_since_cond = f"AND last_seen >= datetime('now', 'localtime', {datetime_offsets[since]})"
-                    legacy_degree = self._compute_legacy_degree(
-                        cursor, unupgraded_pks, mc_since_cond
-                    )
+                    legacy_degree = self._compute_legacy_degree(cursor, unupgraded_pks, mc_since_cond)
             except Exception as e:
                 self.logger.debug(f"Legacy degree skipped: {e}")
 
@@ -7686,11 +6891,7 @@ class BotDataViewer:
                     # prefix_peers: ALL other nodes (any status) sharing this 1-byte prefix.
                     # Confirmed-multibyte peers explain inflated scores on low-traffic nodes.
                     r["prefix_peers"] = [
-                        {
-                            "public_key": r2["public_key"],
-                            "name": r2["name"],
-                            "status": r2["status"],
-                        }
+                        {"public_key": r2["public_key"], "name": r2["name"], "status": r2["status"]}
                         for r2 in all_by_prefix.get(pfx, [])
                         if r2["public_key"] != r["public_key"]
                     ]
@@ -7709,17 +6910,12 @@ class BotDataViewer:
             multibyte_names: set[str] = {
                 r["name"].strip().lower()
                 for r in all_repeaters
-                if r["status"] in ("multibyte_direct", "multibyte_relayed")
-                and r["name"]
+                if r["status"] in ("multibyte_direct", "multibyte_relayed") and r["name"]
             }
             if multibyte_names:
                 kept: list[dict] = []
                 for r in all_repeaters:
-                    if (
-                        r["status"] == "single_byte"
-                        and r["name"]
-                        and r["name"].strip().lower() in multibyte_names
-                    ):
+                    if r["status"] == "single_byte" and r["name"] and r["name"].strip().lower() in multibyte_names:
                         status_counts["single_byte"] -= 1
                     else:
                         kept.append(r)
@@ -7733,9 +6929,7 @@ class BotDataViewer:
 
             # Summary
             total = len(all_repeaters)
-            mb_total = (
-                status_counts["multibyte_direct"] + status_counts["multibyte_relayed"]
-            )
+            mb_total = status_counts["multibyte_direct"] + status_counts["multibyte_relayed"]
             adoption_pct = round(mb_total / total * 100, 1) if total > 0 else 0.0
 
             # Overall path observation traffic breakdown (advert paths, within the since window,
@@ -7875,9 +7069,7 @@ class BotDataViewer:
             # Recent advert paths (most-recent 50). The idx_observed_paths_advert_pk_seen covering
             # index serves WHERE public_key=? AND packet_type='advert' ORDER BY last_seen DESC directly.
             all_paths: list[dict[str, Any]] = []
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='observed_paths'"
-            )
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='observed_paths'")
             if cursor.fetchone():
                 cursor.execute(
                     """
@@ -7903,16 +7095,12 @@ class BotDataViewer:
                     all_paths.append(
                         {
                             "path_hex": prow["path_hex"],
-                            "path_length": int(prow["path_length"])
-                            if prow["path_length"] is not None
-                            else 0,
+                            "path_length": int(prow["path_length"]) if prow["path_length"] is not None else 0,
                             "bytes_per_hop": bph,
                             "observation_count": int(prow["observation_count"])
                             if prow["observation_count"] is not None
                             else 1,
-                            "last_seen": prow["last_seen"]
-                            if prow["last_seen"] is not None
-                            else None,
+                            "last_seen": prow["last_seen"] if prow["last_seen"] is not None else None,
                         }
                     )
 
@@ -8009,17 +7197,13 @@ class BotDataViewer:
             ), CASE WHEN c.out_bytes_per_hop IN (1, 2, 3)
                      THEN c.out_bytes_per_hop ELSE 0 END)"""
             if since in datetime_offsets:
-                where_parts.append(
-                    f"c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
-                )
+                where_parts.append(f"c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})")
 
             search = (search or "").strip().lower()[:100]
             if search and not include_detail:
                 # Match the former client-side behavior: public keys are prefix-only,
                 # while names, roles, device types, and locations match anywhere.
-                escaped = (
-                    search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                )
+                escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 where_parts.append(
                     "("
                     "LOWER(COALESCE(c.public_key, '')) LIKE ? ESCAPE '\\' OR "
@@ -8051,9 +7235,7 @@ class BotDataViewer:
 
             if hop_filter in ("0", "1", "2", "3"):
                 where_parts.append(
-                    "COALESCE(c.hop_count, 0) = ?"
-                    if hop_filter == "0"
-                    else "COALESCE(c.hop_count, 0) >= ?"
+                    "COALESCE(c.hop_count, 0) = ?" if hop_filter == "0" else "COALESCE(c.hop_count, 0) >= ?"
                 )
                 where_params.append(int(hop_filter))
 
@@ -8074,9 +7256,7 @@ class BotDataViewer:
             elif starred == "no":
                 where_parts.append("COALESCE(c.is_starred, 0) = 0")
 
-            where_clause = (
-                (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
-            )
+            where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
             pagination = None
             filtered_stats = None
@@ -8147,9 +7327,7 @@ class BotDataViewer:
                 "last_seen": "COALESCE(c.last_heard, '')",
                 "advert_count": "COALESCE(c.advert_count, 0)",
             }
-            sort = (
-                sort if sort in (*sort_expressions.keys(), "distance") else "last_seen"
-            )
+            sort = sort if sort in (*sort_expressions.keys(), "distance") else "last_seen"
             direction = "asc" if direction == "asc" else "desc"
             if sort == "distance":
                 if bot_lat is None or bot_lon is None:
@@ -8250,16 +7428,12 @@ class BotDataViewer:
                 paths_by_key.setdefault(prow["public_key"], []).append(
                     {
                         "path_hex": prow["path_hex"],
-                        "path_length": int(prow["path_length"])
-                        if prow["path_length"] is not None
-                        else 0,
+                        "path_length": int(prow["path_length"]) if prow["path_length"] is not None else 0,
                         "bytes_per_hop": bph,
                         "observation_count": int(prow["observation_count"])
                         if prow["observation_count"] is not None
                         else 1,
-                        "last_seen": prow["last_seen"]
-                        if prow["last_seen"] is not None
-                        else None,
+                        "last_seen": prow["last_seen"] if prow["last_seen"] is not None else None,
                     }
                 )
 
@@ -8276,9 +7450,7 @@ class BotDataViewer:
                     and row["latitude"] is not None
                     and row["longitude"] is not None
                 ):
-                    distance = self._calculate_distance(
-                        bot_lat, bot_lon, row["latitude"], row["longitude"]
-                    )
+                    distance = self._calculate_distance(bot_lat, bot_lon, row["latitude"], row["longitude"])
 
                 # Recent paths for this contact (grouped from the second query above). The full
                 # path objects are NOT sent in the list payload (they were ~70% of its size and
@@ -8291,9 +7463,7 @@ class BotDataViewer:
                 # path rows, i.e. the number of paths, or 1 when a contact had no paths.
                 total_messages = max(1, paths_count)
 
-                path_encoding_badge = self._compute_path_encoding_badge(
-                    row, all_paths, chunk_buckets
-                )
+                path_encoding_badge = self._compute_path_encoding_badge(row, all_paths, chunk_buckets)
 
                 # The badge/tooltip decodes out_path (the "primary" path) using out_bytes_per_hop.
                 # The contact column can be stale (e.g. left at 1 while the primary path is a 3-byte
@@ -8301,15 +7471,9 @@ class BotDataViewer:
                 # hops. Index the encoding on the primary observed path itself, which carries the
                 # authoritative bytes_per_hop, falling back to the contact column when unmatched.
                 out_path_val = row["out_path"] if row["out_path"] is not None else ""
-                out_bytes_per_hop_val = (
-                    row["out_bytes_per_hop"]
-                    if row["out_bytes_per_hop"] is not None
-                    else None
-                )
+                out_bytes_per_hop_val = row["out_bytes_per_hop"] if row["out_bytes_per_hop"] is not None else None
                 if out_path_val:
-                    primary_path = next(
-                        (p for p in all_paths if p["path_hex"] == out_path_val), None
-                    )
+                    primary_path = next((p for p in all_paths if p["path_hex"] == out_path_val), None)
                     if primary_path and primary_path.get("bytes_per_hop") in (1, 2, 3):
                         out_bytes_per_hop_val = primary_path["bytes_per_hop"]
 
@@ -8333,13 +7497,9 @@ class BotDataViewer:
                     "total_messages": total_messages,
                     "last_message": row["last_message"],
                     "distance": distance,
-                    "is_starred": bool(
-                        row["is_starred"] if row["is_starred"] is not None else 0
-                    ),
+                    "is_starred": bool(row["is_starred"] if row["is_starred"] is not None else 0),
                     "out_path": out_path_val,
-                    "out_path_len": row["out_path_len"]
-                    if row["out_path_len"] is not None
-                    else -1,
+                    "out_path_len": row["out_path_len"] if row["out_path_len"] is not None else -1,
                     "out_bytes_per_hop": out_bytes_per_hop_val,
                     "path_bytes_per_hop": int(row["path_bytes_per_hop"] or 0),
                     "paths_count": paths_count,
@@ -8365,9 +7525,7 @@ class BotDataViewer:
             server_stats = {}
             try:
                 # Check if daily_stats table exists
-                cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='daily_stats'"
-                )
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_stats'")
                 if cursor.fetchone():
                     # 24h: Last 24 hours of advertisements
                     cursor.execute("""
@@ -8420,8 +7578,7 @@ class BotDataViewer:
                         "other": sum(
                             v
                             for k, v in today_by_role.items()
-                            if k
-                            not in ["companion", "repeater", "roomserver", "sensor"]
+                            if k not in ["companion", "repeater", "roomserver", "sensor"]
                         ),
                     }
 
@@ -8438,9 +7595,7 @@ class BotDataViewer:
                         WHERE date = date('now', 'localtime', '-7 days')
                     """)
                     result = cursor.fetchone()
-                    server_stats["nodes_7d_ago"] = (
-                        result[0] if result and result[0] else 0
-                    )
+                    server_stats["nodes_7d_ago"] = result[0] if result and result[0] else 0
 
                     # Last 7 days vs previous 7 days (days 8-14 ago)
                     cursor.execute("""
@@ -8448,9 +7603,7 @@ class BotDataViewer:
                         WHERE date >= date('now', 'localtime', '-14 days') AND date < date('now', 'localtime', '-7 days')
                     """)
                     result = cursor.fetchone()
-                    server_stats["nodes_prev_7d"] = (
-                        result[0] if result and result[0] else 0
-                    )
+                    server_stats["nodes_prev_7d"] = result[0] if result and result[0] else 0
 
                     # Last 30 days vs previous 30 days (days 31-60 ago)
                     cursor.execute("""
@@ -8458,9 +7611,7 @@ class BotDataViewer:
                         WHERE date >= date('now', 'localtime', '-60 days') AND date < date('now', 'localtime', '-30 days')
                     """)
                     result = cursor.fetchone()
-                    server_stats["nodes_prev_30d"] = (
-                        result[0] if result and result[0] else 0
-                    )
+                    server_stats["nodes_prev_30d"] = result[0] if result and result[0] else 0
 
                     # Also get current period totals for comparison
                     cursor.execute("""
@@ -8519,13 +7670,7 @@ class BotDataViewer:
                                 "other": sum(
                                     v
                                     for k, v in roles_data.items()
-                                    if k
-                                    not in [
-                                        "companion",
-                                        "repeater",
-                                        "roomserver",
-                                        "sensor",
-                                    ]
+                                    if k not in ["companion", "repeater", "roomserver", "sensor"]
                                 ),
                             }
                         )
@@ -8539,9 +7684,7 @@ class BotDataViewer:
                         ORDER BY date ASC
                     """)
                     daily_data = cursor.fetchall()
-                    server_stats["daily_nodes_30d"] = [
-                        {"date": row[0], "count": row[1]} for row in daily_data
-                    ]
+                    server_stats["daily_nodes_30d"] = [{"date": row[0], "count": row[1]} for row in daily_data]
 
             except Exception as e:
                 self.logger.debug(f"Could not get server stats: {e}")
@@ -8568,10 +7711,7 @@ class BotDataViewer:
         # Haversine formula
         dlat = lat2 - lat1
         dlon = lon2 - lon1
-        a = (
-            math.sin(dlat / 2) ** 2
-            + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-        )
+        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
         c = 2 * math.asin(math.sqrt(a))
 
         # Radius of earth in kilometers
@@ -8703,9 +7843,7 @@ class BotDataViewer:
             feed_url = data.get("feed_url")
             channel_name = data.get("channel_name")
             feed_name = data.get("feed_name")
-            check_interval = _validate_feed_interval(
-                data.get("check_interval_seconds", 300)
-            )
+            check_interval = _validate_feed_interval(data.get("check_interval_seconds", 300))
             api_config = data.get("api_config")
             output_format = data.get("output_format")
             message_send_interval = data.get("message_send_interval_seconds")
@@ -8765,11 +7903,7 @@ class BotDataViewer:
             params = []
 
             if "channel_name" in data:
-                channel_name = (
-                    str(data["channel_name"]).strip()
-                    if data["channel_name"] is not None
-                    else ""
-                )
+                channel_name = str(data["channel_name"]).strip() if data["channel_name"] is not None else ""
                 if not channel_name:
                     raise ValueError("channel_name cannot be empty")
                 updates.append("channel_name = ?")
@@ -8789,9 +7923,7 @@ class BotDataViewer:
 
             if "api_config" in data:
                 updates.append("api_config = ?")
-                params.append(
-                    json.dumps(data["api_config"]) if data["api_config"] else None
-                )
+                params.append(json.dumps(data["api_config"]) if data["api_config"] else None)
 
             if "output_format" in data:
                 updates.append("output_format = ?")
@@ -8800,22 +7932,16 @@ class BotDataViewer:
             if "message_send_interval_seconds" in data:
                 updates.append("message_send_interval_seconds = ?")
                 params.append(
-                    float(data["message_send_interval_seconds"])
-                    if data["message_send_interval_seconds"]
-                    else None
+                    float(data["message_send_interval_seconds"]) if data["message_send_interval_seconds"] else None
                 )
 
             if "filter_config" in data:
                 updates.append("filter_config = ?")
-                params.append(
-                    json.dumps(data["filter_config"]) if data["filter_config"] else None
-                )
+                params.append(json.dumps(data["filter_config"]) if data["filter_config"] else None)
 
             if "sort_config" in data:
                 updates.append("sort_config = ?")
-                params.append(
-                    json.dumps(data["sort_config"]) if data["sort_config"] else None
-                )
+                params.append(json.dumps(data["sort_config"]) if data["sort_config"] else None)
 
             if not updates:
                 return True  # Nothing to update
@@ -8977,9 +8103,7 @@ class BotDataViewer:
                 ORDER BY feed_count DESC
                 LIMIT 10
             """)
-            stats["top_channels"] = [
-                {"channel": row[0], "count": row[1]} for row in cursor.fetchall()
-            ]
+            stats["top_channels"] = [{"channel": row[0], "count": row[1]} for row in cursor.fetchall()]
 
             return stats
         except Exception as e:
@@ -9030,20 +8154,14 @@ class BotDataViewer:
                     }
                 )
                 # Track names for deduplication (normalize to lowercase with #)
-                normalized = (
-                    name.lower() if name.startswith("#") else f"#{name.lower()}"
-                )
+                normalized = name.lower() if name.startswith("#") else f"#{name.lower()}"
                 existing_names.add(normalized)
 
             # Add additional decode-only hashtag channels from config
             additional_channels = self._get_additional_decode_channels()
             for channel_name in additional_channels:
                 # Normalize name
-                normalized = (
-                    channel_name.lower()
-                    if channel_name.startswith("#")
-                    else f"#{channel_name.lower()}"
-                )
+                normalized = channel_name.lower() if channel_name.startswith("#") else f"#{channel_name.lower()}"
                 if normalized not in existing_names:
                     channels.append(
                         {
@@ -9073,18 +8191,14 @@ class BotDataViewer:
 
         try:
             # 1. Get channels from decode_hashtag_channels in [Web_Viewer]
-            if self.config and self.config.has_option(
-                "Web_Viewer", "decode_hashtag_channels"
-            ):
-                channels_str = self.config.get(
-                    "Web_Viewer", "decode_hashtag_channels", fallback=""
-                )
+            if self.config and self.config.has_option("Web_Viewer", "decode_hashtag_channels"):
+                channels_str = self.config.get("Web_Viewer", "decode_hashtag_channels", fallback="")
                 if channels_str:
                     for c in channels_str.split(","):
                         c = c.strip().lower()
                         if c:
                             # Remove # prefix if present for normalization
-                            if c.startswith('#'):
+                            if c.startswith("#"):
                                 c = c[1:]
                             channels.add(c)
 
@@ -9109,7 +8223,7 @@ class BotDataViewer:
         """Get channel number from channel name"""
         # This would use channel_manager
         # For now, return None
-        return
+        return None
 
     def _get_lowest_available_channel_index(self):
         """Get the lowest available channel index (0 to max_channels-1)"""
@@ -9251,15 +8365,7 @@ class BotDataViewer:
                     if hasattr(entry, "published_parsed") and entry.published_parsed:
                         with suppress(Exception):
                             pt = entry.published_parsed
-                            published = datetime(
-                                pt[0],
-                                pt[1],
-                                pt[2],
-                                pt[3],
-                                pt[4],
-                                pt[5],
-                                tzinfo=timezone.utc,
-                            )
+                            published = datetime(pt[0], pt[1], pt[2], pt[3], pt[4], pt[5], tzinfo=timezone.utc)
 
                     items.append(
                         {
@@ -9305,9 +8411,7 @@ class BotDataViewer:
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     # If JSON parsing fails, try to get text and see if it's an error message
                     text_snippet = content[:200].decode("utf-8", errors="replace")
-                    raise Exception(
-                        f"API returned non-JSON response: {text_snippet[:200]}"
-                    )
+                    raise Exception(f"API returned non-JSON response: {text_snippet[:200]}")
 
                 # Check if response is an error message (string)
                 if isinstance(data, str):
@@ -9338,9 +8442,7 @@ class BotDataViewer:
                         items_data = data
                     elif isinstance(data, dict):
                         # If it's a dict, try to find common array fields
-                        _found = (
-                            data.get("items") or data.get("data") or data.get("results")
-                        )
+                        _found = data.get("items") or data.get("data") or data.get("results")
                         items_data = _found if _found is not None else [data]
                     else:
                         items_data = [data]
@@ -9352,9 +8454,7 @@ class BotDataViewer:
                 # Get items (we'll filter and limit later)
                 parser_config.get("id_field", "id")
                 title_field = parser_config.get("title_field", "title")
-                description_field = parser_config.get(
-                    "description_field", "description"
-                )
+                description_field = parser_config.get("description_field", "description")
                 timestamp_field = parser_config.get("timestamp_field", "created_at")
                 emoji_field = parser_config.get("emoji_field", "emoji")
 
@@ -9376,9 +8476,7 @@ class BotDataViewer:
                         if ts_value:
                             try:
                                 if isinstance(ts_value, (int, float)):
-                                    published = datetime.fromtimestamp(
-                                        ts_value, tz=timezone.utc
-                                    )
+                                    published = datetime.fromtimestamp(ts_value, tz=timezone.utc)
                                 elif isinstance(ts_value, str):
                                     # Try Microsoft date format first
                                     if ts_value.startswith("/Date("):
@@ -9386,24 +8484,14 @@ class BotDataViewer:
                                     else:
                                         # Try ISO format
                                         try:
-                                            published = datetime.fromisoformat(
-                                                ts_value.replace("Z", "+00:00")
-                                            )
+                                            published = datetime.fromisoformat(ts_value.replace("Z", "+00:00"))
                                         except ValueError:
                                             # Try common formats
-                                            for fmt in [
-                                                "%Y-%m-%dT%H:%M:%S",
-                                                "%Y-%m-%d %H:%M:%S",
-                                                "%Y-%m-%d",
-                                            ]:
+                                            for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
                                                 try:
-                                                    published = datetime.strptime(
-                                                        ts_value, fmt
-                                                    )
+                                                    published = datetime.strptime(ts_value, fmt)
                                                     if published.tzinfo is None:
-                                                        published = published.replace(
-                                                            tzinfo=timezone.utc
-                                                        )
+                                                        published = published.replace(tzinfo=timezone.utc)
                                                     break
                                                 except ValueError:
                                                     continue
@@ -9419,14 +8507,10 @@ class BotDataViewer:
 
                     items.append(
                         {
-                            "title": get_nested_value(
-                                item_data, title_field, "Untitled"
-                            ),
+                            "title": get_nested_value(item_data, title_field, "Untitled"),
                             "emoji": get_nested_value(item_data, emoji_field, ""),
                             "description": description,
-                            "link": item_data.get("link", "")
-                            if isinstance(item_data, dict)
-                            else "",
+                            "link": item_data.get("link", "") if isinstance(item_data, dict) else "",
                             "published": published,
                             "raw": item_data,  # Store raw data for format string access
                         }
@@ -9434,17 +8518,11 @@ class BotDataViewer:
 
             # Apply sorting if configured
             if sort_config:
-                items = sort_feed_items(
-                    items, sort_config, log_warning=self.logger.warning
-                )
+                items = sort_feed_items(items, sort_config, log_warning=self.logger.warning)
 
             # Apply filter if configured
             if filter_config:
-                items = [
-                    item
-                    for item in items
-                    if item_passes_filter_config(item, filter_config)
-                ]
+                items = [item for item in items if item_passes_filter_config(item, filter_config)]
 
             # Limit to first 3 items after filtering
             items = items[:3]
@@ -9461,14 +8539,10 @@ class BotDataViewer:
             self.logger.error(f"Error previewing feed: {e}")
             raise
 
-    def _format_feed_item(
-        self, item: dict[str, Any], format_str: str, feed_name: str = ""
-    ) -> str:
+    def _format_feed_item(self, item: dict[str, Any], format_str: str, feed_name: str = "") -> str:
         """Format a feed item using the shared feed formatter (parity with FeedManager)."""
         try:
-            max_length = self.config.getint(
-                "Feed_Manager", "max_message_length", fallback=130
-            )
+            max_length = self.config.getint("Feed_Manager", "max_message_length", fallback=130)
         except Exception:
             max_length = 130
         try:
@@ -9590,9 +8664,7 @@ class BotDataViewer:
             conn.commit()
             conn.close()
 
-            self.logger.info(
-                f"Queued channel remove operation: index {channel_idx} (operation_id: {operation_id})"
-            )
+            self.logger.info(f"Queued channel remove operation: index {channel_idx} (operation_id: {operation_id})")
 
             # Return immediately with operation_id - let frontend poll for status
             return {
@@ -9606,9 +8678,7 @@ class BotDataViewer:
             self.logger.error(f"Error in _remove_channel_for_web: {e}")
             return {"success": False, "error": str(e)}
 
-    def _decode_path_hex(
-        self, path_hex: str, bytes_per_hop: int | None = None
-    ) -> list[dict[str, Any]]:
+    def _decode_path_hex(self, path_hex: str, bytes_per_hop: int | None = None) -> list[dict[str, Any]]:
         """Decode a hex path string to repeater nodes.
 
         Thin wrapper over the shared engine (modules.path_inference.decode_path_nodes); the
@@ -9630,9 +8700,7 @@ class BotDataViewer:
         self.logger.info(f"Starting modern web viewer on {host}:{port}")
         self._suppress_werkzeug_headers_error()
         try:
-            self.socketio.run(
-                self.app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True
-            )
+            self.socketio.run(self.app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
         except Exception as e:
             self.logger.error(f"Error running web viewer: {e}")
             raise
