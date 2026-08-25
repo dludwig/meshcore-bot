@@ -1712,7 +1712,7 @@ class CommandManager:
             # Render-only invocation (see render_command_output): collect the text and
             # transmit nothing. Checked before _last_response so a background render
             # cannot overwrite the response captured for a real user's command.
-            if getattr(message, 'capture_sink', None) is not None:
+            if getattr(message, "capture_sink", None) is not None:
                 message.capture_sink.append(content)
                 return True
 
@@ -1846,7 +1846,7 @@ class CommandManager:
         # Render-only invocation: collect the chunks and transmit nothing. Without
         # this a chunked command would put its output on the air while being
         # "rendered" for a scheduled message.
-        if getattr(message, 'capture_sink', None) is not None:
+        if getattr(message, "capture_sink", None) is not None:
             message.capture_sink.extend(chunk for chunk in chunks if chunk)
             return True
 
@@ -1894,7 +1894,7 @@ class CommandManager:
         for command_name, command in self.commands.items():
             if wanted == command_name.lower():
                 return command
-            keywords = getattr(command, 'keywords', None) or []
+            keywords = getattr(command, "keywords", None) or []
             if wanted in [str(k).lower() for k in keywords]:
                 return command
         return None
@@ -1932,24 +1932,22 @@ class CommandManager:
             self.logger.warning("Scheduled {cmd:...} placeholder: unknown command %r", trigger)
             return None
 
-        command_name = getattr(command, 'name', trigger)
+        command_name = getattr(command, "name", trigger)
         # Opt-in, not a denylist. Capture only intercepts send_response and
         # send_response_chunked, so a command that transmits by other means (advert),
         # posts its own messages (announcements), or is DM-only (schedule) would spend
         # airtime or leak configuration if rendered. Anything not explicitly marked
         # render_safe is refused, so a new command is never renderable by accident.
-        if not getattr(command, 'render_safe', False):
+        if not getattr(command, "render_safe", False):
             self.logger.warning(
-                "Scheduled {cmd:...} placeholder: %r is not marked render_safe, so it "
-                "cannot be run for its text alone", command_name,
+                "Scheduled {cmd:...} placeholder: %r is not marked render_safe, so it cannot be run for its text alone",
+                command_name,
             )
             return None
 
         section = command._derive_config_section_name()
-        if not command.get_config_value(section, 'enabled', fallback=True, value_type='bool'):
-            self.logger.warning(
-                "Scheduled {cmd:...} placeholder: %r is disabled in config", command_name
-            )
+        if not command.get_config_value(section, "enabled", fallback=True, value_type="bool"):
+            self.logger.warning("Scheduled {cmd:...} placeholder: %r is disabled in config", command_name)
             return None
 
         if command.requires_admin_access():
@@ -1965,7 +1963,8 @@ class CommandManager:
         if not allowed:
             self.logger.warning(
                 "Scheduled {cmd:...} placeholder: %r is on cooldown for another %.0fs; skipped",
-                command_name, remaining,
+                command_name,
+                remaining,
             )
             return None
         # Recorded before execution, matching execute_commands, so a slow or failing
@@ -1985,21 +1984,19 @@ class CommandManager:
         try:
             await asyncio.wait_for(command.execute(synthetic), timeout=timeout)
         except asyncio.TimeoutError:
-            self.logger.warning(
-                "Scheduled {cmd:...} placeholder: %r timed out after %ss", command_name, timeout
-            )
+            self.logger.warning("Scheduled {cmd:...} placeholder: %r timed out after %ss", command_name, timeout)
             return None
         except Exception as e:
             self.logger.warning(
                 "Scheduled {cmd:...} placeholder: %r failed: %s: %s",
-                command_name, type(e).__name__, e,
+                command_name,
+                type(e).__name__,
+                e,
             )
             return None
 
         if not sink:
-            self.logger.warning(
-                "Scheduled {cmd:...} placeholder: %r produced no output", command_name
-            )
+            self.logger.warning("Scheduled {cmd:...} placeholder: %r produced no output", command_name)
             return None
         return "\n".join(part for part in sink if part)
 
@@ -2038,8 +2035,6 @@ class CommandManager:
                 if response_format is not None:
                     # This command was already handled by keyword matching
                     continue
-
-                self.logger.info(f"Command '{command_name}' matched, executing")
 
                 # Check if we should queue instead of reject (for global cooldowns near expiring)
                 should_queue, remaining = self._should_queue_command(command, message)
@@ -2085,13 +2080,23 @@ class CommandManager:
                             await self.send_response(message, error_msg)
                             response_sent = True
 
-                    # Record command execution in stats database (even if it failed checks)
+                    # Soft rejection (e.g. enabled=false): do not claim the keyword.
+                    # Matches check_keywords(), which continues so another command's
+                    # alias can handle the same trigger (e.g. test aliases=path with
+                    # Path_Command disabled).
+                    if not response_sent:
+                        self.logger.debug(f"Command '{command_name}' matched but cannot execute; trying next")
+                        continue
+
+                    # Record command execution in stats database (hard rejection with user feedback)
                     if "stats" in self.commands:
                         stats_command = self.commands["stats"]
                         if stats_command:
                             stats_command.record_command(message, command_name, response_sent)
 
                     return
+
+                self.logger.info(f"Command '{command_name}' matched, executing")
 
                 # Check network connectivity for commands that require internet
                 if command.requires_internet:
