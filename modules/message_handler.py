@@ -102,7 +102,10 @@ class MessageHandler:
 
     @staticmethod
     def _match_scope(
-        transport_code: int, payload_type: int, pkt_payload: bytes, scope_keys: dict[str, bytes]
+        transport_code: int,
+        payload_type: int,
+        pkt_payload: bytes,
+        scope_keys: dict[str, bytes],
     ) -> str | None:
         """Return the scope name whose HMAC matches transport_code, or None.
 
@@ -358,7 +361,10 @@ class MessageHandler:
 
                     # Look up the contact to get path information
                     if hasattr(self.bot.meshcore, "contacts") and self.bot.meshcore.contacts:
-                        for _contact_key, contact_data in self.bot.meshcore.contacts.items():
+                        for (
+                            _contact_key,
+                            contact_data,
+                        ) in self.bot.meshcore.contacts.items():
                             if contact_data.get("public_key", "").startswith(pubkey_prefix):
                                 out_path = contact_data.get("out_path", "")
                                 out_path_len = contact_data.get("out_path_len", -1)
@@ -781,7 +787,7 @@ class MessageHandler:
                 out_path = ""
                 out_path_len = -1
 
-                if "routing_info" in packet_info and packet_info["routing_info"]:
+                if packet_info.get("routing_info"):
                     routing_info = packet_info["routing_info"]
                     packet_hash = routing_info.get("packet_hash")
                     # Extract path information from routing_info
@@ -1419,7 +1425,9 @@ class MessageHandler:
         # Enforce maximum size on timestamp cache (keep most recent)
         if len(self.rf_data_by_timestamp) > self._max_rf_cache_size:
             sorted_items = sorted(
-                self.rf_data_by_timestamp.items(), key=lambda x: x[1].get("timestamp", 0), reverse=True
+                self.rf_data_by_timestamp.items(),
+                key=lambda x: x[1].get("timestamp", 0),
+                reverse=True,
             )
             self.rf_data_by_timestamp = dict(sorted_items[: self._max_rf_cache_size])
 
@@ -1638,7 +1646,11 @@ class MessageHandler:
         """Store a message temporarily to wait for RF data correlation"""
         import time
 
-        self.pending_messages[message_id] = {"data": message_data, "timestamp": time.time(), "processed": False}
+        self.pending_messages[message_id] = {
+            "data": message_data,
+            "timestamp": time.time(),
+            "processed": False,
+        }
         self.logger.debug(f"Stored message {message_id} for RF data correlation")
 
     def correlate_message_with_rf_data(self, message_id: str) -> dict[str, Any] | None:
@@ -1720,8 +1732,7 @@ class MessageHandler:
                 return None
 
             # Remove 0x prefix if present (like in your other project)
-            if hex_data.startswith("0x"):
-                hex_data = hex_data[2:]
+            hex_data = hex_data.removeprefix("0x")
 
             byte_data = bytes.fromhex(hex_data)
 
@@ -1734,7 +1745,10 @@ class MessageHandler:
 
             # Extract route type
             route_type = RouteType(header & 0x03)
-            has_transport = route_type in [RouteType.TRANSPORT_FLOOD, RouteType.TRANSPORT_DIRECT]
+            has_transport = route_type in [
+                RouteType.TRANSPORT_FLOOD,
+                RouteType.TRANSPORT_DIRECT,
+            ]
 
             # Calculate path length offset based on presence of transport codes
             offset = 1
@@ -1972,7 +1986,10 @@ class MessageHandler:
         return nodes
 
     def _get_path_from_rf_data(
-        self, rf_data: dict[str, Any], payload_hex: str | None = None, packet_info: dict[str, Any] | None = None
+        self,
+        rf_data: dict[str, Any],
+        payload_hex: str | None = None,
+        packet_info: dict[str, Any] | None = None,
     ) -> tuple[str | None, list[str] | None, int]:
         """Get path string, path nodes, and hop count from RF data (single source for path extraction).
 
@@ -2009,7 +2026,11 @@ class MessageHandler:
             if (len(path_hex) % n) != 0:
                 path_nodes_list = [path_hex[i : i + 2].lower() for i in range(0, len(path_hex), 2)]
             if path_nodes_list:
-                return (",".join(path_nodes_list), path_nodes_list, len(path_nodes_list))
+                return (
+                    ",".join(path_nodes_list),
+                    path_nodes_list,
+                    len(path_nodes_list),
+                )
         path_info = packet_info.get("path_info") or {}
         path_nodes_list = path_info.get("path") or []
         if path_nodes_list:
@@ -2018,7 +2039,11 @@ class MessageHandler:
         return (None, None, hops)
 
     def _process_packet_path(
-        self, path_bytes: bytes, payload: bytes, route_type: RouteType, payload_type: PayloadType
+        self,
+        path_bytes: bytes,
+        payload: bytes,
+        route_type: RouteType,
+        payload_type: PayloadType,
     ) -> dict:
         """
         Process the path field based on packet and route type
@@ -2105,7 +2130,11 @@ class MessageHandler:
             self.logger.error(f"Error processing packet path: {e}")
             # Return basic path info as fallback (legacy 1-byte-per-hop)
             _, path_nodes = self._path_bytes_to_nodes(path_bytes, prefix_hex_chars=2)
-            return {"type": "unknown", "path": path_nodes, "description": f"Path: {','.join(path_nodes)}"}
+            return {
+                "type": "unknown",
+                "path": path_nodes,
+                "description": f"Path: {','.join(path_nodes)}",
+            }
 
     def _get_route_type_name(self, route_type: int) -> str:
         """Get human-readable name for route type"""
@@ -2321,7 +2350,9 @@ class MessageHandler:
                     else:
                         had_routing_nodes = bool((recent_rf_data.get("routing_info") or {}).get("path_nodes"))
                         path_string, path_nodes, hops = self._get_path_from_rf_data(
-                            recent_rf_data, payload_hex=payload_hex, packet_info=packet_info
+                            recent_rf_data,
+                            payload_hex=payload_hex,
+                            packet_info=packet_info,
                         )
                         if (
                             path_string
@@ -2377,6 +2408,8 @@ class MessageHandler:
             # when '*' (or equivalent) is explicitly listed.
             if scope_keys and reply_scope is None:
                 allow_global = getattr(cmd_mgr, "flood_scope_allow_global", False)
+                if scope_rf_data and self._is_rf_data_scope_eligible(scope_rf_data, scope_packet_info):
+                    self.logger.info("Ignoring TC_FLOOD: scope not in flood_scopes allowlist")
                 if scope_rf_data and self._is_rf_data_scope_eligible(scope_rf_data, scope_packet_info):
                     self.logger.info("Ignoring TC_FLOOD: scope not in flood_scopes allowlist")
                     return
@@ -2622,7 +2655,10 @@ class MessageHandler:
 
                 if from_location and to_location:
                     geographic_distance = calculate_distance(
-                        from_location[0], from_location[1], to_location[0], to_location[1]
+                        from_location[0],
+                        from_location[1],
+                        to_location[0],
+                        to_location[1],
                     )
             except Exception as e:
                 self.logger.debug(f"Could not calculate distance for edge {from_prefix}->{to_prefix}: {e}")
@@ -2803,7 +2839,11 @@ class MessageHandler:
         return None
 
     def _update_mesh_graph_from_advert(
-        self, advert_data: dict[str, Any], out_path: str, out_path_len: int, packet_info: dict[str, Any]
+        self,
+        advert_data: dict[str, Any],
+        out_path: str,
+        out_path_len: int,
+        packet_info: dict[str, Any],
     ) -> None:
         """Update mesh graph with edges from an advertisement's out_path.
 
@@ -2912,7 +2952,10 @@ class MessageHandler:
 
                 if first_hop_location_temp:
                     advertiser_result = _get_node_location_from_db(
-                        self.bot, advertiser_prefix, first_hop_location_temp, recency_days
+                        self.bot,
+                        advertiser_prefix,
+                        first_hop_location_temp,
+                        recency_days,
                     )
                     if advertiser_result:
                         advertiser_location, _ = advertiser_result
@@ -2928,7 +2971,10 @@ class MessageHandler:
 
             if advertiser_location and first_hop_location:
                 geographic_distance = calculate_distance(
-                    advertiser_location[0], advertiser_location[1], first_hop_location[0], first_hop_location[1]
+                    advertiser_location[0],
+                    advertiser_location[1],
+                    first_hop_location[0],
+                    first_hop_location[1],
                 )
         except Exception as e:
             self.logger.debug(f"Could not calculate distance for advert edge {advertiser_prefix}->{first_hop}: {e}")
@@ -3078,7 +3124,10 @@ class MessageHandler:
 
                 if from_location and to_location:
                     geographic_distance = calculate_distance(
-                        from_location[0], from_location[1], to_location[0], to_location[1]
+                        from_location[0],
+                        from_location[1],
+                        to_location[0],
+                        to_location[1],
                     )
             except Exception as e:
                 self.logger.debug(f"Could not calculate distance for edge {from_node}->{to_node}: {e}")
@@ -3123,7 +3172,10 @@ class MessageHandler:
 
                 # If not found by name, try by pubkey prefix
                 if not contact and pubkey_prefix:
-                    for _contact_key, contact_data in self.bot.meshcore.contacts.items():
+                    for (
+                        _contact_key,
+                        contact_data,
+                    ) in self.bot.meshcore.contacts.items():
                         if contact_data.get("public_key", "").startswith(pubkey_prefix):
                             contact = contact_data
                             break
@@ -3197,7 +3249,10 @@ class MessageHandler:
 
                 # If not found by name, try by pubkey prefix
                 if not contact:
-                    for _contact_key, contact_data in self.bot.meshcore.contacts.items():
+                    for (
+                        _contact_key,
+                        contact_data,
+                    ) in self.bot.meshcore.contacts.items():
                         if contact_data.get("public_key", "").startswith(pubkey_prefix):
                             contact = contact_data
                             break
@@ -3482,7 +3537,15 @@ class MessageHandler:
                 "Pong!",
             ]
             b = ["not a testing zone.", "", "...", "", ""]
-            c = ["Try", "Use", "Check out", "For testing:", "Bot channels:", "", "Test over here:"]
+            c = [
+                "Try",
+                "Use",
+                "Check out",
+                "For testing:",
+                "Bot channels:",
+                "",
+                "Test over here:",
+            ]
             d = [
                 "#test #testing",
                 "#meshbud #foobot",
@@ -3496,7 +3559,7 @@ class MessageHandler:
             message_text = (
                 sender + random.choice(a) + " " + random.choice(b) + " " + random.choice(c) + " " + random.choice(d)
             )
-            self.logger.warn(f"DJL responding in {message.channel} to {message.content} with {message_text}")
+            self.logger.warning(f"DJL responding in {message.channel} to {message.content} with {message_text}")
             await self.bot.command_manager.send_channel_message(message.channel, message_text)
             return
 
@@ -3555,7 +3618,10 @@ class MessageHandler:
                             f"Failed to send keyword response for '{keyword}' to {message.sender_id if message.is_dm else message.channel}"
                         )
                 except Exception as e:
-                    self.logger.error(f"Error sending keyword response for '{keyword}': {e}", exc_info=True)
+                    self.logger.error(
+                        f"Error sending keyword response for '{keyword}': {e}",
+                        exc_info=True,
+                    )
                     success = False
 
                 # Capture keyword command data for web viewer
@@ -3601,7 +3667,10 @@ class MessageHandler:
                             f"{message.sender_id if message.is_dm else message.channel}"
                         )
                 except Exception as e:
-                    self.logger.error(f"Error sending randomline response for '{key}': {e}", exc_info=True)
+                    self.logger.error(
+                        f"Error sending randomline response for '{key}': {e}",
+                        exc_info=True,
+                    )
                     success = False
 
             else:
@@ -3805,7 +3874,10 @@ class MessageHandler:
                                     }
                                     path_byte_len = routing_info.get("path_byte_length") or (len(path_hex) // 2)
                                     self._update_mesh_graph_from_advert(
-                                        contact_data, path_hex, path_byte_len, packet_info
+                                        contact_data,
+                                        path_hex,
+                                        path_byte_len,
+                                        packet_info,
                                     )
                                     self.logger.debug(
                                         f"Mesh graph: Updated from NEW_CONTACT event for {contact_name} (key: {public_key[:16]}...)"
@@ -3955,7 +4027,11 @@ class MessageHandler:
                                         contact_name,
                                     )
                             except Exception as e:
-                                self.logger.error("Error adding companion %s to device: %s", contact_name, e)
+                                self.logger.error(
+                                    "Error adding companion %s to device: %s",
+                                    contact_name,
+                                    e,
+                                )
 
                             status = await self.bot.repeater_manager.get_contact_list_status()
                             if status and status.get("is_near_limit", False):
@@ -4019,7 +4095,9 @@ class MessageHandler:
 
                     # Add the contact to the device's contact list
                     success = await self.bot.repeater_manager.add_discovered_contact(
-                        contact_name, public_key, "Auto-added companion contact discovered via NEW_CONTACT event"
+                        contact_name,
+                        public_key,
+                        "Auto-added companion contact discovered via NEW_CONTACT event",
                     )
 
                     if success:
