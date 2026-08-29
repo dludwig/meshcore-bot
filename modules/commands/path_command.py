@@ -16,7 +16,6 @@ from ..path_inference import (
     select_node_repeater,
     select_repeater_by_graph,
 )
-from ..response_template import format_piped_template
 from ..utils import (
     bytes_per_hop_from_routing_and_nodes,
     calculate_distance,
@@ -578,9 +577,11 @@ class PathCommand(BaseCommand):
         # Check if "p" shortcut is enabled (on by default)
         self.enable_p_shortcut = bot.config.getboolean("Path_Command", "enable_p_shortcut", fallback=True)
         if self.enable_p_shortcut:
-            # Add "p" to keywords if enabled
+            # Instance-level copy: appending to the inherited class list would leave
+            # "p" on PathCommand.keywords for every instance built later in the same
+            # process, so a reload with enable_p_shortcut = false would still answer "p".
             if "p" not in self.keywords:
-                self.keywords.append("p")
+                self.keywords = [*self.keywords, "p"]
 
         reply_prefix_raw = bot.config.get("Path_Command", "reply_prefix", fallback="")
         self.path_reply_prefix = self._strip_quotes_from_config(reply_prefix_raw).strip()
@@ -773,17 +774,12 @@ class PathCommand(BaseCommand):
         # rendered next to this one's reply, including on the error paths below.
         self._last_path_distance_km = None
 
-        # Parse the message content to extract path data
-        content = message.content.strip()
-        parts = content.split()
-
-        if len(parts) < 2:
-            # No arguments provided - try to extract path from current message
+        _trigger, args = self.split_trigger_and_args(message.content)
+        if not args:
+            # No arguments — decode the current message's routing path
             response = await self._extract_path_from_recent_messages(message)
         else:
-            # Extract path data from the command
-            path_input = " ".join(parts[1:])
-            response = await self._decode_path(path_input)
+            response = await self._decode_path(args, message=message)
 
         # Send the response (may be split into multiple messages if long)
         await self._send_path_response(message, response)
