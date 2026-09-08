@@ -2207,7 +2207,9 @@ class CommandManager:
                             self.logger.debug(f"Failed to capture command data for web viewer: {e}")
 
                 except Exception as e:
-                    self.logger.error(f"Error executing command '{command_name}': {e}")
+                    # exception() carries the traceback into the log; the reply below stays
+                    # str(e) so no filesystem path or extra airtime goes out over the mesh.
+                    self.logger.exception(f"Error executing command '{command_name}': {e}")
                     # Send error message to user
                     error_msg = command.translate("errors.execution_error", command=command_name, error=str(e))
                     await self.send_response(message, error_msg)
