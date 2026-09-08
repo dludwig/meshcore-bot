@@ -710,18 +710,16 @@ class PathCommand(BaseCommand):
             return ""
         fields = self.get_standard_placeholder_fields(message)
         fields["path_distance"] = self._format_path_distance(message)
-        formatted = format_piped_template(
-        fields['path_distance'] = self._format_path_distance(message)
-        formatted = (await format_piped_template_async(
-            self.path_reply_prefix,
-            {k: str(v) for k, v in fields.items()},
-            message=message,
-            logger=self.logger,
-            prefix_hex_chars=getattr(self.bot, "prefix_hex_chars", 2),
+        formatted = (
+            await format_piped_template_async(
+                self.path_reply_prefix,
+                {k: str(v) for k, v in fields.items()},
+                message=message,
+                logger=self.logger,
+                config=self.bot.config,
+                prefix_hex_chars=getattr(self.bot, "prefix_hex_chars", 2),
+            )
         ).rstrip()
-            config=self.bot.config,
-            prefix_hex_chars=getattr(self.bot, 'prefix_hex_chars', 2),
-        )).rstrip()
         if not formatted:
             return ""
         return formatted + "\n"
