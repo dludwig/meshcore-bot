@@ -6,6 +6,33 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `generate_website.py` accepts `--link-css URL` and `--embed-css FILE` to layer
+  custom CSS on top of the built-in style chosen with `--style` (#288). Embedded
+  CSS is appended to the page's `<style>` block, keeping the page a single file;
+  a linked stylesheet loads after it, so both override built-in rules of equal
+  specificity. Both flags also apply to `--sample` pages, and an unreadable
+  `--embed-css` file stops generation with an error. See
+  `docs/command-reference-website.md` for examples and the CSS class reference.
+
+### Fixed
+
+- A radio connection is no longer accepted when every channel read times out or
+  returns no usable channel data (#266). Startup and reconnect now retry the
+  channel scan three times, keep an empty result out of the valid cache and
+  database, then fail the connection cleanly so the normal restart/reconnect
+  path can try again instead of running a bot that cannot route replies.
+- Daily Weather Service forecasts now retry transient Open-Meteo failures at
+  5, 15, and 30 minutes after the original run (#264). HTTP 429, 500, 502, 503,
+  and 504 responses plus transport failures use one replaceable retry job,
+  while permanent HTTP errors stop immediately and a successful retry sends
+  the forecast only once.
+- `help <command> <subcommand>` now resolves help for the base command while
+  preserving the full message for context-aware help text (#285). Exact
+  multi-word aliases such as `dad joke` and `ps aux` still take precedence
+  over the base-command fallback.
+
 ## [1.1.0] - 2026-09-13
 
 ### Added

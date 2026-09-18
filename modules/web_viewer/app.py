@@ -54,6 +54,7 @@ from modules.db_retention import (
     retention_delete_settings,
 )
 from modules.ini_writer import IniValueError, update_ini_values
+from modules.maintenance import MaintenanceRunner
 from modules.scheduled_message_admin import (
     SECTION as SCHEDULED_MESSAGES_SECTION,
 )
@@ -646,6 +647,14 @@ class BotDataViewer:
 
             # Now set db_manager on the minimal bot for RepeaterManager
             minimal_bot.db_manager = self.db_manager
+
+            # The viewer runs as a separate process, so it cannot call the bot's
+            # MessageScheduler directly. MaintenanceRunner only needs this small
+            # bot facade for manual database backups.
+            self._maintenance_runner = MaintenanceRunner(
+                minimal_bot,
+                get_current_time=datetime.now,
+            )
 
             # The viewer only needs RepeaterManager for the manual geocode
             # endpoint, so defer its setup until that endpoint is actually used.
@@ -1456,7 +1465,7 @@ class BotDataViewer:
                     local_commands_dir=str(self.local_dir / "commands"),
                     local_services_dir=str(self.local_dir / "service_plugins"),
                 )
-                return jsonify({'plugins': view})
+                return jsonify({"plugins": view})
             except Exception:
                 self.logger.exception("Error building plugin settings view")
                 return jsonify({"error": "Internal error — see server logs"}), 500
@@ -2229,12 +2238,11 @@ class BotDataViewer:
         def api_maintenance_backup_now():
             """Trigger an immediate DB backup outside the normal schedule."""
             try:
-                bot = getattr(self, "bot", None)
-                scheduler = getattr(bot, "scheduler", None) if bot else None
-                if scheduler is None or not hasattr(scheduler, "run_db_backup"):
-                    return jsonify({"success": False, "error": "Scheduler not available"}), 503
-                scheduler.run_db_backup()
-                # Read outcome written by _run_db_backup
+                runner = getattr(self, "_maintenance_runner", None)
+                if runner is None:
+                    return jsonify({"success": False, "error": "Maintenance runner not available"}), 503
+                runner.run_db_backup()
+                # Read the outcome written by MaintenanceRunner.
                 path = self.db_manager.get_metadata("maint.status.db_backup_path") or ""
                 outcome = self.db_manager.get_metadata("maint.status.db_backup_outcome") or ""
                 if outcome.startswith("error"):
