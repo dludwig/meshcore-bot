@@ -6,6 +6,7 @@ Handles all bot commands, keyword matching, and response generation
 
 import asyncio
 import contextlib
+import json
 import random
 import time
 from dataclasses import dataclass
