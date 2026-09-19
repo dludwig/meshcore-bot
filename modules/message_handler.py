@@ -9,6 +9,7 @@ import copy
 import hmac as hmac_mod
 import random
 import time
+import random
 from collections import OrderedDict
 from collections.abc import Iterable
 from hashlib import sha256
@@ -73,9 +74,15 @@ class MessageHandler:
         self.rssi_cache: OrderedDict[str, float] = OrderedDict()
 
         # Load configuration for RF data correlation
-        self.rf_data_timeout = float(bot.config.get("Bot", "rf_data_timeout", fallback="15.0"))
-        self.message_timeout = float(bot.config.get("Bot", "message_correlation_timeout", fallback="10.0"))
-        self.enhanced_correlation = bot.config.getboolean("Bot", "enable_enhanced_correlation", fallback=True)
+        self.rf_data_timeout = float(
+            bot.config.get("Bot", "rf_data_timeout", fallback="15.0")
+        )
+        self.message_timeout = float(
+            bot.config.get("Bot", "message_correlation_timeout", fallback="10.0")
+        )
+        self.enhanced_correlation = bot.config.getboolean(
+            "Bot", "enable_enhanced_correlation", fallback=True
+        )
 
         # Time-based cache for recent RF log data
         self.recent_rf_data: list[dict[str, Any]] = []
@@ -86,11 +93,17 @@ class MessageHandler:
         self._channel_rf_cache_timeout = max(300.0, self.rf_data_timeout * 4)
 
         # Message correlation system to prevent race conditions
-        self.pending_messages: dict[str, PendingMessageEntry] = {}  # Store messages waiting for RF data
+        self.pending_messages: dict[
+            str, PendingMessageEntry
+        ] = {}  # Store messages waiting for RF data
 
         # Enhanced RF data storage with better correlation
-        self.rf_data_by_timestamp: dict[int | float, dict[str, Any]] = {}  # Index by timestamp for faster lookup
-        self.rf_data_by_pubkey: dict[str, list[dict[str, Any]]] = {}  # Index by pubkey for exact matches
+        self.rf_data_by_timestamp: dict[
+            int | float, dict[str, Any]
+        ] = {}  # Index by timestamp for faster lookup
+        self.rf_data_by_pubkey: dict[
+            str, list[dict[str, Any]]
+        ] = {}  # Index by pubkey for exact matches
 
         # Cache memory management
         self._max_rf_cache_size = 1000  # Maximum entries per cache
@@ -103,7 +116,9 @@ class MessageHandler:
         # Multitest command listener (for collecting paths during listening window)
         self.multitest_listener: Any | None = None
 
-        self.logger.info(f"RF Data Correlation: timeout={self.rf_data_timeout}s, enhanced={self.enhanced_correlation}")
+        self.logger.info(
+            f"RF Data Correlation: timeout={self.rf_data_timeout}s, enhanced={self.enhanced_correlation}"
+        )
         self.backup_bot_last_heard = {}
 
         self.bot_channel_backup = {}
@@ -114,9 +129,12 @@ class MessageHandler:
     @staticmethod
     def _match_scope(
         transport_code: int,
+
         payload_type: int,
+
         pkt_payload: bytes,
-        scope_keys: dict[str, bytes],
+
+        scope_keys: dict[str, bytes],,
     ) -> str | None:
         """Return the scope name whose HMAC matches transport_code, or None.
 
@@ -172,7 +190,9 @@ class MessageHandler:
         scope_payload_type = recent_rf_data.get("payload_type_int")
         scope_payload_hex = recent_rf_data.get("scope_payload_hex") or ""
 
-        dec_rt, dec_tc, dec_pt, dec_hex = self._scope_fields_from_packet_info(packet_info)
+        dec_rt, dec_tc, dec_pt, dec_hex = self._scope_fields_from_packet_info(
+            packet_info
+        )
         used_decode_fallback = False
         if dec_rt == 0:
             if rt != 0:
@@ -212,10 +232,14 @@ class MessageHandler:
         try:
             pkt_payload_bytes = bytes.fromhex(scope_payload_hex)
         except ValueError:
-            self.logger.debug("Scope check: invalid scope_payload_hex on correlated RF data")
+            self.logger.debug(
+                "Scope check: invalid scope_payload_hex on correlated RF data"
+            )
             return None
 
-        reply_scope = self._match_scope(tc_code1, scope_payload_type, pkt_payload_bytes, scope_keys)
+        reply_scope = self._match_scope(
+            tc_code1, scope_payload_type, pkt_payload_bytes, scope_keys
+        )
         if reply_scope:
             self.logger.info(
                 "Incoming TC_FLOOD matched scope '%s' (tc_code1=%s); reply will use same scope",
@@ -306,7 +330,9 @@ class MessageHandler:
         payload_type = rf_data.get("payload_type_int")
         scope_payload_hex = rf_data.get("scope_payload_hex") or ""
 
-        dec_rt, dec_tc, dec_pt, dec_hex = self._scope_fields_from_packet_info(packet_info)
+        dec_rt, dec_tc, dec_pt, dec_hex = self._scope_fields_from_packet_info(
+            packet_info
+        )
         if dec_rt == 0:
             rt = 0
             if dec_tc is not None:
@@ -345,7 +371,9 @@ class MessageHandler:
 
             # If timestamp is invalid (0, negative, or far in future), process it
             # (might be device clock sync issue, not necessarily old)
-            if msg_time <= 0 or msg_time > time.time() + 3600:  # More than 1 hour in future
+            if (
+                msg_time <= 0 or msg_time > time.time() + 3600
+            ):  # More than 1 hour in future
                 return False
 
             # Check if message timestamp is before connection time
@@ -422,7 +450,10 @@ class MessageHandler:
 
     def _decode_authenticated_channel_identity(self, packet_info: dict[str, Any] | None) -> dict[str, Any] | None:
         """Authenticate a decoded GRP_TXT packet and derive its CHAN identity."""
-        if not packet_info or packet_info.get("payload_type") != self._grp_txt_payload_type_int():
+        if (
+            not packet_info
+            or packet_info.get("payload_type") != self._grp_txt_payload_type_int()
+        ):
             return None
         payload_hex = packet_info.get("payload_hex")
         if not isinstance(payload_hex, str):
@@ -521,7 +552,9 @@ class MessageHandler:
         selected = min(matches, key=lambda row: row.get("timestamp", float("inf")))
         return {**selected, RF_MATCH_KEY: RF_MATCH_CHANNEL_AUTHENTICATED}, True
 
-    async def handle_contact_message(self, event: Any, metadata: dict[str, Any] | None = None) -> None:
+    async def handle_contact_message(
+        self, event: Any, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Handle incoming contact message (DM).
 
         Processes direct messages, extracts path information, correlates with
@@ -535,7 +568,9 @@ class MessageHandler:
             # Copy payload immediately to avoid segfault if event is freed
             import copy
 
-            payload = copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            payload = (
+                copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            )
             if payload is None:
                 self.logger.warning("Contact message event has no payload")
                 return
@@ -543,7 +578,9 @@ class MessageHandler:
             # Debug: Log the full payload structure
             self.logger.debug(f"Contact message payload: {payload}")
             self.logger.debug(f"Payload keys: {list(payload.keys())}")
-            self.logger.debug(f"Event metadata: {event.metadata if hasattr(event, 'metadata') else 'None'}")
+            self.logger.debug(
+                f"Event metadata: {event.metadata if hasattr(event, 'metadata') else 'None'}"
+            )
 
             self.logger.info(
                 f"Received DM from {sanitize_name(payload.get('pubkey_prefix', 'unknown'))}: {sanitize_name(payload.get('text', ''))}"
@@ -556,7 +593,9 @@ class MessageHandler:
             if metadata and "pubkey_prefix" in metadata:
                 pubkey_prefix = metadata.get("pubkey_prefix", "")
                 if pubkey_prefix:
-                    self.logger.debug(f"Looking up path for pubkey_prefix: {pubkey_prefix}")
+                    self.logger.debug(
+                        f"Looking up path for pubkey_prefix: {pubkey_prefix}"
+                    )
 
                     # Look up the contact to get path information
                     if hasattr(self.bot.meshcore, "contacts") and self.bot.meshcore.contacts:
@@ -574,7 +613,10 @@ class MessageHandler:
                                         bph = contact_data.get("out_bytes_per_hop")
                                         if bph is None and out_path_len > 0:
                                             byte_len = len(out_path) // 2
-                                            if byte_len > 0 and (byte_len % out_path_len) == 0:
+                                            if (
+                                                byte_len > 0
+                                                and (byte_len % out_path_len) == 0
+                                            ):
                                                 bph = byte_len // out_path_len
                                             else:
                                                 bph = 1
@@ -583,15 +625,22 @@ class MessageHandler:
                                             out_path[i : i + hex_chars].lower()
                                             for i in range(0, len(out_path), hex_chars)
                                         ]
-                                        if (len(out_path) % hex_chars) != 0 or not path_nodes:
+                                        if (
+                                            len(out_path) % hex_chars
+                                        ) != 0 or not path_nodes:
                                             path_nodes = [
-                                                out_path[i : i + 2].lower() for i in range(0, len(out_path), 2)
+                                                out_path[i : i + 2].lower()
+                                                for i in range(0, len(out_path), 2)
                                             ]
                                         path_info = f"{','.join(path_nodes)} ({out_path_len} hops)"
-                                        self.logger.debug(f"Found path info: {path_info}")
+                                        self.logger.debug(
+                                            f"Found path info: {path_info}"
+                                        )
                                     except Exception as e:
                                         self.logger.debug(f"Error converting path: {e}")
-                                        path_info = f"Path: {out_path} ({out_path_len} hops)"
+                                        path_info = (
+                                            f"Path: {out_path} ({out_path_len} hops)"
+                                        )
                                     break
                                 elif out_path_len == 0:
                                     path_info = "Direct"
@@ -599,7 +648,9 @@ class MessageHandler:
                                     break
                                 else:
                                     path_info = "Unknown path"
-                                    self.logger.debug(f"No path info available: {path_info}")
+                                    self.logger.debug(
+                                        f"No path info available: {path_info}"
+                                    )
                                     break
 
             # Fallback to basic path logic if no detailed info found
@@ -628,9 +679,13 @@ class MessageHandler:
                 if recent_rf_data and recent_rf_data.get("raw_hex"):
                     # Use payload field if available, otherwise fall back to raw_hex
                     payload_hex = recent_rf_data.get("payload")
-                    decoded_packet = self.decode_meshcore_packet(recent_rf_data["raw_hex"], payload_hex)
+                    decoded_packet = self.decode_meshcore_packet(
+                        recent_rf_data["raw_hex"], payload_hex
+                    )
                     if decoded_packet:
-                        self.logger.debug(f"Decoded packet for routing from RF data: {decoded_packet}")
+                        self.logger.debug(
+                            f"Decoded packet for routing from RF data: {decoded_packet}"
+                        )
 
                         # Extract routing information, but only from a packet actually
                         # correlated to this DM. Without this the path_info built below
@@ -655,11 +710,15 @@ class MessageHandler:
                         if path_nodes:
                             path_info = f"{','.join(path_nodes)} ({path_len} hops via {route_type})"
                         else:
-                            path_info = f"Path: {path_hex} ({path_len} hops via {route_type})"
+                            path_info = (
+                                f"Path: {path_hex} ({path_len} hops via {route_type})"
+                            )
 
                         self.logger.info(f"🛣️  MESSAGE ROUTING: {path_info}")
                     else:
-                        path_info = f"Direct via {routing_info.get('route_type', 'Unknown')}"
+                        path_info = (
+                            f"Direct via {routing_info.get('route_type', 'Unknown')}"
+                        )
                         self.logger.info(f"📡 DIRECT MESSAGE: {path_info}")
 
             # Get additional metadata - try multiple sources for SNR and RSSI
@@ -693,7 +752,9 @@ class MessageHandler:
                 pubkey_prefix = payload.get("pubkey_prefix", "")
                 if pubkey_prefix and pubkey_prefix in self.snr_cache:
                     snr = self.snr_cache[pubkey_prefix]
-                    self.logger.debug(f"Retrieved cached SNR {snr} for pubkey {pubkey_prefix}")
+                    self.logger.debug(
+                        f"Retrieved cached SNR {snr} for pubkey {pubkey_prefix}"
+                    )
 
             # Try to get RSSI from payload first
             if "RSSI" in payload:
@@ -719,11 +780,15 @@ class MessageHandler:
                 pubkey_prefix = payload.get("pubkey_prefix", "")
                 if pubkey_prefix and pubkey_prefix in self.rssi_cache:
                     rssi = int(self.rssi_cache[pubkey_prefix])
-                    self.logger.debug(f"Retrieved cached RSSI {rssi} for pubkey {pubkey_prefix}")
+                    self.logger.debug(
+                        f"Retrieved cached RSSI {rssi} for pubkey {pubkey_prefix}"
+                    )
 
             # For DMs, we can't decode the encrypted packet, but we can get SNR/RSSI from the payload
             # For channel messages, we can decode the packet since they use shared keys
-            self.logger.debug(f"Processing DM from packet prefix: {message_packet_prefix}, pubkey: {message_pubkey}")
+            self.logger.debug(
+                f"Processing DM from packet prefix: {message_packet_prefix}, pubkey: {message_pubkey}"
+            )
 
             # DMs are encrypted with recipient's public key, so we can't decode the raw packet
             # But we can get SNR/RSSI from the message payload if available
@@ -763,7 +828,11 @@ class MessageHandler:
             # For DMs, we can't determine the actual routing path from encrypted data
             # Use the path_len from the payload (255 means unknown/direct)
             path_len = payload.get("path_len", 255)
-            path_info = "Direct (0 hops)" if path_len == 255 else f"Routed through {path_len} hops"
+            path_info = (
+                "Direct (0 hops)"
+                if path_len == 255
+                else f"Routed through {path_len} hops"
+            )
 
             self.logger.debug(f"DM path info: {path_info}")
 
@@ -776,25 +845,37 @@ class MessageHandler:
                 for _contact_key, contact_data in self.bot.meshcore.contacts.items():
                     if contact_data.get("public_key", "").startswith(sender_id):
                         # Use the contact name if available, otherwise use adv_name
-                        contact_name = sanitize_name(contact_data.get("name", contact_data.get("adv_name", sender_id)))
+                        contact_name = sanitize_name(
+                            contact_data.get(
+                                "name", contact_data.get("adv_name", sender_id)
+                            )
+                        )
                         sender_name = contact_name
                         break
 
             # Get the full public key from contacts if available
             sender_pubkey = sender_id  # Default to pubkey prefix (same value as sender_id at this point)
-            if sender_id and hasattr(self.bot.meshcore, "contacts") and self.bot.meshcore.contacts:
+            if (
+                sender_id
+                and hasattr(self.bot.meshcore, "contacts")
+                and self.bot.meshcore.contacts
+            ):
                 for _contact_key, contact_data in self.bot.meshcore.contacts.items():
                     if contact_data.get("public_key", "").startswith(sender_id):
                         # Use the full public key from the contact
                         sender_pubkey = contact_data.get("public_key", sender_id)
-                        self.logger.debug(f"Found full public key for {sender_name}: {sender_pubkey[:16]}...")
+                        self.logger.debug(
+                            f"Found full public key for {sender_name}: {sender_pubkey[:16]}..."
+                        )
                         break
 
             # Sanitize message content to prevent injection attacks
             # Note: Firmware enforces 150-char limit at hardware level, so we disable length check
             # but still strip control characters for security
             message_content = payload.get("text", "")
-            message_content = sanitize_input(message_content, max_length=None, strip_controls=True)
+            message_content = sanitize_input(
+                message_content, max_length=None, strip_controls=True
+            )
 
             # Elapsed: "Nms" when device clock is valid, or "Sync Device Clock" when
             # invalid (e.g. T-Deck before GPS sync: 0, future, or far in the past).
@@ -847,13 +928,17 @@ class MessageHandler:
                         message.path = f"{rf_routing.get('path_hex', 'Unknown')} ({rf_routing.get('path_length', 0)} hops via {route_type})"
                         self.logger.info(f"🛣️  CONTACT USING RF ROUTING: {message.path}")
                 else:
-                    message.path = f"Direct via {rf_routing.get('route_type', 'Unknown')}"
+                    message.path = (
+                        f"Direct via {rf_routing.get('route_type', 'Unknown')}"
+                    )
                     self.logger.info(f"📡 CONTACT USING RF ROUTING: {message.path}")
 
             await self._debug_decode_message_path(message, sender_id, recent_rf_data)
 
             # Always attempt packet decoding and log the results for debugging
-            await self._debug_decode_packet_for_message(message, sender_id, recent_rf_data)
+            await self._debug_decode_packet_for_message(
+                message, sender_id, recent_rf_data
+            )
 
             # Check if this is an old cached message from before bot connection
             if self._is_old_cached_message(timestamp):
@@ -868,7 +953,9 @@ class MessageHandler:
             self.logger.error(f"Error handling contact message: {e}")
             self.logger.error(f"{type(e).__name__} {__file__} {e.__traceback__.tb_lineno} ")
 
-    async def handle_raw_data(self, event: Any, metadata: dict[str, Any] | None = None) -> None:
+    async def handle_raw_data(
+        self, event: Any, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Handle raw data events (full packet data from debug mode).
 
         Processes raw packet data, attempts to decode it, and if successful,
@@ -881,7 +968,9 @@ class MessageHandler:
         try:
             # Copy payload immediately to avoid segfault if event is freed
             # Make a deep copy to ensure we have all the data we need
-            payload = copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            payload = (
+                copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            )
             if payload is None:
                 self.logger.warning("RAW_DATA event has no payload")
                 return
@@ -891,7 +980,9 @@ class MessageHandler:
 
             # This should contain the full packet data we need
             if hasattr(payload, "data") or "data" in payload:
-                raw_data = payload.get("data", payload.data if hasattr(payload, "data") else None)
+                raw_data = payload.get(
+                    "data", payload.data if hasattr(payload, "data") else None
+                )
                 if raw_data:
                     # Try to decode this as a MeshCore packet
                     if isinstance(raw_data, str):
@@ -904,18 +995,26 @@ class MessageHandler:
                         # Decode the packet
                         packet_info = self.decode_meshcore_packet(raw_hex)
                         if packet_info:
-                            self.logger.debug(f"✅ SUCCESSFULLY DECODED RAW PACKET: {packet_info}")
+                            self.logger.debug(
+                                f"✅ SUCCESSFULLY DECODED RAW PACKET: {packet_info}"
+                            )
 
                             # Check if this is an advertisement packet and track it
-                            await self._process_advertisement_packet(packet_info, metadata)
+                            await self._process_advertisement_packet(
+                                packet_info, metadata
+                            )
                         else:
                             self.logger.warning("❌ Failed to decode raw packet data")
                     else:
-                        self.logger.warning(f"❌ Unexpected raw data type: {type(raw_data)}")
+                        self.logger.warning(
+                            f"❌ Unexpected raw data type: {type(raw_data)}"
+                        )
                 else:
                     self.logger.warning("❌ No data field in RAW_DATA event")
             else:
-                self.logger.warning(f"❌ Unexpected RAW_DATA payload structure: {payload}")
+                self.logger.warning(
+                    f"❌ Unexpected RAW_DATA payload structure: {payload}"
+                )
 
         except Exception as e:
             self.logger.error(f"Error handling raw data event: {e}")
@@ -962,7 +1061,9 @@ class MessageHandler:
                 if not advert_data:
                     advert_data = {
                         "public_key": packet_info.get("sender_id", ""),
-                        "name": packet_info.get("name", packet_info.get("adv_name", "Unknown")),
+                        "name": packet_info.get(
+                            "name", packet_info.get("adv_name", "Unknown")
+                        ),
                         "mode": "Unknown",
                     }
 
@@ -1016,12 +1117,16 @@ class MessageHandler:
                 if out_path_len >= 0:
                     advert_data["out_path"] = out_path
                     advert_data["out_path_len"] = out_path_len
-                    advert_data["out_bytes_per_hop"] = packet_info.get("bytes_per_hop", 1)
+                    advert_data["out_bytes_per_hop"] = packet_info.get(
+                        "bytes_per_hop", 1
+                    )
 
                 # Update mesh graph with edges from the advert path (one edge per hop).
                 # This can trigger many send_mesh_edge_update() calls in quick succession;
                 # if the web viewer is down, that produces a wave of connection-refused logs.
-                path_byte_length = packet_info.get("path_byte_length") or (len(out_path) // 2 if out_path else 0)
+                path_byte_length = packet_info.get("path_byte_length") or (
+                    len(out_path) // 2 if out_path else 0
+                )
                 if (
                     out_path
                     and out_path_len > 0
@@ -1029,7 +1134,9 @@ class MessageHandler:
                     and self.bot.mesh_graph
                     and self.bot.mesh_graph.capture_enabled
                 ):
-                    self._update_mesh_graph_from_advert(advert_data, out_path, path_byte_length, packet_info)
+                    self._update_mesh_graph_from_advert(
+                        advert_data, out_path, path_byte_length, packet_info
+                    )
 
                 # Store complete path in observed_paths table. Empty-path (direct RF)
                 # adverts are stored too — those are true one-hop neighbours.
@@ -1057,8 +1164,10 @@ class MessageHandler:
                 # Track this advertisement in the complete database
                 if hasattr(self.bot, "repeater_manager"):
                     # Track all advertisements regardless of type
-                    track_result = await self.bot.repeater_manager.track_contact_advertisement(
-                        advert_data, signal_info, packet_hash=packet_hash
+                    track_result = (
+                        await self.bot.repeater_manager.track_contact_advertisement(
+                            advert_data, signal_info, packet_hash=packet_hash
+                        )
                     )
                     if track_result.ok:
                         # Log rich advert information
@@ -1098,14 +1207,22 @@ class MessageHandler:
                                     location = f" at {advert_data['lat']:.4f},{advert_data['lon']:.4f}"
                             except Exception as e:
                                 # If lookup fails, fallback to coordinates
-                                self.logger.debug(f"Could not get resolved location for logging: {e}")
+                                self.logger.debug(
+                                    f"Could not get resolved location for logging: {e}"
+                                )
                                 location = f" at {advert_data['lat']:.4f},{advert_data['lon']:.4f}"
 
                         # Show hop count in log
                         hop_count = signal_info.get("hops", 0)
-                        hop_info = f" ({hop_count} hop{'s' if hop_count != 1 else ''})" if hop_count is not None else ""
+                        hop_info = (
+                            f" ({hop_count} hop{'s' if hop_count != 1 else ''})"
+                            if hop_count is not None
+                            else ""
+                        )
 
-                        self.logger.info(f"📡 Tracked {mode}: {name}{location}{hop_info}")
+                        self.logger.info(
+                            f"📡 Tracked {mode}: {name}{location}{hop_info}"
+                        )
                     else:
                         self.logger.warning(
                             f"Failed to track contact advertisement: {sanitize_name(advert_data.get('name', 'Unknown'))}"
@@ -1114,7 +1231,9 @@ class MessageHandler:
         except Exception as e:
             self.logger.error(f"Error processing advertisement packet: {e}")
 
-    async def handle_rf_log_data(self, event: Any, metadata: dict[str, Any] | None = None) -> None:
+    async def handle_rf_log_data(
+        self, event: Any, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Handle RF log data events to cache SNR information and store raw packet data.
 
         Captures low-level RF information (SNR, RSSI) and raw packet data to
@@ -1128,7 +1247,9 @@ class MessageHandler:
             # Copy payload immediately to avoid segfault if event is freed
             import copy
 
-            payload = copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            payload = (
+                copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            )
             if payload is None:
                 self.logger.warning("RF log data event has no payload")
                 return
@@ -1145,14 +1266,18 @@ class MessageHandler:
                     # Use first 32 characters as correlation key (16 bytes)
                     # This provides unique identification while being consistent
                     packet_prefix = raw_hex[:32]
-                    self.logger.debug(f"Using packet prefix for correlation: {packet_prefix}")
+                    self.logger.debug(
+                        f"Using packet prefix for correlation: {packet_prefix}"
+                    )
 
                 # Keep pubkey_prefix for contact lookup (from metadata if available)
                 pubkey_prefix = None
                 if metadata and "pubkey_prefix" in metadata:
                     pubkey_prefix = metadata.get("pubkey_prefix")
                     if isinstance(pubkey_prefix, str):
-                        self.logger.debug(f"Got pubkey_prefix from metadata: {pubkey_prefix[:16]}...")
+                        self.logger.debug(
+                            f"Got pubkey_prefix from metadata: {pubkey_prefix[:16]}..."
+                        )
 
                 if packet_prefix and snr_value is not None:
                     # Cache the SNR value for this packet prefix (LRU-bounded)
@@ -1160,7 +1285,9 @@ class MessageHandler:
                     self.snr_cache.move_to_end(packet_prefix)
                     while len(self.snr_cache) > self._max_signal_cache_size:
                         self.snr_cache.popitem(last=False)
-                    self.logger.debug(f"Cached SNR {snr_value} for packet prefix {packet_prefix}")
+                    self.logger.debug(
+                        f"Cached SNR {snr_value} for packet prefix {packet_prefix}"
+                    )
 
                 # Extract and cache RSSI if available
                 if "rssi" in payload:
@@ -1171,7 +1298,9 @@ class MessageHandler:
                         self.rssi_cache.move_to_end(packet_prefix)
                         while len(self.rssi_cache) > self._max_signal_cache_size:
                             self.rssi_cache.popitem(last=False)
-                        self.logger.debug(f"Cached RSSI {rssi_value} for packet prefix {packet_prefix}")
+                        self.logger.debug(
+                            f"Cached RSSI {rssi_value} for packet prefix {packet_prefix}"
+                        )
 
                 # Store recent RF data with timestamp for SNR/RSSI matching only
                 if packet_prefix:
@@ -1189,26 +1318,37 @@ class MessageHandler:
                     packet_hash = None
                     if raw_hex:
                         # Use extracted payload if available, otherwise use raw_hex
-                        decoded_packet = self.decode_meshcore_packet(raw_hex, extracted_payload)
+                        decoded_packet = self.decode_meshcore_packet(
+                            raw_hex, extracted_payload
+                        )
                         if decoded_packet:
                             # Calculate packet hash for this packet (useful for tracking same message via different paths)
                             # Use extracted_payload if available (actual MeshCore packet), otherwise use raw_hex
                             # This matches the logic in decode_meshcore_packet which prefers extracted_payload
                             # extracted_payload is the actual MeshCore packet without RF wrapper, so use it if available
                             packet_hex_for_hash = (
-                                extracted_payload if (extracted_payload and len(extracted_payload) > 0) else raw_hex
+                                extracted_payload
+                                if (extracted_payload and len(extracted_payload) > 0)
+                                else raw_hex
                             )
 
                             # Ensure we use the numeric payload_type value (not enum or string)
-                            payload_type_value = decoded_packet.get("payload_type", None)
+                            payload_type_value = decoded_packet.get(
+                                "payload_type", None
+                            )
                             if payload_type_value is not None:
                                 # Handle enum.value if it's an enum
                                 if hasattr(payload_type_value, "value"):
                                     payload_type_value = payload_type_value.value
                                 payload_type_value = int(payload_type_value)
-                            packet_hash = calculate_packet_hash(packet_hex_for_hash, payload_type_value)
+                            packet_hash = calculate_packet_hash(
+                                packet_hex_for_hash, payload_type_value
+                            )
 
-                            is_trace = decoded_packet.get("payload_type") == PayloadType.TRACE.value
+                            is_trace = (
+                                decoded_packet.get("payload_type")
+                                == PayloadType.TRACE.value
+                            )
 
                             # Check if this is a repeat of one of our transmissions
                             if (
@@ -1225,15 +1365,23 @@ class MessageHandler:
                                     path_nodes = decoded_packet.get("path", [])
                                     # Also try 'path_nodes' field (from routing_info)
                                     if not path_nodes:
-                                        path_nodes = decoded_packet.get("path_nodes", [])
+                                        path_nodes = decoded_packet.get(
+                                            "path_nodes", []
+                                        )
 
                                     path_hex = decoded_packet.get("path_hex", "")
 
                                     # If we don't have path_nodes but have path_hex, convert it
-                                    if not path_nodes and path_hex and len(path_hex) >= 2:
+                                    if (
+                                        not path_nodes
+                                        and path_hex
+                                        and len(path_hex) >= 2
+                                    ):
                                         path_nodes = self._path_hex_to_nodes(path_hex)
 
-                                    path_string = ",".join(path_nodes) if path_nodes else None
+                                    path_string = (
+                                        ",".join(path_nodes) if path_nodes else None
+                                    )
 
                                     # Debug logging
                                     if path_nodes:
@@ -1242,7 +1390,11 @@ class MessageHandler:
                                         )
 
                                     # Try to match this packet hash to a transmission
-                                    record = self.bot.transmission_tracker.match_packet_hash(packet_hash, current_time)
+                                    record = (
+                                        self.bot.transmission_tracker.match_packet_hash(
+                                            packet_hash, current_time
+                                        )
+                                    )
 
                                     if record:
                                         # This is one of our transmissions - check for repeats
@@ -1264,15 +1416,23 @@ class MessageHandler:
 
                                         # Record the repeat
                                         for prefix in prefixes:
-                                            self.bot.transmission_tracker.record_repeat(packet_hash, prefix)
+                                            self.bot.transmission_tracker.record_repeat(
+                                                packet_hash, prefix
+                                            )
 
                                         # If no prefixes but we have a path, it might be a direct repeat
                                         # (path contains our own node, so we filter it out)
                                         if not prefixes and (path_nodes or path_hex):
                                             # Still count as a repeat (heard by our radio)
-                                            self.bot.transmission_tracker.record_repeat(packet_hash, None)
+                                            self.bot.transmission_tracker.record_repeat(
+                                                packet_hash, None
+                                            )
                                 else:
-                                    record = self.bot.transmission_tracker.match_packet_hash(packet_hash, current_time)
+                                    record = (
+                                        self.bot.transmission_tracker.match_packet_hash(
+                                            packet_hash, current_time
+                                        )
+                                    )
                                     if record:
                                         self.logger.debug(
                                             "📡 TRACE packet matched our transmission; skipping repeater prefix "
@@ -1280,7 +1440,9 @@ class MessageHandler:
                                         )
 
                             pi = decoded_packet.get("path_info") or {}
-                            trace_route_hashes = list(pi.get("path_hashes") or pi.get("path") or [])
+                            trace_route_hashes = list(
+                                pi.get("path_hashes") or pi.get("path") or []
+                            )
                             trace_snr_db = list(pi.get("snr_data") or [])
 
                             if is_trace:
@@ -1288,30 +1450,52 @@ class MessageHandler:
                                     "path_length": len(trace_route_hashes)
                                     if trace_route_hashes
                                     else decoded_packet.get("path_len", 0),
-                                    "path_len_byte": decoded_packet.get("path_len_byte"),
-                                    "path_byte_length": decoded_packet.get("path_byte_length"),
-                                    "bytes_per_hop": decoded_packet.get("bytes_per_hop", 1),
+                                    "path_len_byte": decoded_packet.get(
+                                        "path_len_byte"
+                                    ),
+                                    "path_byte_length": decoded_packet.get(
+                                        "path_byte_length"
+                                    ),
+                                    "bytes_per_hop": decoded_packet.get(
+                                        "bytes_per_hop", 1
+                                    ),
                                     "path_hex": decoded_packet.get("path_hex", ""),
                                     "path_nodes": trace_route_hashes,
                                     "trace_route_hashes": trace_route_hashes,
                                     "trace_snr_db": trace_snr_db,
-                                    "trace_snr_path_hex": decoded_packet.get("path_hex", ""),
-                                    "route_type": decoded_packet.get("route_type_name", "Unknown"),
+                                    "trace_snr_path_hex": decoded_packet.get(
+                                        "path_hex", ""
+                                    ),
+                                    "route_type": decoded_packet.get(
+                                        "route_type_name", "Unknown"
+                                    ),
                                     "payload_length": payload_length,
-                                    "payload_type": decoded_packet.get("payload_type_name", "Unknown"),
+                                    "payload_type": decoded_packet.get(
+                                        "payload_type_name", "Unknown"
+                                    ),
                                     "packet_hash": packet_hash,
                                 }
                             else:
                                 routing_info = {
                                     "path_length": decoded_packet.get("path_len", 0),
-                                    "path_len_byte": decoded_packet.get("path_len_byte"),
-                                    "path_byte_length": decoded_packet.get("path_byte_length"),
-                                    "bytes_per_hop": decoded_packet.get("bytes_per_hop", 1),
+                                    "path_len_byte": decoded_packet.get(
+                                        "path_len_byte"
+                                    ),
+                                    "path_byte_length": decoded_packet.get(
+                                        "path_byte_length"
+                                    ),
+                                    "bytes_per_hop": decoded_packet.get(
+                                        "bytes_per_hop", 1
+                                    ),
                                     "path_hex": decoded_packet.get("path_hex", ""),
                                     "path_nodes": decoded_packet.get("path", []),
-                                    "route_type": decoded_packet.get("route_type_name", "Unknown"),
+                                    "route_type": decoded_packet.get(
+                                        "route_type_name", "Unknown"
+                                    ),
                                     "payload_length": payload_length,
-                                    "payload_type": decoded_packet.get("payload_type_name", "Unknown"),
+                                    "payload_type": decoded_packet.get(
+                                        "payload_type_name", "Unknown"
+                                    ),
                                     "packet_hash": packet_hash,
                                 }
                             # Validate path consistency (path_byte_length, path_hex, path_nodes, bytes_per_hop)
@@ -1322,7 +1506,9 @@ class MessageHandler:
                                 path_nodes_list = routing_info.get("path_nodes") or []
                                 bph = routing_info.get("bytes_per_hop", 1) or 1
                                 expected_hex_len = (
-                                    (path_byte_len * 2) if path_byte_len is not None else (path_len * bph * 2)
+                                    (path_byte_len * 2)
+                                    if path_byte_len is not None
+                                    else (path_len * bph * 2)
                                 )
                                 if path_len > 0 and path_hex_str:
                                     if len(path_hex_str) != expected_hex_len:
@@ -1334,7 +1520,10 @@ class MessageHandler:
                                             path_len,
                                             bph,
                                         )
-                                    if path_nodes_list and len(path_nodes_list) != path_len:
+                                    if (
+                                        path_nodes_list
+                                        and len(path_nodes_list) != path_len
+                                    ):
                                         self.logger.warning(
                                             "Path nodes count mismatch: %d nodes, path_length=%d",
                                             len(path_nodes_list),
@@ -1343,7 +1532,10 @@ class MessageHandler:
                                     if (
                                         path_nodes_list
                                         and bph >= 1
-                                        and any(len(str(n)) != bph * 2 for n in path_nodes_list)
+                                        and any(
+                                            len(str(n)) != bph * 2
+                                            for n in path_nodes_list
+                                        )
                                     ):
                                         self.logger.warning(
                                             "Path node width mismatch: bytes_per_hop=%d expects %d hex chars per node, nodes=%s",
@@ -1372,7 +1564,9 @@ class MessageHandler:
                                         f"{routing_info['trace_snr_path_hex']}"
                                     )
                                 hops_display = (
-                                    len(trace_route_hashes) if trace_route_hashes else decoded_packet.get("path_len", 0)
+                                    len(trace_route_hashes)
+                                    if trace_route_hashes
+                                    else decoded_packet.get("path_len", 0)
                                 )
                                 log_message = (
                                     f"🛣️  ROUTING INFO: {routing_info['route_type']} | {route_part}{snr_part} "
@@ -1384,12 +1578,16 @@ class MessageHandler:
                                 # Use path_nodes when present (multi-byte); else chunk path_hex
                                 path_nodes_list = routing_info.get("path_nodes") or []
                                 if path_nodes_list:
-                                    formatted_path = ",".join(str(n).lower() for n in path_nodes_list)
+                                    formatted_path = ",".join(
+                                        str(n).lower() for n in path_nodes_list
+                                    )
                                 else:
                                     path_hex = routing_info["path_hex"]
                                     path_nodes_fmt = self._path_hex_to_nodes(path_hex)
                                     formatted_path = ",".join(path_nodes_fmt)
-                                path_bytes_str = decoded_packet.get("path_byte_length", routing_info["path_length"])
+                                path_bytes_str = decoded_packet.get(
+                                    "path_byte_length", routing_info["path_length"]
+                                )
                                 log_message = f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {formatted_path} ({routing_info['path_length']} hops, {path_bytes_str} bytes) | Payload: {routing_info['payload_length']} bytes | Type: {routing_info['payload_type']}"
                                 self.logger.info(log_message)
                             else:
@@ -1408,12 +1606,16 @@ class MessageHandler:
                                     decoded_packet["path_len"] = len(trace_route_hashes)
                                 # Use extracted_payload which is the full MeshCore packet
                                 # (header + path_len + path + payload, without RF wrapper)
-                                decoded_packet["raw_packet_hex"] = extracted_payload if extracted_payload else raw_hex
+                                decoded_packet["raw_packet_hex"] = (
+                                    extracted_payload if extracted_payload else raw_hex
+                                )
                                 decoded_packet["packet_hash"] = packet_hash
                                 decoded_packet["snr"] = snr_value
                                 if "rssi" in payload:
                                     decoded_packet["rssi"] = payload.get("rssi")
-                                self.bot.web_viewer_integration.bot_integration.capture_full_packet_data(decoded_packet)
+                                self.bot.web_viewer_integration.bot_integration.capture_full_packet_data(
+                                    decoded_packet
+                                )
 
                             # Process ADVERT packets for contact tracking (regardless of path length)
                             if routing_info["payload_type"] == "ADVERT":
@@ -1422,16 +1624,24 @@ class MessageHandler:
                                 # Create signal info from available data
                                 signal_info = {
                                     "snr": snr_value,
-                                    "rssi": payload.get("rssi") if "rssi" in payload else None,
+                                    "rssi": payload.get("rssi")
+                                    if "rssi" in payload
+                                    else None,
                                     "hops": routing_info["path_length"],
                                 }
-                                await self._process_advertisement_packet(decoded_packet, signal_info)
+                                await self._process_advertisement_packet(
+                                    decoded_packet, signal_info
+                                )
 
                     # Prefer library-provided scope fields (already parsed by meshcore-py).
                     # The library's parsePacketPayload populates these directly from the
                     # inner MeshCore packet, avoiding any raw_hex prefix/offset issues.
-                    _lib_route_type = payload.get("route_type")  # int: 0=TC_FLOOD, 1=FLOOD
-                    _lib_tc_hex = payload.get("transport_code")  # hex str e.g. "26f10000"
+                    _lib_route_type = payload.get(
+                        "route_type"
+                    )  # int: 0=TC_FLOOD, 1=FLOOD
+                    _lib_tc_hex = payload.get(
+                        "transport_code"
+                    )  # hex str e.g. "26f10000"
                     _lib_payload_type = payload.get("payload_type")  # int
                     _lib_pkt_payload = payload.get("pkt_payload")  # bytes after path
 
@@ -1439,7 +1649,9 @@ class MessageHandler:
                     _lib_tc_code1 = None
                     if _lib_tc_hex and len(_lib_tc_hex) >= 4:
                         try:
-                            _lib_tc_code1 = int.from_bytes(bytes.fromhex(_lib_tc_hex[:4]), "little")
+                            _lib_tc_code1 = int.from_bytes(
+                                bytes.fromhex(_lib_tc_hex[:4]), "little"
+                            )
                         except ValueError:
                             pass
 
@@ -1464,16 +1676,30 @@ class MessageHandler:
                         # Fields for TC_FLOOD scope matching — use library values first, decoded_packet as fallback
                         "route_type_int": _lib_route_type
                         if _lib_route_type is not None
-                        else (decoded_packet.get("route_type") if decoded_packet else None),
+                        else (
+                            decoded_packet.get("route_type") if decoded_packet else None
+                        ),
                         "transport_code1": _lib_tc_code1
                         if _lib_tc_code1 is not None
-                        else ((decoded_packet.get("transport_codes") or {}).get("code1") if decoded_packet else None),
+                        else (
+                            (decoded_packet.get("transport_codes") or {}).get("code1")
+                            if decoded_packet
+                            else None
+                        ),
                         "payload_type_int": _lib_payload_type
                         if _lib_payload_type is not None
-                        else (decoded_packet.get("payload_type") if decoded_packet else None),
+                        else (
+                            decoded_packet.get("payload_type")
+                            if decoded_packet
+                            else None
+                        ),
                         "scope_payload_hex": _lib_pkt_hex
                         if _lib_pkt_hex
-                        else (decoded_packet.get("payload_hex") if decoded_packet else None),
+                        else (
+                            decoded_packet.get("payload_hex")
+                            if decoded_packet
+                            else None
+                        ),
                     }
                     self._cache_authenticated_channel_rf_data(rf_data, decoded_packet, current_time)
                     if rf_data.get("route_type_int") == 0:
@@ -1498,7 +1724,9 @@ class MessageHandler:
                     # Try to correlate with any pending messages
                     self.try_correlate_pending_messages(rf_data)
 
-                    self.logger.debug(f"Stored recent RF data with routing info: {rf_data}")
+                    self.logger.debug(
+                        f"Stored recent RF data with routing info: {rf_data}"
+                    )
 
                     # Clean up old pending messages
                     self.cleanup_old_messages()
@@ -1557,7 +1785,9 @@ class MessageHandler:
 
                         if len(path_nodes) == expected_hops:
                             path_string = ",".join(path_nodes)
-                            self.logger.debug(f"Found path at position {start}-{end}: {path_string}")
+                            self.logger.debug(
+                                f"Found path at position {start}-{end}: {path_string}"
+                            )
                             return path_string
 
             # If no exact match, try to find any 3-byte pattern that looks like a path
@@ -1569,7 +1799,9 @@ class MessageHandler:
                     if all(c in "0123456789abcdef" for c in path_hex.lower()):
                         path_nodes = [path_hex[j : j + 2] for j in range(0, 6, 2)]
                         path_string = ",".join(path_nodes)
-                        self.logger.debug(f"Found potential path at position {i}: {path_string}")
+                        self.logger.debug(
+                            f"Found potential path at position {i}: {path_string}"
+                        )
                         return path_string
 
             return None
@@ -1593,7 +1825,9 @@ class MessageHandler:
             cutoff_time = current_time - self.rf_data_timeout
 
             # Clean timestamp-indexed cache (timeout only)
-            stale_timestamps = [ts for ts in self.rf_data_by_timestamp if ts < cutoff_time]
+            stale_timestamps = [
+                ts for ts in self.rf_data_by_timestamp if ts < cutoff_time
+            ]
             for ts in stale_timestamps:
                 del self.rf_data_by_timestamp[ts]
 
@@ -1609,7 +1843,9 @@ class MessageHandler:
 
             # Clean recent_rf_data list (timeout only)
             self.recent_rf_data = [
-                data for data in self.recent_rf_data if current_time - data["timestamp"] < self.rf_data_timeout
+                data
+                for data in self.recent_rf_data
+                if current_time - data["timestamp"] < self.rf_data_timeout
             ]
             return
 
@@ -1642,14 +1878,18 @@ class MessageHandler:
                 del self.rf_data_by_pubkey[pubkey]
 
         # Enforce maximum size on pubkey cache (keep most recent per pubkey)
-        total_pubkey_entries = sum(len(entries) for entries in self.rf_data_by_pubkey.values())
+        total_pubkey_entries = sum(
+            len(entries) for entries in self.rf_data_by_pubkey.values()
+        )
         if total_pubkey_entries > self._max_rf_cache_size:
             # Sort all entries by timestamp and keep most recent
             all_pubkey_entries = []
             for pubkey, entries in self.rf_data_by_pubkey.items():
                 for entry in entries:
                     all_pubkey_entries.append((pubkey, entry))
-            all_pubkey_entries.sort(key=lambda x: x[1].get("timestamp", 0), reverse=True)
+            all_pubkey_entries.sort(
+                key=lambda x: x[1].get("timestamp", 0), reverse=True
+            )
 
             # Rebuild pubkey cache with only the most recent entries
             self.rf_data_by_pubkey = {}
@@ -1660,7 +1900,9 @@ class MessageHandler:
 
         # Clean recent_rf_data list
         self.recent_rf_data = [
-            data for data in self.recent_rf_data if current_time - data["timestamp"] < self.rf_data_timeout
+            data
+            for data in self.recent_rf_data
+            if current_time - data["timestamp"] < self.rf_data_timeout
         ]
 
         # Enforce maximum size on recent_rf_data (keep most recent)
@@ -1678,11 +1920,15 @@ class MessageHandler:
         extended_timeout: float,
     ) -> dict[str, Any] | None:
         """Correlate a channel message with cached RF log rows (strategies 1–4)."""
-        authenticated, authenticated_identity_seen = self._find_authenticated_channel_rf_data(payload)
+        authenticated, authenticated_identity_seen = (
+            self._find_authenticated_channel_rf_data(payload)
+        )
         if authenticated_identity_seen:
             if authenticated is None:
                 return None
-            if scope_eligible_only and not self._is_rf_data_scope_eligible(authenticated):
+            if scope_eligible_only and not self._is_rf_data_scope_eligible(
+                authenticated
+            ):
                 return None
             self.logger.debug(
                 "Authenticated channel message matched first RF reception %s (packet %s)",
@@ -1703,11 +1949,15 @@ class MessageHandler:
             message_id = f"{correlation_key}_{int(time.time() * 1000)}"
             self.store_message_for_correlation(message_id, payload)
             await asyncio.sleep(0.1)
-            authenticated, authenticated_identity_seen = self._find_authenticated_channel_rf_data(payload)
+            authenticated, authenticated_identity_seen = (
+                self._find_authenticated_channel_rf_data(payload)
+            )
             if authenticated_identity_seen:
                 if authenticated is None:
                     return None
-                if scope_eligible_only and not self._is_rf_data_scope_eligible(authenticated):
+                if scope_eligible_only and not self._is_rf_data_scope_eligible(
+                    authenticated
+                ):
                     return None
                 return authenticated
             recent_rf_data = self.correlate_message_with_rf_data(message_id)
@@ -1884,10 +2134,16 @@ class MessageHandler:
             max_age_seconds = self.rf_data_timeout
 
         # Filter recent RF data by age
-        recent_data = [data for data in self.recent_rf_data if current_time - data["timestamp"] < max_age_seconds]
+        recent_data = [
+            data
+            for data in self.recent_rf_data
+            if current_time - data["timestamp"] < max_age_seconds
+        ]
 
         if not recent_data:
-            self.logger.debug(f"No recent RF data found within {max_age_seconds}s window")
+            self.logger.debug(
+                f"No recent RF data found within {max_age_seconds}s window"
+            )
             return None
 
         def _accept(data: dict[str, Any], how: str) -> dict[str, Any] | None:
@@ -1903,7 +2159,9 @@ class MessageHandler:
                 if rf_packet_prefix == correlation_key:
                     accepted = _accept(data, RF_MATCH_EXACT)
                     if accepted:
-                        self.logger.debug(f"Found exact packet prefix match: {rf_packet_prefix}")
+                        self.logger.debug(
+                            f"Found exact packet prefix match: {rf_packet_prefix}"
+                        )
                         return accepted
 
         # Strategy 2: Try pubkey prefix match (for message correlation).
@@ -1915,14 +2173,20 @@ class MessageHandler:
             if pubkey_matches:
                 newest = max(pubkey_matches, key=lambda x: x["timestamp"])
                 unique = len(pubkey_matches) == 1
-                accepted = _accept(newest, RF_MATCH_PUBKEY if unique else RF_MATCH_FALLBACK)
+                accepted = _accept(
+                    newest, RF_MATCH_PUBKEY if unique else RF_MATCH_FALLBACK
+                )
                 if accepted:
                     if unique:
-                        self.logger.debug(f"Found exact pubkey prefix match: {correlation_key}")
+                        self.logger.debug(
+                            f"Found exact pubkey prefix match: {correlation_key}"
+                        )
                     else:
                         self.logger.debug(
                             "%d cached packets share pubkey prefix %s; using the newest "
                             "for signal only, not for routing",
+                            len(pubkey_matches),
+                            correlation_key,
                             len(pubkey_matches),
                             correlation_key,
                         )
@@ -1935,12 +2199,17 @@ class MessageHandler:
             for data in recent_data:
                 rf_packet_prefix = data.get("packet_prefix", "") or ""
                 min_length = min(len(rf_packet_prefix), len(correlation_key), 16)
-                if rf_packet_prefix[:min_length] == correlation_key[:min_length] and min_length >= 16:
+                if (
+                    rf_packet_prefix[:min_length] == correlation_key[:min_length]
+                    and min_length >= 16
+                ):
                     partial_matches.append(data)
             if partial_matches:
                 newest = max(partial_matches, key=lambda x: x["timestamp"])
                 unique = len(partial_matches) == 1
-                accepted = _accept(newest, RF_MATCH_PARTIAL if unique else RF_MATCH_FALLBACK)
+                accepted = _accept(
+                    newest, RF_MATCH_PARTIAL if unique else RF_MATCH_FALLBACK
+                )
                 if accepted:
                     if unique:
                         self.logger.debug(f"Found partial packet prefix match for {correlation_key[:16]}...")
@@ -1957,7 +2226,9 @@ class MessageHandler:
         if recent_data:
             candidates = recent_data
             if scope_eligible_only:
-                candidates = [d for d in recent_data if self._is_rf_data_scope_eligible(d)]
+                candidates = [
+                    d for d in recent_data if self._is_rf_data_scope_eligible(d)
+                ]
                 if not candidates:
                     self.logger.debug(
                         "No scope-eligible RF data in cache for fallback (need TC_FLOOD GRP_TXT with transport code)"
@@ -1979,7 +2250,9 @@ class MessageHandler:
 
         return None
 
-    def store_message_for_correlation(self, message_id: str, message_data: dict[str, Any]) -> None:
+    def store_message_for_correlation(
+        self, message_id: str, message_data: dict[str, Any]
+    ) -> None:
         """Store a message temporarily to wait for RF data correlation"""
         import time
 
@@ -2003,7 +2276,9 @@ class MessageHandler:
         rf_data = self.find_recent_rf_data(pubkey_prefix)
 
         if rf_data:
-            self.logger.debug(f"Successfully correlated message {message_id} with RF data")
+            self.logger.debug(
+                f"Successfully correlated message {message_id} with RF data"
+            )
             message_info["processed"] = True
             return rf_data
 
@@ -2036,13 +2311,19 @@ class MessageHandler:
 
             # Check if this RF data matches the pending message
             if pubkey_prefix == message_pubkey or (
-                len(pubkey_prefix) >= 16 and len(message_pubkey) >= 16 and pubkey_prefix[:16] == message_pubkey[:16]
+                len(pubkey_prefix) >= 16
+                and len(message_pubkey) >= 16
+                and pubkey_prefix[:16] == message_pubkey[:16]
             ):
-                self.logger.debug(f"Correlated RF data with pending message {message_id}")
+                self.logger.debug(
+                    f"Correlated RF data with pending message {message_id}"
+                )
                 message_info["processed"] = True
                 break
 
-    def decode_meshcore_packet(self, raw_hex: str, payload_hex: str | None = None) -> dict | None:
+    def decode_meshcore_packet(
+        self, raw_hex: str, payload_hex: str | None = None
+    ) -> dict | None:
         """
         Decode a MeshCore packet from raw hex data - matches Packet.cpp exactly
 
@@ -2094,7 +2375,9 @@ class MessageHandler:
 
             # Check if we have enough data for path_len
             if len(byte_data) <= offset:
-                self.logger.error(f"Packet too short for path_len at offset {offset}: {len(byte_data)} bytes")
+                self.logger.error(
+                    f"Packet too short for path_len at offset {offset}: {len(byte_data)} bytes"
+                )
                 return None
 
             path_len_byte = byte_data[offset]
@@ -2102,7 +2385,9 @@ class MessageHandler:
             # Decode per firmware: low 6 bits = hop count, high 2 bits = size code (bytes_per_hop = code+1)
             path_parts = decode_path_len_byte(path_len_byte)
             if path_parts is None:
-                self.logger.debug("decode_meshcore_packet: invalid path_len byte (firmware would reject)")
+                self.logger.debug(
+                    "decode_meshcore_packet: invalid path_len byte (firmware would reject)"
+                )
                 return None
             path_byte_length, bytes_per_hop = path_parts
 
@@ -2134,10 +2419,14 @@ class MessageHandler:
             payload_type = PayloadType((header >> 2) & 0x0F)
 
             # Chunk path by bytes_per_hop from packet (1, 2, or 3)
-            path_hex, path_values = self._path_bytes_to_nodes(path_bytes, prefix_hex_chars=bytes_per_hop * 2)
+            path_hex, path_values = self._path_bytes_to_nodes(
+                path_bytes, prefix_hex_chars=bytes_per_hop * 2
+            )
 
             # Process path based on packet type
-            path_info = self._process_packet_path(path_bytes, payload, route_type, payload_type)
+            path_info = self._process_packet_path(
+                path_bytes, payload, route_type, payload_type
+            )
 
             # Extract transport codes if present (only for TRANSPORT_FLOOD and TRANSPORT_DIRECT)
             transport_codes = None
@@ -2183,7 +2472,9 @@ class MessageHandler:
 
         except Exception as e:
             # Log as ERROR not DEBUG so we can see what's failing
-            self.logger.error(f"Error decoding packet (len={len(byte_data)}): {e}", exc_info=True)
+            self.logger.error(
+                f"Error decoding packet (len={len(byte_data)}): {e}", exc_info=True
+            )
             self.logger.error(f"Failed packet hex: {hex_data}")
             return None
 
@@ -2210,7 +2501,9 @@ class MessageHandler:
 
             # Log the full flag byte for debugging
             if hasattr(self, "debug") and self.debug:
-                self.logger.debug(f"ADVERT flags: 0x{flags_byte:02X} (binary: {flags_byte:08b})")
+                self.logger.debug(
+                    f"ADVERT flags: 0x{flags_byte:02X} (binary: {flags_byte:08b})"
+                )
 
             # Bit tests match firmware AdvertDataParser (do not use AdvertFlags(flags_byte):
             # enum.Flag rejects some valid uint8 values, e.g. corrupt wires or type nibble > 4).
@@ -2244,18 +2537,24 @@ class MessageHandler:
             # Parse location data if present (matches C++ hasLatLon())
             if has_latlon:
                 if len(app_data) < i + 8:
-                    self.logger.error(f"ADVERT with location flag too short: {len(app_data)} bytes")
+                    self.logger.error(
+                        f"ADVERT with location flag too short: {len(app_data)} bytes"
+                    )
                     return advert
 
                 lat = int.from_bytes(app_data[i : i + 4], "little", signed=True)
                 lon = int.from_bytes(app_data[i + 4 : i + 8], "little", signed=True)
-                advert.update({"lat": round(lat / 1000000.0, 6), "lon": round(lon / 1000000.0, 6)})
+                advert.update(
+                    {"lat": round(lat / 1000000.0, 6), "lon": round(lon / 1000000.0, 6)}
+                )
                 i += 8
 
             # Parse feat1 data if present
             if has_feat1:
                 if len(app_data) < i + 2:
-                    self.logger.error(f"ADVERT with feat1 flag too short: {len(app_data)} bytes")
+                    self.logger.error(
+                        f"ADVERT with feat1 flag too short: {len(app_data)} bytes"
+                    )
                     return advert
                 feat1 = int.from_bytes(app_data[i : i + 2], "little")
                 advert.update({"feat1": feat1})
@@ -2264,7 +2563,9 @@ class MessageHandler:
             # Parse feat2 data if present
             if has_feat2:
                 if len(app_data) < i + 2:
-                    self.logger.error(f"ADVERT with feat2 flag too short: {len(app_data)} bytes")
+                    self.logger.error(
+                        f"ADVERT with feat2 flag too short: {len(app_data)} bytes"
+                    )
                     return advert
                 feat2 = int.from_bytes(app_data[i : i + 2], "little")
                 advert.update({"feat2": feat2})
@@ -2276,7 +2577,9 @@ class MessageHandler:
                 if name_len > 0:
                     try:
                         # Decode name and handle potential null terminators
-                        name = app_data[i:].decode("utf-8", errors="ignore").rstrip("\x00")
+                        name = (
+                            app_data[i:].decode("utf-8", errors="ignore").rstrip("\x00")
+                        )
                         advert.update({"name": name})
                     except Exception as e:
                         self.logger.warning(f"Failed to decode ADVERT name: {e}")
@@ -2287,7 +2590,9 @@ class MessageHandler:
             self.logger.warning(f"Error parsing ADVERT payload: {e}")
             return {}
 
-    def _path_bytes_to_nodes(self, path_bytes: bytes, prefix_hex_chars: int | None = None) -> tuple:
+    def _path_bytes_to_nodes(
+        self, path_bytes: bytes, prefix_hex_chars: int | None = None
+    ) -> tuple:
         """Chunk path bytes into hex node IDs using configured prefix length, with legacy 2-char fallback.
 
         Args:
@@ -2297,7 +2602,11 @@ class MessageHandler:
         Returns:
             Tuple of (path_hex_str, path_nodes_list).
         """
-        n = prefix_hex_chars if prefix_hex_chars is not None else getattr(self.bot, "prefix_hex_chars", 2)
+        n = (
+            prefix_hex_chars
+            if prefix_hex_chars is not None
+            else getattr(self.bot, "prefix_hex_chars", 2)
+        )
         if n <= 0:
             n = 2
         path_hex = path_bytes.hex()
@@ -2308,7 +2617,7 @@ class MessageHandler:
         return path_hex, nodes
 
     def _path_hex_to_nodes(self, path_hex: str) -> list[str]:
-        """Chunk path_hex string into node list using configured prefix length, with legacy 2-char fallback.
+        """Chunk path_hex string into node list using configured prefix length, with legacy 2-char fallback.f
 
         Use when path_hex comes from decoded packet path data (so chunk size should match decode layer).
         """
@@ -2347,7 +2656,9 @@ class MessageHandler:
             return (None, None, 255)
         if packet_info is None:
             payload = payload_hex or rf_data.get("payload") or None
-            packet_info = self.decode_meshcore_packet(raw_hex, str(payload) if payload is not None else None)
+            packet_info = self.decode_meshcore_packet(
+                raw_hex, str(payload) if payload is not None else None
+            )
         if not packet_info:
             return (None, None, 255)
         hops = packet_info.get("path_len", 255)
@@ -2359,9 +2670,13 @@ class MessageHandler:
         if path_hex and len(path_hex) >= 2:
             bytes_per_hop = packet_info.get("bytes_per_hop", 1)
             n = (bytes_per_hop * 2) if bytes_per_hop and bytes_per_hop >= 1 else 2
-            path_nodes_list = [path_hex[i : i + n].lower() for i in range(0, len(path_hex), n)]
+            path_nodes_list = [
+                path_hex[i : i + n].lower() for i in range(0, len(path_hex), n)
+            ]
             if (len(path_hex) % n) != 0:
-                path_nodes_list = [path_hex[i : i + 2].lower() for i in range(0, len(path_hex), 2)]
+                path_nodes_list = [
+                    path_hex[i : i + 2].lower() for i in range(0, len(path_hex), 2)
+                ]
             if path_nodes_list:
                 return (
                     ",".join(path_nodes_list),
@@ -2427,9 +2742,13 @@ class MessageHandler:
                             ]
                         else:
                             # Fallback: 1 byte per hop (legacy)
-                            path_hashes = [f"{b:02x}".upper() for b in path_hashes_bytes]
+                            path_hashes = [
+                                f"{b:02x}".upper() for b in path_hashes_bytes
+                            ]
                     except Exception as e:
-                        self.logger.debug(f"Error extracting pathHashes from trace payload: {e}")
+                        self.logger.debug(
+                            f"Error extracting pathHashes from trace payload: {e}"
+                        )
                         path_hashes = [f"{b:02x}".upper() for b in payload[9:]]
 
                 return {
@@ -2506,13 +2825,17 @@ class MessageHandler:
         }
         return payload_types.get(payload_type, f"UNKNOWN_{payload_type:02x}")
 
-    async def handle_channel_message(self, event: Any, metadata: dict[str, Any] | None = None) -> None:
+    async def handle_channel_message(
+        self, event: Any, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Handle incoming channel message"""
         try:
             # Copy payload immediately to avoid segfault if event is freed
             import copy
 
-            payload = copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            payload = (
+                copy.deepcopy(event.payload) if hasattr(event, "payload") else None
+            )
             if payload is None:
                 self.logger.warning("Channel message event has no payload")
                 return
@@ -2533,9 +2856,13 @@ class MessageHandler:
                 parts = text.split(":", 1)
                 if len(parts) == 2 and parts[0].strip():
                     sender_id = parts[0].strip()
-                    message_content = parts[1].strip()  # Use the part after the colon for keyword processing
+                    message_content = parts[
+                        1
+                    ].strip()  # Use the part after the colon for keyword processing
                     self.logger.debug(f"Extracted sender from text: {sender_id}")
-                    self.logger.debug(f"Message content for processing: {message_content}")
+                    self.logger.debug(
+                        f"Message content for processing: {message_content}"
+                    )
 
             # Always strip trailing whitespace/newlines from message content to handle cases like "Wx 98104\n"
             message_content = message_content.strip()
@@ -2543,7 +2870,9 @@ class MessageHandler:
             # Get channel name from channel number
             channel_name = self.bot.channel_manager.get_channel_name(channel_idx)
 
-            self.logger.info(f"Received channel message ({channel_name}) from {sender_id}: {text}")
+            self.logger.info(
+                f"Received channel message ({channel_name}) from {sender_id}: {text}"
+            )
 
             # Get SNR and RSSI using the same logic as contact messages
             snr: float | None = None
@@ -2570,7 +2899,9 @@ class MessageHandler:
                 pubkey_prefix = payload.get("pubkey_prefix", "")
                 if pubkey_prefix and pubkey_prefix in self.snr_cache:
                     snr = self.snr_cache[pubkey_prefix]
-                    self.logger.debug(f"Retrieved cached SNR {snr} for pubkey {pubkey_prefix}")
+                    self.logger.debug(
+                        f"Retrieved cached SNR {snr} for pubkey {pubkey_prefix}"
+                    )
 
             # Try to get RSSI from payload first
             if "RSSI" in payload:
@@ -2596,7 +2927,9 @@ class MessageHandler:
                 pubkey_prefix = payload.get("pubkey_prefix", "")
                 if pubkey_prefix and pubkey_prefix in self.rssi_cache:
                     rssi = int(self.rssi_cache[pubkey_prefix])
-                    self.logger.debug(f"Retrieved cached RSSI {rssi} for pubkey {pubkey_prefix}")
+                    self.logger.debug(
+                        f"Retrieved cached RSSI {rssi} for pubkey {pubkey_prefix}"
+                    )
 
             # For channel messages, we can decode the packet since they use shared channel keys
             # This gives us access to the actual routing information
@@ -2630,7 +2963,9 @@ class MessageHandler:
             scope_packet_info: dict[str, Any] | None = None
             if recent_rf_data and recent_rf_data.get("raw_hex"):
                 raw_hex = recent_rf_data["raw_hex"]
-                self.logger.info(f"🔍 FOUND RF DATA: {len(raw_hex)} chars, starts with: {raw_hex[:32]}...")
+                self.logger.info(
+                    f"🔍 FOUND RF DATA: {len(raw_hex)} chars, starts with: {raw_hex[:32]}..."
+                )
                 self.logger.debug(f"Full RF data: {raw_hex}")
 
                 # Extract SNR/RSSI from the RF data
@@ -2671,21 +3006,33 @@ class MessageHandler:
                     hops = packet_info.get("path_len", 0)
                     if packet_info.get("payload_type") == 9:  # TRACE packet
                         path_info = packet_info.get("path_info", {})
-                        path_hashes = path_info.get("path_hashes") or path_info.get("path", [])
+                        path_hashes = path_info.get("path_hashes") or path_info.get(
+                            "path", []
+                        )
                         if path_hashes:
                             path_string = ",".join(path_hashes)
-                            self.logger.debug(f"Path from TRACE packet: {path_string} ({len(path_hashes)} hops)")
+                            self.logger.debug(
+                                f"Path from TRACE packet: {path_string} ({len(path_hashes)} hops)"
+                            )
                             if (
                                 hasattr(self.bot, "mesh_graph")
                                 and self.bot.mesh_graph
                                 and self.bot.mesh_graph.capture_enabled
                             ):
-                                self._update_mesh_graph_from_trace(path_hashes, packet_info)
+                                self._update_mesh_graph_from_trace(
+                                    path_hashes, packet_info
+                                )
                         else:
-                            path_string = "Direct" if hops == 0 else f"Unknown routing ({hops} hops)"
+                            path_string = (
+                                "Direct"
+                                if hops == 0
+                                else f"Unknown routing ({hops} hops)"
+                            )
                             self.logger.debug(f"Path from TRACE packet: {path_string}")
                     else:
-                        had_routing_nodes = bool((recent_rf_data.get("routing_info") or {}).get("path_nodes"))
+                        had_routing_nodes = bool(
+                            (recent_rf_data.get("routing_info") or {}).get("path_nodes")
+                        )
                         path_string, path_nodes, hops = self._get_path_from_rf_data(
                             recent_rf_data,
                             payload_hex=payload_hex,
@@ -2700,9 +3047,13 @@ class MessageHandler:
                         ):
                             self._update_mesh_graph(path_nodes, packet_info)
                         if path_string and not had_routing_nodes:
-                            self.logger.debug(f"Path from fallback decode: {path_string} ({hops} hops)")
+                            self.logger.debug(
+                                f"Path from fallback decode: {path_string} ({hops} hops)"
+                            )
                 else:
-                    self.logger.debug("Packet decoding failed, trying direct hex or routing_info fallback")
+                    self.logger.debug(
+                        "Packet decoding failed, trying direct hex or routing_info fallback"
+                    )
                     path_string = self.extract_path_from_raw_hex(raw_hex, hops)
                     if (
                         not path_string
@@ -2713,9 +3064,13 @@ class MessageHandler:
                         path_nodes = routing_info["path_nodes"]
                         hops = len(path_nodes)
                         path_string = ",".join(str(n).lower() for n in path_nodes)
-                        self.logger.debug(f"Path from RF routing_info fallback: {path_string} ({hops} hops)")
+                        self.logger.debug(
+                            f"Path from RF routing_info fallback: {path_string} ({hops} hops)"
+                        )
             else:
-                self.logger.warning("❌ NO RF DATA found for channel message after all correlation attempts")
+                self.logger.warning(
+                    "❌ NO RF DATA found for channel message after all correlation attempts"
+                )
                 hops = payload.get("path_len", 255)
                 path_string = None
 
@@ -2779,17 +3134,25 @@ class MessageHandler:
 
             # Get the full public key from contacts if available
             sender_pubkey = payload.get("pubkey_prefix", "")
-            if sender_pubkey and hasattr(self.bot.meshcore, "contacts") and self.bot.meshcore.contacts:
+            if (
+                sender_pubkey
+                and hasattr(self.bot.meshcore, "contacts")
+                and self.bot.meshcore.contacts
+            ):
                 for _contact_key, contact_data in self.bot.meshcore.contacts.items():
                     if contact_data.get("public_key", "").startswith(sender_pubkey):
                         # Use the full public key from the contact
                         sender_pubkey = contact_data.get("public_key", sender_pubkey)
-                        self.logger.debug(f"Found full public key for {sender_id}: {sender_pubkey[:16]}...")
+                        self.logger.debug(
+                            f"Found full public key for {sender_id}: {sender_pubkey[:16]}..."
+                        )
                         break
 
             # Elapsed: "Nms" when device clock is valid, or "Sync Device Clock" when invalid.
             _translator = getattr(self.bot, "translator", None)
-            _elapsed = format_elapsed_display(payload.get("sender_timestamp"), _translator)
+            _elapsed = format_elapsed_display(
+                payload.get("sender_timestamp"), _translator
+            )
 
             # Convert to our message format
             message = MeshMessage(
@@ -2817,13 +3180,17 @@ class MessageHandler:
 
             # Path information is now set directly in the MeshMessage constructor
             # No need for additional path processing since we're using the actual routing data
-            self.logger.debug(f"Message routing info: hops={message.hops}, routing={message.path}")
+            self.logger.debug(
+                f"Message routing info: hops={message.hops}, routing={message.path}"
+            )
 
             # Always decode and log packet information for debugging (regardless of keywords)
             await self._debug_decode_message_path(message, sender_id, recent_rf_data)
 
             # Always attempt packet decoding and log the results for debugging
-            await self._debug_decode_packet_for_message(message, sender_id, recent_rf_data)
+            await self._debug_decode_packet_for_message(
+                message, sender_id, recent_rf_data
+            )
 
             # Check if this is an old cached message from before bot connection
             timestamp = payload.get("sender_timestamp", 0)
@@ -2843,7 +3210,9 @@ class MessageHandler:
                 and self.bot.web_viewer_integration.bot_integration
             ):
                 try:
-                    self.bot.web_viewer_integration.bot_integration.capture_channel_message(message)
+                    self.bot.web_viewer_integration.bot_integration.capture_channel_message(
+                        message
+                    )
                 except Exception:
                     pass
 
@@ -2853,7 +3222,9 @@ class MessageHandler:
 
             self.logger.error(traceback.format_exc())
 
-    def _update_mesh_graph(self, path_nodes: list[str], packet_info: dict[str, Any]) -> None:
+    def _update_mesh_graph(
+        self, path_nodes: list[str], packet_info: dict[str, Any]
+    ) -> None:
         """Update mesh graph with edges from a message path.
 
         path_nodes may be 2, 4, or 6 hex chars per node depending on the packet's
@@ -2873,10 +3244,14 @@ class MessageHandler:
             return  # Graph not initialized
 
         mesh_graph = self.bot.mesh_graph
-        self.logger.debug(f"Mesh graph: Updating graph with path: {path_nodes} ({len(path_nodes)} nodes)")
+        self.logger.debug(
+            f"Mesh graph: Updating graph with path: {path_nodes} ({len(path_nodes)} nodes)"
+        )
 
         # Get recency window from config (default 7 days)
-        recency_days = self.bot.config.getint("Path_Command", "graph_edge_expiration_days", fallback=7)
+        recency_days = self.bot.config.getint(
+            "Path_Command", "graph_edge_expiration_days", fallback=7
+        )
 
         # Get public keys if available from database
         # Note: We don't check device contacts because repeaters aren't stored on the device
@@ -2896,7 +3271,9 @@ class MessageHandler:
                     AND COALESCE(last_advert_timestamp, last_heard) >= datetime('now', '-{recency_days} days')
                 """
                 prefix_pattern = f"{node_prefix}%"
-                count_results = self.bot.db_manager.execute_query(count_query, (prefix_pattern,))
+                count_results = self.bot.db_manager.execute_query(
+                    count_query, (prefix_pattern,)
+                )
 
                 if count_results and count_results[0].get("count", 0) == 1:
                     # Prefix is unique within recency window - safe to use database lookup
@@ -2909,7 +3286,9 @@ class MessageHandler:
                         ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
                         LIMIT 1
                     """
-                    results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+                    results = self.bot.db_manager.execute_query(
+                        query, (prefix_pattern,)
+                    )
                     if results and results[0].get("public_key"):
                         node_keys[node_prefix] = results[0]["public_key"]
                         self.logger.debug(
@@ -2922,7 +3301,9 @@ class MessageHandler:
                         f"Mesh graph: Prefix {node_prefix} has {count} recent matches in database, skipping public key lookup (not unique or stale)"
                     )
             except Exception as e:
-                self.logger.debug(f"Error looking up public key for prefix {node_prefix}: {e}")
+                self.logger.debug(
+                    f"Error looking up public key for prefix {node_prefix}: {e}"
+                )
 
         # Calculate geographic distances if locations are available
         from .utils import _get_node_location_from_db, calculate_distance
@@ -2969,7 +3350,11 @@ class MessageHandler:
 
                     # Get from_location using to_location as reference (prefers shorter distance for LoRa)
                     # If to_location not available, use bot location as fallback reference
-                    reference_for_from = to_location_temp if to_location_temp else self._get_bot_location_fallback()
+                    reference_for_from = (
+                        to_location_temp
+                        if to_location_temp
+                        else self._get_bot_location_fallback()
+                    )
                     # Capture the selected public key when distance-based selection is used
                     # Apply recency window to avoid using stale repeaters
                     from_location_result = _get_node_location_from_db(
@@ -2978,17 +3363,25 @@ class MessageHandler:
                     if from_location_result:
                         from_location, selected_from_key = from_location_result
                         if not from_key and selected_from_key:
-                            from_key = selected_from_key  # Store the selected public key
+                            from_key = (
+                                selected_from_key  # Store the selected public key
+                            )
 
                 if to_key:
                     to_location = self._get_location_by_public_key(to_key)
                 if not to_location:
                     # Use from_location as reference to prefer shorter distance for LoRa
                     # If from_location not available, use bot location as fallback reference
-                    reference_for_to = from_location if from_location else self._get_bot_location_fallback()
+                    reference_for_to = (
+                        from_location
+                        if from_location
+                        else self._get_bot_location_fallback()
+                    )
                     # Capture the selected public key when distance-based selection is used
                     # Apply recency window to avoid using stale repeaters
-                    to_location_result = _get_node_location_from_db(self.bot, to_prefix, reference_for_to, recency_days)
+                    to_location_result = _get_node_location_from_db(
+                        self.bot, to_prefix, reference_for_to, recency_days
+                    )
                     if to_location_result:
                         to_location, selected_to_key = to_location_result
                         if not to_key and selected_to_key:
@@ -3002,11 +3395,15 @@ class MessageHandler:
                         to_location[1],
                     )
             except Exception as e:
-                self.logger.debug(f"Could not calculate distance for edge {from_prefix}->{to_prefix}: {e}")
+                self.logger.debug(
+                    f"Could not calculate distance for edge {from_prefix}->{to_prefix}: {e}"
+                )
 
             # Add edge to graph - only use public keys we're 100% certain of (from uniqueness check)
             # Do NOT use public keys from distance-based selection - we can't be certain they're correct
-            self.logger.debug(f"Mesh graph: Adding edge {from_prefix} -> {to_prefix} (hop {hop_position})")
+            self.logger.debug(
+                f"Mesh graph: Adding edge {from_prefix} -> {to_prefix} (hop {hop_position})"
+            )
             mesh_graph.add_edge(
                 from_prefix=from_prefix,
                 to_prefix=to_prefix,
@@ -3042,9 +3439,14 @@ class MessageHandler:
             # Parse path to extract from_prefix and to_prefix (use bytes_per_hop when provided for multi-byte paths)
             hex_chars = (bytes_per_hop or 1) * 2
             if bytes_per_hop is not None and bytes_per_hop > 0:
-                path_nodes = [path_hex[i : i + hex_chars].lower() for i in range(0, len(path_hex), hex_chars)]
+                path_nodes = [
+                    path_hex[i : i + hex_chars].lower()
+                    for i in range(0, len(path_hex), hex_chars)
+                ]
                 if (len(path_hex) % hex_chars) != 0 or not path_nodes:
-                    path_nodes = [path_hex[i : i + 2].lower() for i in range(0, len(path_hex), 2)]
+                    path_nodes = [
+                        path_hex[i : i + 2].lower() for i in range(0, len(path_hex), 2)
+                    ]
             else:
                 path_nodes = self._path_hex_to_nodes(path_hex)
 
@@ -3052,10 +3454,14 @@ class MessageHandler:
                 return  # No valid path nodes
 
             from_prefix = path_nodes[0]
-            to_prefix = path_nodes[-1]  # Last hop in path (last repeater that forwarded to bot)
+            to_prefix = path_nodes[
+                -1
+            ]  # Last hop in path (last repeater that forwarded to bot)
 
             # Get public_key for adverts (NULL for messages)
-            public_key = advert_data.get("public_key", "") if packet_type == "advert" else None
+            public_key = (
+                advert_data.get("public_key", "") if packet_type == "advert" else None
+            )
 
             # Check if path already exists
             if public_key:
@@ -3065,7 +3471,9 @@ class MessageHandler:
                     FROM observed_paths
                     WHERE public_key = ? AND path_hex = ? AND packet_type = ?
                 """
-                existing = self.bot.db_manager.execute_query(query, (public_key, path_hex, packet_type))
+                existing = self.bot.db_manager.execute_query(
+                    query, (public_key, path_hex, packet_type)
+                )
             else:
                 # For messages: check by from_prefix, to_prefix, path_hex, packet_type
                 query = """
@@ -3074,7 +3482,9 @@ class MessageHandler:
                     WHERE from_prefix = ? AND to_prefix = ? AND path_hex = ? AND packet_type = ?
                     AND public_key IS NULL
                 """
-                existing = self.bot.db_manager.execute_query(query, (from_prefix, to_prefix, path_hex, packet_type))
+                existing = self.bot.db_manager.execute_query(
+                    query, (from_prefix, to_prefix, path_hex, packet_type)
+                )
 
             # from datetime import datetime
 
@@ -3089,7 +3499,9 @@ class MessageHandler:
                     SET observation_count = ?, last_seen = ?
                     WHERE id = ?
                 """
-                self.bot.db_manager.execute_update(update_query, (current_count + 1, now.isoformat(), path_id))
+                self.bot.db_manager.execute_update(
+                    update_query, (current_count + 1, now.isoformat(), path_id)
+                )
                 self.logger.debug(
                     f"Updated observed_paths entry for {packet_type} path {path_hex[:20]}... (count: {current_count + 1})"
                 )
@@ -3101,7 +3513,11 @@ class MessageHandler:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """
                 # Only store packet_hash if it's valid (not None and not the default invalid hash)
-                stored_packet_hash = packet_hash if (packet_hash and packet_hash != "0000000000000000") else None
+                stored_packet_hash = (
+                    packet_hash
+                    if (packet_hash and packet_hash != "0000000000000000")
+                    else None
+                )
                 self.bot.db_manager.execute_update(
                     insert_query,
                     (
@@ -3146,7 +3562,9 @@ class MessageHandler:
             self.logger.debug(f"Error getting bot location fallback: {e}")
             return None
 
-    def _get_location_by_public_key(self, public_key: str) -> tuple[float, float] | None:
+    def _get_location_by_public_key(
+        self, public_key: str
+    ) -> tuple[float, float] | None:
         """Get location for a full public key (more accurate than prefix lookup).
 
         Prefers starred repeaters if there are somehow multiple entries (shouldn't happen with full key).
@@ -3176,7 +3594,9 @@ class MessageHandler:
                 if lat is not None and lon is not None:
                     return (float(lat), float(lon))
         except Exception as e:
-            self.logger.debug(f"Error getting location by public key {public_key[:16]}...: {e}")
+            self.logger.debug(
+                f"Error getting location by public key {public_key[:16]}...: {e}"
+            )
         return None
 
     def _update_mesh_graph_from_advert(
@@ -3208,7 +3628,9 @@ class MessageHandler:
         # Get advertiser's public key
         advertiser_key = advert_data.get("public_key", "")
         if not advertiser_key:
-            self.logger.debug("Mesh graph: No public key in advert data, skipping graph update")
+            self.logger.debug(
+                "Mesh graph: No public key in advert data, skipping graph update"
+            )
             return
 
         advertiser_prefix = advertiser_key[: self.bot.prefix_hex_chars].lower()
@@ -3223,10 +3645,14 @@ class MessageHandler:
         if len(path_nodes) == 0:
             return  # No valid path nodes
 
-        self.logger.debug(f"Mesh graph: Updating graph from advert path: {advertiser_prefix} -> {path_nodes}")
+        self.logger.debug(
+            f"Mesh graph: Updating graph from advert path: {advertiser_prefix} -> {path_nodes}"
+        )
 
         # Get recency window from config (default 7 days)
-        recency_days = self.bot.config.getint("Path_Command", "graph_edge_expiration_days", fallback=7)
+        recency_days = self.bot.config.getint(
+            "Path_Command", "graph_edge_expiration_days", fallback=7
+        )
 
         # Calculate geographic distances if locations are available
         from .utils import _get_node_location_from_db, calculate_distance
@@ -3248,7 +3674,9 @@ class MessageHandler:
                 AND COALESCE(last_advert_timestamp, last_heard) >= datetime('now', '-{recency_days} days')
             """
             prefix_pattern = f"{first_hop}%"
-            count_results = self.bot.db_manager.execute_query(count_query, (prefix_pattern,))
+            count_results = self.bot.db_manager.execute_query(
+                count_query, (prefix_pattern,)
+            )
 
             if count_results and count_results[0].get("count", 0) == 1:
                 # Prefix is unique within recency window - safe to use database lookup
@@ -3273,7 +3701,9 @@ class MessageHandler:
                     f"Mesh graph: First hop prefix {first_hop} has {count} recent matches, cannot be certain of public key"
                 )
         except Exception as e:
-            self.logger.debug(f"Error checking uniqueness for first hop {first_hop}: {e}")
+            self.logger.debug(
+                f"Error checking uniqueness for first hop {first_hop}: {e}"
+            )
 
         try:
             # Use full public key for advertiser (we're 100% certain - it's from the event)
@@ -3284,12 +3714,16 @@ class MessageHandler:
                 # Get first_hop location first to use as reference for LoRa distance preference
                 # Use bot location as fallback reference to ensure distance-based selection
                 bot_location_ref = self._get_bot_location_fallback()
-                first_hop_temp_result = _get_node_location_from_db(self.bot, first_hop, bot_location_ref, recency_days)
+                first_hop_temp_result = _get_node_location_from_db(
+                    self.bot, first_hop, bot_location_ref, recency_days
+                )
                 first_hop_location_temp: tuple[float, float] | None
                 if first_hop_temp_result:
                     first_hop_location_temp, _ = first_hop_temp_result
                 else:
-                    first_hop_location_temp = bot_location_ref  # Use bot location as fallback
+                    first_hop_location_temp = (
+                        bot_location_ref  # Use bot location as fallback
+                    )
 
                 if first_hop_location_temp:
                     advertiser_result = _get_node_location_from_db(
@@ -3304,11 +3738,15 @@ class MessageHandler:
             # Get first_hop location using advertiser location as reference for LoRa preference
             # Capture the selected public key when distance-based selection is used
             # Apply recency window to avoid using stale repeaters
-            first_hop_result = _get_node_location_from_db(self.bot, first_hop, advertiser_location, recency_days)
+            first_hop_result = _get_node_location_from_db(
+                self.bot, first_hop, advertiser_location, recency_days
+            )
             if first_hop_result:
                 first_hop_location, selected_first_hop_key = first_hop_result
                 if not first_hop_key and selected_first_hop_key:
-                    first_hop_key = selected_first_hop_key  # Store the selected public key
+                    first_hop_key = (
+                        selected_first_hop_key  # Store the selected public key
+                    )
 
             if advertiser_location and first_hop_location:
                 geographic_distance = calculate_distance(
@@ -3318,7 +3756,9 @@ class MessageHandler:
                     first_hop_location[1],
                 )
         except Exception as e:
-            self.logger.debug(f"Could not calculate distance for advert edge {advertiser_prefix}->{first_hop}: {e}")
+            self.logger.debug(
+                f"Could not calculate distance for advert edge {advertiser_prefix}->{first_hop}: {e}"
+            )
 
         # Add edge from advertiser to first hop
         # from_public_key: advertiser_key (100% certain - from event)
@@ -3363,7 +3803,9 @@ class MessageHandler:
                     AND COALESCE(last_advert_timestamp, last_heard) >= datetime('now', '-{recency_days} days')
                 """
                 prefix_pattern = f"{from_node}%"
-                count_results = self.bot.db_manager.execute_query(count_query, (prefix_pattern,))
+                count_results = self.bot.db_manager.execute_query(
+                    count_query, (prefix_pattern,)
+                )
 
                 if count_results and count_results[0].get("count", 0) == 1:
                     query = f"""
@@ -3375,7 +3817,9 @@ class MessageHandler:
                         ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
                         LIMIT 1
                     """
-                    results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+                    results = self.bot.db_manager.execute_query(
+                        query, (prefix_pattern,)
+                    )
                     if results and results[0].get("public_key"):
                         from_node_key = results[0]["public_key"]
                         self.logger.debug(
@@ -3394,7 +3838,9 @@ class MessageHandler:
                     AND COALESCE(last_advert_timestamp, last_heard) >= datetime('now', '-{recency_days} days')
                 """
                 prefix_pattern = f"{to_node}%"
-                count_results = self.bot.db_manager.execute_query(count_query, (prefix_pattern,))
+                count_results = self.bot.db_manager.execute_query(
+                    count_query, (prefix_pattern,)
+                )
 
                 if count_results and count_results[0].get("count", 0) == 1:
                     query = f"""
@@ -3406,10 +3852,14 @@ class MessageHandler:
                         ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
                         LIMIT 1
                     """
-                    results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+                    results = self.bot.db_manager.execute_query(
+                        query, (prefix_pattern,)
+                    )
                     if results and results[0].get("public_key"):
                         to_node_key = results[0]["public_key"]
-                        self.logger.debug(f"Mesh graph: Found unique public key for {to_node}: {to_node_key[:16]}...")
+                        self.logger.debug(
+                            f"Mesh graph: Found unique public key for {to_node}: {to_node_key[:16]}..."
+                        )
             except Exception as e:
                 self.logger.debug(f"Error checking uniqueness for {to_node}: {e}")
 
@@ -3424,19 +3874,33 @@ class MessageHandler:
 
                 # Get from_location using previous_location as reference (ensures we select closer repeater)
                 # Use bot location as fallback if previous_location not available
-                reference_for_from = previous_location if previous_location else self._get_bot_location_fallback()
-                from_result = _get_node_location_from_db(self.bot, from_node, reference_for_from, recency_days)
+                reference_for_from = (
+                    previous_location
+                    if previous_location
+                    else self._get_bot_location_fallback()
+                )
+                from_result = _get_node_location_from_db(
+                    self.bot, from_node, reference_for_from, recency_days
+                )
                 if from_result:
                     from_location, selected_from_key = from_result
                     if not from_node_key and selected_from_key:
-                        from_node_key = selected_from_key  # Store the selected public key
+                        from_node_key = (
+                            selected_from_key  # Store the selected public key
+                        )
                 else:
                     from_location = None
 
                 # Get to_location using from_location as reference
                 # Use bot location as fallback if from_location not available
-                reference_for_to = from_location if from_location else self._get_bot_location_fallback()
-                to_result = _get_node_location_from_db(self.bot, to_node, reference_for_to, recency_days)
+                reference_for_to = (
+                    from_location
+                    if from_location
+                    else self._get_bot_location_fallback()
+                )
+                to_result = _get_node_location_from_db(
+                    self.bot, to_node, reference_for_to, recency_days
+                )
                 if to_result:
                     to_location, selected_to_key = to_result
                     if not to_node_key and selected_to_key:
@@ -3446,7 +3910,9 @@ class MessageHandler:
 
                 # Re-get from_location with to_location as reference (for better collision resolution)
                 if to_location:
-                    from_result2 = _get_node_location_from_db(self.bot, from_node, to_location, recency_days)
+                    from_result2 = _get_node_location_from_db(
+                        self.bot, from_node, to_location, recency_days
+                    )
                     if from_result2:
                         from_location, selected_from_key2 = from_result2
                         if not from_node_key and selected_from_key2:
@@ -3454,7 +3920,9 @@ class MessageHandler:
 
                 # Re-get to_location with from_location as reference
                 if from_location:
-                    to_result2 = _get_node_location_from_db(self.bot, to_node, from_location, recency_days)
+                    to_result2 = _get_node_location_from_db(
+                        self.bot, to_node, from_location, recency_days
+                    )
                     if to_result2:
                         to_location, selected_to_key2 = to_result2
                         if not to_node_key and selected_to_key2:
@@ -3471,7 +3939,9 @@ class MessageHandler:
                         to_location[1],
                     )
             except Exception as e:
-                self.logger.debug(f"Could not calculate distance for edge {from_node}->{to_node}: {e}")
+                self.logger.debug(
+                    f"Could not calculate distance for edge {from_node}->{to_node}: {e}"
+                )
 
             # Add edge between path nodes - only use public keys we're 100% certain of (from uniqueness check)
             mesh_graph.add_edge(
@@ -3483,11 +3953,15 @@ class MessageHandler:
                 geographic_distance=geographic_distance,
             )
 
-    def _update_mesh_graph_from_trace(self, path_hashes: list[str], packet_info: dict[str, Any]) -> None:
+    def _update_mesh_graph_from_trace(
+        self, path_hashes: list[str], packet_info: dict[str, Any]
+    ) -> None:
         """Update mesh graph with edges from a trace packet's pathHashes. Delegates to shared helper."""
         update_mesh_graph_from_trace_data(self.bot, path_hashes, packet_info)
 
-    async def discover_message_path(self, sender_id: str, rf_data: dict) -> tuple[int, str]:
+    async def discover_message_path(
+        self, sender_id: str, rf_data: dict
+    ) -> tuple[int, str]:
         """
         Discover the actual routing path for a message using CLI commands.
         This is more reliable than trying to decode packet fragments.
@@ -3536,12 +4010,18 @@ class MessageHandler:
                             byte_len = len(out_path) // 2
                             if byte_len > 0 and (byte_len % out_path_len) == 0:
                                 bph = byte_len // out_path_len
-                        path_string = self._format_path_string(out_path, bytes_per_hop=bph)
-                        self.logger.debug(f"Stored path to {sender_id}: {out_path_len} hops via {path_string}")
+                        path_string = self._format_path_string(
+                            out_path, bytes_per_hop=bph
+                        )
+                        self.logger.debug(
+                            f"Stored path to {sender_id}: {out_path_len} hops via {path_string}"
+                        )
                         return out_path_len, path_string
                     else:
                         # Path not set - use basic info
-                        self.logger.debug(f"No stored path for {sender_id}, using basic info")
+                        self.logger.debug(
+                            f"No stored path for {sender_id}, using basic info"
+                        )
                         return 255, "No stored path"
                 else:
                     self.logger.debug(f"Contact {sender_id} not found in contacts")
@@ -3610,8 +4090,12 @@ class MessageHandler:
                             byte_len = len(out_path) // 2
                             if byte_len > 0 and (byte_len % out_path_len) == 0:
                                 bph = byte_len // out_path_len
-                        path_string = self._format_path_string(out_path, bytes_per_hop=bph)
-                        self.logger.info(f"📡 {sender_id} → {path_string} ({out_path_len} hops)")
+                        path_string = self._format_path_string(
+                            out_path, bytes_per_hop=bph
+                        )
+                        self.logger.info(
+                            f"📡 {sender_id} → {path_string} ({out_path_len} hops)"
+                        )
                     else:
                         self.logger.info(f"📡 {sender_id} → Path not set")
                 else:
@@ -3658,7 +4142,9 @@ class MessageHandler:
         except Exception as e:
             self.logger.error(f"Error in debug packet decoding: {e}")
 
-    def _format_path_string(self, hex_path: str, bytes_per_hop: int | None = None) -> str:
+    def _format_path_string(
+        self, hex_path: str, bytes_per_hop: int | None = None
+    ) -> str:
         """
         Convert a hex path string to node prefix format.
 
@@ -3675,9 +4161,14 @@ class MessageHandler:
 
             if bytes_per_hop is not None and bytes_per_hop > 0:
                 hex_chars = bytes_per_hop * 2
-                path_nodes = [hex_path[i : i + hex_chars].lower() for i in range(0, len(hex_path), hex_chars)]
+                path_nodes = [
+                    hex_path[i : i + hex_chars].lower()
+                    for i in range(0, len(hex_path), hex_chars)
+                ]
                 if (len(hex_path) % hex_chars) != 0 or not path_nodes:
-                    path_nodes = [hex_path[i : i + 2].lower() for i in range(0, len(hex_path), 2)]
+                    path_nodes = [
+                        hex_path[i : i + 2].lower() for i in range(0, len(hex_path), 2)
+                    ]
                 if path_nodes:
                     return ",".join(path_nodes)
                 return "Direct"
@@ -3731,7 +4222,9 @@ class MessageHandler:
                 self.logger.warning(f"Multitest listener missing method: {e}")
                 self.multitest_listener = None  # Disable broken listener
             except Exception as e:
-                self.logger.error(f"Error notifying multitest listener: {e}", exc_info=True)
+                self.logger.error(
+                    f"Error notifying multitest listener: {e}", exc_info=True
+                )
 
         # Record all messages in stats database FIRST (before any filtering)
         # This ensures we collect stats for all channels, not just monitored ones
@@ -3743,7 +4236,10 @@ class MessageHandler:
 
         # Check greeter command for public channel messages (BEFORE general message filtering)
         # This allows greeter to work on its own configured channels even if not in monitor_channels
-        if self._channel_responses_allowed(message) and "greeter" in self.bot.command_manager.commands:
+        if (
+            self._channel_responses_allowed(message)
+            and "greeter" in self.bot.command_manager.commands
+        ):
             greeter_command = self.bot.command_manager.commands["greeter"]
             # First, check if this message should cancel a pending greeting (human greeting detection)
             if greeter_command:
@@ -3770,7 +4266,9 @@ class MessageHandler:
                     if "stats" in self.bot.command_manager.commands:
                         stats_command = self.bot.command_manager.commands["stats"]
                         if stats_command:
-                            stats_command.record_command(message, "greeter", response_sent)
+                            stats_command.record_command(
+                                message, "greeter", response_sent
+                            )
                 except Exception as e:
                     self.logger.error(f"Error executing greeter command: {e}")
 
@@ -3833,7 +4331,11 @@ class MessageHandler:
 
         # Handle respond_to_mentions for channel messages
         if not message.is_dm:
-            _mention_mode = self.bot.config.get("Bot", "respond_to_mentions", fallback="also").strip().lower()
+            _mention_mode = (
+                self.bot.config.get("Bot", "respond_to_mentions", fallback="also")
+                .strip()
+                .lower()
+            )
             if _mention_mode in ("also", "only"):
                 import re
 
@@ -3841,10 +4343,14 @@ class MessageHandler:
                 _mention = f"@[{_bot_name}]"
                 _has_mention = _mention.lower() in message.content.lower()
                 if _mention_mode == "only" and not _has_mention:
-                    self.logger.debug(f"Ignoring channel message (respond_to_mentions=only, no mention of {_mention})")
+                    self.logger.debug(
+                        f"Ignoring channel message (respond_to_mentions=only, no mention of {_mention})"
+                    )
                     return
                 if _has_mention:
-                    message.content = re.sub(re.escape(_mention), "", message.content, flags=re.IGNORECASE).strip()
+                    message.content = re.sub(
+                        re.escape(_mention), "", message.content, flags=re.IGNORECASE
+                    ).strip()
 
         self.logger.info(
             f"Processing message: '{message.content}' from {message.sender_id} in {'DM' if message.is_dm else message.channel}"
@@ -3916,7 +4422,9 @@ class MessageHandler:
             for keyword, response in keyword_matches:
                 # Use translator if available for logging
                 if hasattr(self.bot, "translator"):
-                    log_msg = self.bot.translator.translate("messages.keyword_matched", keyword=keyword)
+                    log_msg = self.bot.translator.translate(
+                        "messages.keyword_matched", keyword=keyword
+                    )
                     self.logger.info(log_msg)
                 else:
                     self.logger.info(f"Keyword '{keyword}' matched, responding")
@@ -3926,7 +4434,10 @@ class MessageHandler:
                     help_response_sent = True
 
                 # Track if this is a plugin command that has a response format
-                if keyword in self.bot.command_manager.commands and response is not None:
+                if (
+                    keyword in self.bot.command_manager.commands
+                    and response is not None
+                ):
                     plugin_command_with_response_matched = True
 
                 # Skip commands that handle their own responses (response is None)
@@ -3976,7 +4487,9 @@ class MessageHandler:
                             message, keyword, response, success, command_id
                         )
                     except Exception as e:
-                        self.logger.debug(f"Failed to capture keyword data for web viewer: {e}")
+                        self.logger.debug(
+                            f"Failed to capture keyword data for web viewer: {e}"
+                        )
 
         # Only execute commands if no help response was sent and no plugin command with response was matched
         # Help responses and plugin commands with responses should be the final response for that message
@@ -4030,7 +4543,9 @@ class MessageHandler:
             return False
 
         # Channel-only pause (DM-only admin command); DMs still processed
-        if not message.is_dm and not getattr(self.bot, "channel_responses_enabled", True):
+        if not message.is_dm and not getattr(
+            self.bot, "channel_responses_enabled", True
+        ):
             self.logger.debug("Ignoring non-DM message: channel responses paused")
             return False
 
@@ -4059,10 +4574,14 @@ class MessageHandler:
 
             # Check if ANY command allows this channel (for selective access)
             for command_name, command in self.bot.command_manager.commands.items():
-                if hasattr(command, "is_channel_allowed") and callable(command.is_channel_allowed):
+                if hasattr(command, "is_channel_allowed") and callable(
+                    command.is_channel_allowed
+                ):
                     if command.is_channel_allowed(message):
                         # At least one command allows this channel
-                        self.logger.debug(f"Channel {message.channel} allowed by command '{command_name}' override")
+                        self.logger.debug(
+                            f"Channel {message.channel} allowed by command '{command_name}' override"
+                        )
                         return True
 
             # Channel not in global list and no command allows it
@@ -4084,7 +4603,9 @@ class MessageHandler:
             return True
         return getattr(self.bot, "channel_responses_enabled", True)
 
-    def _ensure_contact_meshcore_path_encoding(self, contact_data: dict[str, Any]) -> None:
+    def _ensure_contact_meshcore_path_encoding(
+        self, contact_data: dict[str, Any]
+    ) -> None:
         """If out_path_len is set but out_path_hash_mode is still flood (-1), rebuild wire fields.
 
         meshcore update_contact uses out_path_len | (out_path_hash_mode << 6); hash_mode -1 with
@@ -4138,7 +4659,9 @@ class MessageHandler:
         contact_data["out_path_hash_mode"] = (pb >> 6) & 0x03
         contact_data["out_path_len"] = pb & 0x3F
 
-    async def handle_new_contact(self, event: Any, metadata: dict[str, Any] | None = None) -> None:
+    async def handle_new_contact(
+        self, event: Any, metadata: dict[str, Any] | None = None
+    ) -> None:
         """Handle NEW_CONTACT events for automatic contact management"""
         try:
             # Copy payload immediately to avoid segfault if event is freed
@@ -4156,10 +4679,14 @@ class MessageHandler:
             self.logger.debug(f"🔍 NEW_CONTACT EVENT RECEIVED: {event}")
 
             # Get contact details
-            contact_name = sanitize_name(contact_data.get("name", contact_data.get("adv_name", "Unknown")))
+            contact_name = sanitize_name(
+                contact_data.get("name", contact_data.get("adv_name", "Unknown"))
+            )
             public_key = contact_data.get("public_key", "")
 
-            self.logger.info(f"Processing new contact: {contact_name} (key: {public_key[:16]}...)")
+            self.logger.info(
+                f"Processing new contact: {contact_name} (key: {public_key[:16]}...)"
+            )
 
             # Extract additional signal information from the event
             signal_info = {}
@@ -4179,17 +4706,23 @@ class MessageHandler:
                             routing_info = rf_entry["routing_info"]
 
                             # Extract packet_hash if available
-                            packet_hash = routing_info.get("packet_hash") or rf_entry.get("packet_hash")
+                            packet_hash = routing_info.get(
+                                "packet_hash"
+                            ) or rf_entry.get("packet_hash")
 
                             # Extract path information from routing_info
                             path_hex = routing_info.get("path_hex", "")
                             path_length = routing_info.get("path_length", 0)
 
                             # Add path information to contact_data if not already present
-                            if "out_path" not in contact_data or not contact_data.get("out_path"):
+                            if "out_path" not in contact_data or not contact_data.get(
+                                "out_path"
+                            ):
                                 if path_hex and path_length > 0:
                                     contact_data["out_path"] = path_hex
-                                    contact_data["out_bytes_per_hop"] = routing_info.get("bytes_per_hop", 1) or 1
+                                    contact_data["out_bytes_per_hop"] = (
+                                        routing_info.get("bytes_per_hop", 1) or 1
+                                    )
                                     bph = contact_data["out_bytes_per_hop"]
                                     pb = routing_info.get("path_len_byte")
                                     if pb is None or pb == 255:
@@ -4197,7 +4730,9 @@ class MessageHandler:
                                             pb = encode_path_len_byte(path_length, bph)
                                         except ValueError:
                                             pb = encode_path_len_byte(path_length, 1)
-                                    contact_data["out_path_hash_mode"] = (pb >> 6) & 0x03
+                                    contact_data["out_path_hash_mode"] = (
+                                        pb >> 6
+                                    ) & 0x03
                                     contact_data["out_path_len"] = pb & 0x3F
                                 elif path_length == 0:
                                     contact_data["out_path"] = ""
@@ -4211,9 +4746,13 @@ class MessageHandler:
                                     packet_info = {
                                         "routing_info": routing_info,
                                         "packet_hash": packet_hash,
-                                        "bytes_per_hop": routing_info.get("bytes_per_hop", 1),
+                                        "bytes_per_hop": routing_info.get(
+                                            "bytes_per_hop", 1
+                                        ),
                                     }
-                                    path_byte_len = routing_info.get("path_byte_length") or (len(path_hex) // 2)
+                                    path_byte_len = routing_info.get(
+                                        "path_byte_length"
+                                    ) or (len(path_hex) // 2)
                                     self._update_mesh_graph_from_advert(
                                         contact_data,
                                         path_hex,
@@ -4230,10 +4769,14 @@ class MessageHandler:
                                         path_byte_len,
                                         "advert",
                                         packet_hash=packet_hash,
-                                        bytes_per_hop=routing_info.get("bytes_per_hop", 1),
+                                        bytes_per_hop=routing_info.get(
+                                            "bytes_per_hop", 1
+                                        ),
                                     )
                                 except Exception as e:
-                                    self.logger.debug(f"Error updating mesh graph from NEW_CONTACT: {e}")
+                                    self.logger.debug(
+                                        f"Error updating mesh graph from NEW_CONTACT: {e}"
+                                    )
 
                             # Only collect signal data for direct (zero-hop) advertisements
                             if path_length == 0:
@@ -4264,17 +4807,27 @@ class MessageHandler:
 
             # Check if this is a repeater or companion
             if hasattr(self.bot, "repeater_manager"):
-                is_repeater = self.bot.repeater_manager._is_repeater_device(contact_data)
-                existing_tracking = self.bot.repeater_manager.get_tracked_contact_row(public_key)
-                already_on_device = self.bot.repeater_manager.is_contact_on_device(public_key)
+                is_repeater = self.bot.repeater_manager._is_repeater_device(
+                    contact_data
+                )
+                existing_tracking = self.bot.repeater_manager.get_tracked_contact_row(
+                    public_key
+                )
+                already_on_device = self.bot.repeater_manager.is_contact_on_device(
+                    public_key
+                )
                 known_contact = already_on_device or existing_tracking is not None
 
                 if is_repeater:
                     # REPEATER: Track directly in SQLite database (no device contact list)
                     if known_contact:
-                        self.logger.info(f"📡 Known repeater advert: {contact_name} - tracking in database only")
+                        self.logger.info(
+                            f"📡 Known repeater advert: {contact_name} - tracking in database only"
+                        )
                     else:
-                        self.logger.info(f"📡 New repeater discovered: {contact_name} - tracking in database only")
+                        self.logger.info(
+                            f"📡 New repeater discovered: {contact_name} - tracking in database only"
+                        )
 
                     # Track repeater in complete database with signal info
                     await self.bot.repeater_manager.track_contact_advertisement(
@@ -4290,22 +4843,34 @@ class MessageHandler:
                         try:
                             node_data = {
                                 "public_key": public_key,
-                                "prefix": public_key[: self.bot.prefix_hex_chars].lower() if public_key else "",
+                                "prefix": public_key[
+                                    : self.bot.prefix_hex_chars
+                                ].lower()
+                                if public_key
+                                else "",
                                 "name": contact_name,
                                 "role": "repeater",
                             }
-                            self.bot.web_viewer_integration.bot_integration.send_mesh_node_update(node_data)
+                            self.bot.web_viewer_integration.bot_integration.send_mesh_node_update(
+                                node_data
+                            )
                         except Exception as e:
-                            self.logger.debug(f"Failed to notify web viewer of new node: {e}")
+                            self.logger.debug(
+                                f"Failed to notify web viewer of new node: {e}"
+                            )
 
                     # Check if auto-purge is needed (run after tracking to ensure data is captured)
                     await self.bot.repeater_manager.check_and_auto_purge()
 
-                    self.logger.info(f"✅ Repeater {contact_name} tracked in database - not added to device contacts")
+                    self.logger.info(
+                        f"✅ Repeater {contact_name} tracked in database - not added to device contacts"
+                    )
                     return
                 else:
                     # COMPANION: track in DB; device add behaviour depends on auto_manage_contacts
-                    auto_manage_setting = self.bot.config.get("Bot", "auto_manage_contacts", fallback="device").lower()
+                    auto_manage_setting = self.bot.config.get(
+                        "Bot", "auto_manage_contacts", fallback="device"
+                    ).lower()
                     if known_contact:
                         self.logger.info(
                             "👤 Known companion advert: %s — auto_manage_contacts=%s",
@@ -4319,8 +4884,10 @@ class MessageHandler:
                             auto_manage_setting,
                         )
 
-                    track_result = await self.bot.repeater_manager.track_contact_advertisement(
-                        contact_data, signal_info, packet_hash=packet_hash
+                    track_result = (
+                        await self.bot.repeater_manager.track_contact_advertisement(
+                            contact_data, signal_info, packet_hash=packet_hash
+                        )
                     )
 
                     if auto_manage_setting == "false":
@@ -4333,13 +4900,17 @@ class MessageHandler:
                             "Device mode — companion %s tracked; firmware handles addition; bot may manage capacity",
                             contact_name,
                         )
-                        status = await self.bot.repeater_manager.get_contact_list_status()
+                        status = (
+                            await self.bot.repeater_manager.get_contact_list_status()
+                        )
                         if status and status.get("is_near_limit", False):
                             self.logger.warning(
                                 "Contact list near limit (%.1f%%) — managing capacity",
                                 status["usage_percentage"],
                             )
-                            await self.bot.repeater_manager.manage_contact_list(auto_cleanup=True)
+                            await self.bot.repeater_manager.manage_contact_list(
+                                auto_cleanup=True
+                            )
                         else:
                             self.logger.info(
                                 "Companion %s — contact list has adequate space",
@@ -4358,7 +4929,9 @@ class MessageHandler:
                                 contact_name,
                             )
                             try:
-                                self._ensure_contact_meshcore_path_encoding(contact_data)
+                                self._ensure_contact_meshcore_path_encoding(
+                                    contact_data
+                                )
                                 ok = await self.bot.repeater_manager.add_companion_from_contact_data(
                                     contact_data, contact_name, public_key
                                 )
@@ -4380,7 +4953,9 @@ class MessageHandler:
                                     "Contact list near limit (%.1f%%) — managing capacity after add",
                                     status["usage_percentage"],
                                 )
-                                await self.bot.repeater_manager.manage_contact_list(auto_cleanup=True)
+                                await self.bot.repeater_manager.manage_contact_list(
+                                    auto_cleanup=True
+                                )
                             else:
                                 self.logger.info(
                                     "Companion %s — contact list has adequate space after add attempt",
@@ -4404,12 +4979,16 @@ class MessageHandler:
 
             # Fallback: Track in database for unknown contact types (no repeater_manager)
             if hasattr(self.bot, "repeater_manager"):
-                await self.bot.repeater_manager.track_contact_advertisement(contact_data, packet_hash=packet_hash)
+                await self.bot.repeater_manager.track_contact_advertisement(
+                    contact_data, packet_hash=packet_hash
+                )
                 await self.bot.repeater_manager.check_and_auto_purge()
 
             # For unknown contact types, handle based on auto_manage_contacts setting
             if hasattr(self.bot, "repeater_manager"):
-                auto_manage_setting = self.bot.config.get("Bot", "auto_manage_contacts", fallback="device").lower()
+                auto_manage_setting = self.bot.config.get(
+                    "Bot", "auto_manage_contacts", fallback="device"
+                ).lower()
 
                 if auto_manage_setting == "device":
                     # Device mode: Let device handle auto-addition, bot manages capacity
@@ -4424,9 +5003,13 @@ class MessageHandler:
                         self.logger.warning(
                             f"Contact list near limit ({status['usage_percentage']:.1f}%) - managing capacity"
                         )
-                        await self.bot.repeater_manager.manage_contact_list(auto_cleanup=True)
+                        await self.bot.repeater_manager.manage_contact_list(
+                            auto_cleanup=True
+                        )
                     else:
-                        self.logger.info(f"New contact '{contact_name}' - contact list has adequate space")
+                        self.logger.info(
+                            f"New contact '{contact_name}' - contact list has adequate space"
+                        )
 
                 elif auto_manage_setting == "bot":
                     # Bot mode: Bot automatically adds companion contacts to device and manages capacity
@@ -4442,9 +5025,13 @@ class MessageHandler:
                     )
 
                     if success:
-                        self.logger.info(f"Successfully added companion contact '{contact_name}' to device")
+                        self.logger.info(
+                            f"Successfully added companion contact '{contact_name}' to device"
+                        )
                     else:
-                        self.logger.warning(f"Failed to add companion contact '{contact_name}' to device")
+                        self.logger.warning(
+                            f"Failed to add companion contact '{contact_name}' to device"
+                        )
 
                     # Check contact list capacity and manage if needed
                     status = await self.bot.repeater_manager.get_contact_list_status()
@@ -4453,9 +5040,13 @@ class MessageHandler:
                         self.logger.warning(
                             f"Contact list near limit ({status['usage_percentage']:.1f}%) - managing capacity"
                         )
-                        await self.bot.repeater_manager.manage_contact_list(auto_cleanup=True)
+                        await self.bot.repeater_manager.manage_contact_list(
+                            auto_cleanup=True
+                        )
                     else:
-                        self.logger.info(f"New contact '{contact_name}' - contact list has adequate space")
+                        self.logger.info(
+                            f"New contact '{contact_name}' - contact list has adequate space"
+                        )
 
                 else:  # false or any other value
                     # Manual mode: Just log the discovery, no automatic actions
