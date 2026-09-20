@@ -1431,6 +1431,24 @@ class CommandManager:
                                     _scope_result,
                                 )
                     try:
+                    # The set is inside the try as well: a raising set_flood_scope
+                    # would otherwise leave the device pinned to this region, and
+                    # every later send would go out under it.
+                    try:
+                        if scoped:
+                            _scope_result = await self.bot.meshcore.commands.set_flood_scope(scope_to_use)
+                            if _scope_result is None or getattr(_scope_result, "type", None) == "ERROR":
+                                if _attempt == 0:
+                                    self.logger.warning(
+                                        "set_flood_scope(%s) failed (result=%s); "
+                                        "message will be sent with current firmware scope",
+                                        scope_to_use, _scope_result,
+                                    )
+                                else:
+                                    self.logger.warning(
+                                        "set_flood_scope(%s) failed on retry re-apply (result=%s)",
+                                        scope_to_use, _scope_result,
+                                    )
                         result = await self.bot.meshcore.commands.send_chan_msg(
                             channel_num,
                             content,

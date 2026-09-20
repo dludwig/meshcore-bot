@@ -8,6 +8,11 @@ semantic versioning.
 
 ### Added
 
+- `[Hello_Command] include_sender` (default off) names the user the hello reply is
+  answering, so a busy channel can tell whose greeting the bot picked up (#292). The
+  mention takes the place of the random human descriptor, keeping the translated
+  sentence intact, and is dropped when it would push the reply past the channel body
+  budget. DMs are unaffected.
 - `generate_website.py` accepts `--link-css URL` and `--embed-css FILE` to layer
   custom CSS on top of the built-in style chosen with `--style` (#288). Embedded
   CSS is appended to the page's `<style>` block, keeping the page a single file;
@@ -16,8 +21,27 @@ semantic versioning.
   `--embed-css` file stops generation with an error. See
   `docs/command-reference-website.md` for examples and the CSS class reference.
 
+- Add the `contact` command (#293), which replies with the bot's own contact
+  card so a user can add the bot and DM it without waiting for an advert. Useful
+  for bots that do not advertise. Enabled by default; disable with
+  `[Contact_Command] enabled = false`.
+
+### Changed
+
+- `meshcore` now requires 2.3.14 or newer. Before 2.3.13, `send_msg_with_retry`
+  reported ACKed DMs as failures: it subscribed to the ACK only after `send_msg`
+  returned, so an ACK queued right behind `MSG_SENT` was dispatched with no
+  listener, and each attempt accepted only its own ACK code, so a late ACK
+  answering an earlier attempt was ignored (meshcore_py#108). The bot logged
+  "no ACK received after retries" and skipped the delivery bookkeeping for
+  messages the recipient had in fact received.
+
 ### Fixed
 
+- A region-scoped channel message now restores global flood even when
+  `set_flood_scope` raises. The restore only ran in the `finally` around the
+  send, so a set that raised left the device pinned to that region and every
+  later send — channel replies, DMs, scheduled sends — went out under it.
 - A DM waiting for its ACK no longer holds the radio. Radio commands were
   serialized per call, so a DM's retry loop kept every other command waiting
   through all of its ACK timeouts (up to ~36 s with the default three attempts),
