@@ -61,6 +61,8 @@ class DBManager:
         "observed_paths",  # Repeater manager - observed paths from adverts and messages
         "neighbor_links",  # Zero-hop neighbor discovery - current adjacency
         "neighbor_observations",  # Zero-hop neighbor discovery - per-cycle history
+        "region_scope_daily",  # Regional flood scope tallies per channel per day
+        "region_warning_events",  # Region-code warning decisions
     }
 
     def __init__(self, bot: Any, db_path: str = "meshcore_bot.db"):
@@ -108,9 +110,7 @@ class DBManager:
             parent = db_file.parent if db_file.parent != Path("") else Path(".")
             parent_exists = parent.exists()
             parent_is_dir = parent.is_dir() if parent_exists else False
-            parent_writable = (
-                os.access(str(parent), os.W_OK) if parent_exists else False
-            )
+            parent_writable = os.access(str(parent), os.W_OK) if parent_exists else False
             file_exists = db_file.exists()
             file_readable = os.access(str(db_file), os.R_OK) if file_exists else False
             file_writable = os.access(str(db_file), os.W_OK) if file_exists else False
@@ -123,9 +123,7 @@ class DBManager:
             return f"could not inspect database path: {diag_error}"
 
     # Geocoding cache methods
-    def get_cached_geocoding(
-        self, query: str
-    ) -> tuple[Optional[float], Optional[float]]:
+    def get_cached_geocoding(self, query: str) -> tuple[Optional[float], Optional[float]]:
         """Get cached geocoding result for a query.
 
         Args:
@@ -153,9 +151,7 @@ class DBManager:
             self.logger.error(f"Error getting cached geocoding: {e}")
             return None, None
 
-    def cache_geocoding(
-        self, query: str, latitude: float, longitude: float, cache_hours: int = 720
-    ) -> None:
+    def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 720) -> None:
         """Cache geocoding result for future use.
 
         Args:
@@ -166,14 +162,8 @@ class DBManager:
         """
         try:
             # Validate cache_hours to prevent SQL injection
-            if (
-                not isinstance(cache_hours, int)
-                or cache_hours < 1
-                or cache_hours > 87600
-            ):  # Max 10 years
-                raise ValueError(
-                    f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}"
-                )
+            if not isinstance(cache_hours, int) or cache_hours < 1 or cache_hours > 87600:  # Max 10 years
+                raise ValueError(f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}")
 
             with self.connection() as conn:
                 cursor = conn.cursor()
@@ -219,9 +209,7 @@ class DBManager:
             self.logger.error(f"Error getting cached value: {e}")
             return None
 
-    def cache_value(
-        self, cache_key: str, cache_value: str, cache_type: str, cache_hours: int = 24
-    ) -> None:
+    def cache_value(self, cache_key: str, cache_value: str, cache_type: str, cache_hours: int = 24) -> None:
         """Cache a value for future use.
 
         Args:
@@ -232,14 +220,8 @@ class DBManager:
         """
         try:
             # Validate cache_hours to prevent SQL injection
-            if (
-                not isinstance(cache_hours, int)
-                or cache_hours < 1
-                or cache_hours > 87600
-            ):  # Max 10 years
-                raise ValueError(
-                    f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}"
-                )
+            if not isinstance(cache_hours, int) or cache_hours < 1 or cache_hours > 87600:  # Max 10 years
+                raise ValueError(f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}")
 
             with self.connection() as conn:
                 cursor = conn.cursor()
@@ -275,9 +257,7 @@ class DBManager:
                 return None
         return None
 
-    def cache_json(
-        self, cache_key: str, cache_value: dict, cache_type: str, cache_hours: int = 720
-    ) -> None:
+    def cache_json(self, cache_key: str, cache_value: dict, cache_type: str, cache_hours: int = 720) -> None:
         """Cache a JSON value for future use.
 
         Args:
@@ -300,11 +280,7 @@ class DBManager:
         expiration timestamp has passed.
         """
         try:
-            cutoff = (
-                datetime.now(timezone.utc)
-                .replace(tzinfo=None)
-                .isoformat(sep=" ", timespec="seconds")
-            )
+            cutoff = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
             geocoding_deleted = self.delete_timestamp_rows_in_chunks(
                 "geocoding_cache",
                 "expires_at",
@@ -331,11 +307,7 @@ class DBManager:
     def cleanup_geocoding_cache(self) -> None:
         """Remove expired geocoding cache entries"""
         try:
-            cutoff = (
-                datetime.now(timezone.utc)
-                .replace(tzinfo=None)
-                .isoformat(sep=" ", timespec="seconds")
-            )
+            cutoff = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
             deleted_count = self.delete_timestamp_rows_in_chunks(
                 "geocoding_cache",
                 "expires_at",
@@ -343,9 +315,7 @@ class DBManager:
                 progress_label="geocoding cache",
             )
             if deleted_count > 0:
-                self.logger.info(
-                    f"Cleaned up {deleted_count} expired geocoding cache entries"
-                )
+                self.logger.info(f"Cleaned up {deleted_count} expired geocoding cache entries")
         except Exception as e:
             self.logger.error(f"Error cleaning up geocoding cache: {e}")
 
@@ -362,18 +332,14 @@ class DBManager:
                 cursor.execute("SELECT COUNT(*) FROM geocoding_cache")
                 stats["geocoding_cache_entries"] = cursor.fetchone()[0]
 
-                cursor.execute(
-                    "SELECT COUNT(*) FROM geocoding_cache WHERE expires_at > datetime('now')"
-                )
+                cursor.execute("SELECT COUNT(*) FROM geocoding_cache WHERE expires_at > datetime('now')")
                 stats["geocoding_cache_active"] = cursor.fetchone()[0]
 
                 # Generic cache stats
                 cursor.execute("SELECT COUNT(*) FROM generic_cache")
                 stats["generic_cache_entries"] = cursor.fetchone()[0]
 
-                cursor.execute(
-                    "SELECT COUNT(*) FROM generic_cache WHERE expires_at > datetime('now')"
-                )
+                cursor.execute("SELECT COUNT(*) FROM generic_cache WHERE expires_at > datetime('now')")
                 stats["generic_cache_active"] = cursor.fetchone()[0]
 
                 # Cache type breakdown
@@ -416,9 +382,7 @@ class DBManager:
         try:
             # Validate table name against whitelist
             if table_name not in self.ALLOWED_TABLES:
-                raise ValueError(
-                    f"Table name '{table_name}' not in allowed tables whitelist"
-                )
+                raise ValueError(f"Table name '{table_name}' not in allowed tables whitelist")
 
             # Additional validation: ensure table name follows safe naming convention
             if not re.match(r"^[a-z_][a-z0-9_]*$", table_name):
@@ -446,9 +410,7 @@ class DBManager:
         try:
             # Validate table name against whitelist
             if table_name not in self.ALLOWED_TABLES:
-                raise ValueError(
-                    f"Table name '{table_name}' not in allowed tables whitelist"
-                )
+                raise ValueError(f"Table name '{table_name}' not in allowed tables whitelist")
 
             # Additional validation: ensure table name follows safe naming convention
             if not re.match(r"^[a-z_][a-z0-9_]*$", table_name):
@@ -504,9 +466,7 @@ class DBManager:
         """Delete retained history without monopolizing SQLite's writer lock."""
         if table not in self.ALLOWED_TABLES:
             raise ValueError(f"Table name '{table}' not in allowed tables whitelist")
-        batch_size, pause_seconds = retention_delete_settings(
-            getattr(self.bot, "config", None)
-        )
+        batch_size, pause_seconds = retention_delete_settings(getattr(self.bot, "config", None))
         return delete_timestamp_rows_in_chunks(
             self.connection,
             table,
@@ -519,9 +479,7 @@ class DBManager:
             progress_label=progress_label,
         )
 
-    def execute_query_on_connection(
-        self, conn: sqlite3.Connection, query: str, params: tuple = ()
-    ) -> list[dict]:
+    def execute_query_on_connection(self, conn: sqlite3.Connection, query: str, params: tuple = ()) -> list[dict]:
         """Execute a query on an existing connection. Caller owns the connection."""
         cursor = conn.cursor()
         cursor.execute(query, params)
@@ -533,9 +491,7 @@ class DBManager:
             return []
         return [dict(zip([c[0] for c in desc], row, strict=False)) for row in rows]
 
-    def execute_update_on_connection(
-        self, conn: sqlite3.Connection, query: str, params: tuple = ()
-    ) -> int:
+    def execute_update_on_connection(self, conn: sqlite3.Connection, query: str, params: tuple = ()) -> int:
         """Execute an update/insert/delete on an existing connection. Caller must commit."""
         cursor = conn.cursor()
         cursor.execute(query, params)
@@ -599,9 +555,7 @@ class DBManager:
         """Set bot start time in metadata"""
         self.set_metadata("start_time", str(start_time))
 
-    def _apply_sqlite_pragmas(
-        self, conn: sqlite3.Connection, for_web_viewer: bool = False
-    ) -> None:
+    def _apply_sqlite_pragmas(self, conn: sqlite3.Connection, for_web_viewer: bool = False) -> None:
         config = getattr(self.bot, "config", None)
         section = "Web_Viewer" if for_web_viewer else "Bot"
 
@@ -612,20 +566,13 @@ class DBManager:
 
         try:
             if config is not None:
-                foreign_keys = config.getboolean(
-                    section, "sqlite_foreign_keys", fallback=True
-                )
+                foreign_keys = config.getboolean(section, "sqlite_foreign_keys", fallback=True)
                 busy_timeout_ms = config.getint(
                     section,
                     "sqlite_busy_timeout_ms",
                     fallback=default_busy_timeout_ms,
                 )
-                journal_mode = (
-                    config.get(
-                        section, "sqlite_journal_mode", fallback=journal_mode
-                    ).strip()
-                    or journal_mode
-                )
+                journal_mode = config.get(section, "sqlite_journal_mode", fallback=journal_mode).strip() or journal_mode
         except Exception:
             # Config parsing should never prevent DB access.
             pass
@@ -642,9 +589,7 @@ class DBManager:
             # unconditional warning here would flood the log.
             if section not in self._journal_mode_warned:
                 self._journal_mode_warned.add(section)
-                self.logger.warning(
-                    f"Invalid journal_mode {journal_mode!r} in [{section}], falling back to WAL"
-                )
+                self.logger.warning(f"Invalid journal_mode {journal_mode!r} in [{section}], falling back to WAL")
             journal_mode = "WAL"
 
         try:
@@ -753,9 +698,7 @@ class AsyncDBManager:
         try:
             import aiosqlite
         except ImportError:
-            raise RuntimeError(
-                "aiosqlite is required for AsyncDBManager. Run: pip install aiosqlite"
-            )
+            raise RuntimeError("aiosqlite is required for AsyncDBManager. Run: pip install aiosqlite")
         async with aiosqlite.connect(self.db_path, timeout=30.0) as conn:
             conn.row_factory = aiosqlite.Row
             yield conn
@@ -764,9 +707,7 @@ class AsyncDBManager:
         """Async version of DBManager.get_metadata."""
         try:
             async with self.connection() as conn:
-                async with conn.execute(
-                    "SELECT value FROM bot_metadata WHERE key = ?", (key,)
-                ) as cursor:
+                async with conn.execute("SELECT value FROM bot_metadata WHERE key = ?", (key,)) as cursor:
                     row = await cursor.fetchone()
                     return row[0] if row else None
         except Exception as e:
@@ -823,16 +764,10 @@ class AsyncDBManager:
             self.logger.error(f"AsyncDBManager: error getting cached value: {e}")
             return None
 
-    async def cache_value(
-        self, cache_key: str, cache_value: str, cache_type: str, cache_hours: int = 24
-    ) -> None:
+    async def cache_value(self, cache_key: str, cache_value: str, cache_type: str, cache_hours: int = 24) -> None:
         """Async version of DBManager.cache_value."""
         try:
-            if (
-                not isinstance(cache_hours, int)
-                or cache_hours < 1
-                or cache_hours > 87600
-            ):
+            if not isinstance(cache_hours, int) or cache_hours < 1 or cache_hours > 87600:
                 raise ValueError(f"cache_hours must be 1–87600, got: {cache_hours}")
             async with self.connection() as conn:
                 await conn.execute(

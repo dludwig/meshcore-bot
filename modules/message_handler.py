@@ -16,6 +16,7 @@ from typing import Any, TypedDict
 from .enums import AdvertFlags, DeviceRole, PayloadType, PayloadVersion, RouteType
 from .graph_trace_helper import update_mesh_graph_from_trace_data
 from .models import MeshMessage
+from .region_warning import VERDICT_GLOBAL, VERDICT_SCOPED, VERDICT_UNKNOWN
 from .security_utils import sanitize_input, sanitize_name
 from .utils import (
     calculate_packet_hash,
@@ -23,6 +24,32 @@ from .utils import (
     encode_path_len_byte,
     format_elapsed_display,
 )
+
+# How a cached RF entry was matched to a message, recorded on the dict returned by
+# MessageHandler.find_recent_rf_data. Anything other than a fallback is known to be
+# this message's own packet; a fallback is merely the most recent packet heard, so its
+# route belongs to some other transmission and must not be attributed (issue #80).
+# Stand-in used when a channel message carries no "Name: " prefix to extract a
+# sender from. It is not a node: every such message would share this identity.
+CHANNEL_SENDER_FALLBACK = "Channel User"
+
+RF_MATCH_KEY = "_rf_match"
+RF_MATCH_EXACT = "exact"
+RF_MATCH_PUBKEY = "pubkey"
+RF_MATCH_PARTIAL = "partial"
+# Verified against the decoded message payload's own fields rather than a packet
+# prefix. Channel messages have no prefix to match on, so this is the only positive
+# correlation available to them (see _rf_data_matches_chan_payload).
+RF_MATCH_PAYLOAD = "payload"
+RF_MATCH_CHANNEL_AUTHENTICATED = "channel_authenticated"
+RF_MATCH_FALLBACK = "fallback"
+
+
+def rf_data_is_correlated(rf_data: dict | None) -> bool:
+    """True when rf_data is known to be this message's packet, not a fallback guess."""
+    if not rf_data:
+        return False
+    return rf_data.get(RF_MATCH_KEY, RF_MATCH_FALLBACK) != RF_MATCH_FALLBACK
 
 
 class PendingMessageEntry(TypedDict):
@@ -239,6 +266,107 @@ class MessageHandler:
         if tc_code1 is None or payload_type is None or not scope_payload_hex:
             return False
         return int(payload_type) == self._grp_txt_payload_type_int()
+
+    def _classify_channel_flood_scope(
+        self,
+        *,
+        reply_scope: str | None,
+        recent_rf_data: dict[str, Any] | None,
+        packet_info: dict[str, Any] | None,
+        scope_rf_data: dict[str, Any] | None,
+        scope_packet_info: dict[str, Any] | None,
+    ) -> str:
+        """Classify a channel message's flood scope as scoped, global, or unknown.
+
+        "Scoped" means the message carried a region code (a TC_FLOOD transport
+        code), whether or not that code matches one of ours. "Global" means it
+        was proven to be an ordinary unscoped FLOOD. Anything else is unknown.
+
+        Every test here needs RF data correlated to *this* message, and the
+        scoped tests run before the global one, so both kinds of ambiguity
+        resolve away from ``global``. That direction matters: ``global`` is the
+        verdict that can spend airtime telling someone to fix their config, and
+        a message whose scope the radio did not witness is not evidence that the
+        sender omitted a region.
+
+        In particular this does **not** use ``_is_confirmed_global_flood``'s
+        second route, which infers "unscoped" from the absence of any
+        scope-eligible packet in the window. That inference is sound enough to
+        decide whether a ``*`` entry in ``flood_scopes`` authorizes a reply — the
+        cost of being wrong is one reply the operator broadly wanted — but it is
+        an argument from absence, and the cost of being wrong here is an
+        unsolicited message accusing someone of a misconfiguration they may not
+        have. Channel messages still correlate through
+        ``_find_rf_row_matching_chan_payload`` (payload type, path length and
+        SNR all agreeing), so the ordinary case is unaffected.
+        """
+        if reply_scope:
+            return VERDICT_SCOPED
+
+        # A correlated scope-eligible row *is* a TC_FLOOD GRP_TXT for this
+        # message: it carried a transport code, so a region was set even though
+        # it is not one this bot has keys for.
+        if (
+            scope_rf_data
+            and rf_data_is_correlated(scope_rf_data)
+            and self._is_rf_data_scope_eligible(scope_rf_data, scope_packet_info)
+        ):
+            return VERDICT_SCOPED
+
+        if recent_rf_data and rf_data_is_correlated(recent_rf_data):
+            route_type = self._effective_route_type_int(recent_rf_data, packet_info)
+            if route_type == int(RouteType.TRANSPORT_FLOOD.value):
+                return VERDICT_SCOPED
+
+        if rf_data_is_correlated(recent_rf_data) and self._is_confirmed_global_flood(
+            recent_rf_data,
+            packet_info,
+            scoped_traffic_in_window=scope_rf_data is not None,
+        ):
+            return VERDICT_GLOBAL
+
+        return VERDICT_UNKNOWN
+
+    async def _observe_flood_scope(
+        self,
+        *,
+        sender_id: str | None,
+        sender_pubkey: str | None,
+        channel: str | None,
+        sender_timestamp: Any,
+        reply_scope: str | None,
+        recent_rf_data: dict[str, Any] | None,
+        packet_info: dict[str, Any] | None,
+        scope_rf_data: dict[str, Any] | None,
+        scope_packet_info: dict[str, Any] | None,
+    ) -> None:
+        """Hand this channel message's scope verdict to the region-warning monitor.
+
+        Messages the radio cached from before this connection are skipped: on a
+        reconnect they arrive as a burst of old traffic, and counting them would
+        both distort the tallies and let a stale message earn someone a warning.
+        """
+        monitor = getattr(self.bot, "region_warning_monitor", None)
+        if monitor is None:
+            return
+        if self._is_old_cached_message(sender_timestamp):
+            return
+        try:
+            verdict = self._classify_channel_flood_scope(
+                reply_scope=reply_scope,
+                recent_rf_data=recent_rf_data,
+                packet_info=packet_info,
+                scope_rf_data=scope_rf_data,
+                scope_packet_info=scope_packet_info,
+            )
+            await monitor.observe(
+                verdict=verdict,
+                sender_id=sender_id,
+                sender_pubkey=sender_pubkey,
+                channel=channel,
+            )
+        except Exception:
+            self.logger.exception("Flood scope observation failed")
 
     def _is_old_cached_message(self, timestamp: Any) -> bool:
         """Check if a message timestamp indicates it's from before bot connection.
@@ -2053,7 +2181,7 @@ class MessageHandler:
 
             # Get sender information from text field if it's in "SENDER: message" format
             text = payload.get("text", "")
-            sender_id = "Channel User"  # Default fallback
+            sender_id = CHANNEL_SENDER_FALLBACK  # Default fallback
 
             # Try to extract sender from text field (e.g., "HOWL: Test" -> "HOWL")
             message_content = text  # Default to full text
@@ -2242,7 +2370,14 @@ class MessageHandler:
             cmd_mgr = getattr(self.bot, "command_manager", None)
             scope_keys = getattr(cmd_mgr, "flood_scope_keys", {})
             if scope_rf_data and scope_keys:
-                reply_scope = self._resolve_reply_scope_from_rf_data(scope_rf_data, scope_packet_info, scope_keys)
+                if scope_rf_is_correlated:
+                    reply_scope = self._resolve_reply_scope_from_rf_data(scope_rf_data, scope_packet_info, scope_keys)
+                else:
+                    self.logger.info(
+                        "Scope for this channel message is unknown: the only scope-eligible "
+                        "RF data is an uncorrelated fallback from another packet, so it "
+                        "cannot authorise a reply under flood_scopes"
+                    )
 
             # Allowlist enforcement: when flood_scopes is configured, only reply to
             # messages whose scope matched an entry.  Unscoped FLOOD is allowed only
