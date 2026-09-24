@@ -1541,7 +1541,6 @@ class CommandManager:
                                     scope_to_use,
                                     _scope_result,
                                 )
-                    try:
                     # The set is inside the try as well: a raising set_flood_scope
                     # would otherwise leave the device pinned to this region, and
                     # every later send would go out under it.
