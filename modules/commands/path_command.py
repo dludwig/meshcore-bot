@@ -998,6 +998,10 @@ class PathCommand(BaseCommand):
         prefix = await self._format_path_reply_prefix(message)
         self.last_response = prefix + response if prefix else response
 
+        if self._current_message.sender_id:
+            self.logger.info("Add sender_id to path response")
+            response = f"@[{self._current_message.sender_id}]\n" + response
+
         max_length = self.get_max_message_length(message)
         prefix_len = self._count_byte_length(prefix)
         first_segment_max = max_length - prefix_len

@@ -7,6 +7,7 @@ Processes incoming messages and routes them to appropriate command handlers
 import asyncio
 import copy
 import hmac as hmac_mod  # noqa: F401  importable from this module on dev
+import random
 import time
 from collections import OrderedDict
 from collections.abc import (
@@ -1086,6 +1087,75 @@ class MessageHandler(MeshGraphRecorderMixin, ContactEventsMixin, RfCorrelationMi
         # Check for advert command (DM only)
         if message.is_dm and message.content.strip().lower() == "advert":
             await self.bot.command_manager.handle_advert_command(message)
+            return
+
+        if (
+            not message.is_dm
+            and random.random() > 0.4
+            and message.channel
+            and message.channel.lower() == "public"
+            and message.content
+            and (
+                message.content.lower().startswith("test")
+                or message.content.lower().startswith("ping")
+            )
+        ):
+            a = [
+                "hey. Welcome to the mesh!",
+                "Yo,",
+                "Dude..",
+                "hello,",
+                "Hey,",
+                "Hi,",
+                "",
+                "it works!",
+                "test success.",
+                "tested. Welcome to the mesh.",
+                "Welcome to the mesh.",
+                "Pong!",
+                "ack",
+                "ACK!!",
+                "Welcome to the meh",
+                "Welcome to Meshcore",
+                "Welcome to meh core",
+            ]
+            b = ["not a testing zone.", "", "...", "", ""]
+            c = [
+                "Try",
+                "Use",
+                "Check out",
+                "For testing:",
+                "Bot channels:",
+                "",
+                "Test over here:",
+            ]
+            d = [
+                "#test #testing",
+                "#meshbud #foobot",
+                "#testing #volcano",
+                "#test or #testing",
+                "#test #testing #meshbud #foobot #volcano",
+                "#bot #foobot",
+                "https://corescope.wcmesh.com/#/channels",
+                "https://corescope.wcmesh.com/#/channels",
+            ]
+            sender = f"@[{message.sender_id}] " if message and message.sender_id else ""
+            message_text = (
+                sender
+                + random.choice(a)
+                + " "
+                + random.choice(b)
+                + " "
+                + random.choice(c)
+                + " "
+                + random.choice(d)
+            )
+            self.logger.warning(
+                f"Responding in {message.channel} to {message.content} with {message_text}"
+            )
+            await self.bot.command_manager.send_channel_message(
+                message.channel, message_text
+            )
             return
 
         # Check for keywords and custom syntax
