@@ -79,7 +79,7 @@ STANDARD_SERVICE_KEYS = frozenset({
 })
 
 # Mesh channel → external target mappings in bridge service sections.
-BRIDGE_SECTIONS = frozenset({"DiscordBridge", "TelegramBridge"})
+BRIDGE_SECTIONS = frozenset({"DiscordBridge", "TelegramBridge", "MatrixBridge"})
 BRIDGE_CHANNEL_KEY_PREFIX = "bridge."
 
 # User-defined announcement triggers in Announcements_Command.
@@ -164,6 +164,10 @@ SECTIONS: dict[str, SectionMeta] = {
         "enabled": KeyMeta(type="bool"),
         "db_path": KeyMeta(),
         "local_dir_path": KeyMeta(),
+        "db_auto_recover": KeyMeta(type="bool", default="true"),
+        "sqlite_busy_timeout_ms": KeyMeta(type="int", default="30000"),
+        "sqlite_foreign_keys": KeyMeta(type="bool", default="true"),
+        "sqlite_journal_mode": KeyMeta(default="WAL"),
         # Advanced tuning knobs the code reads but config.ini.example does not
         # show. Listed here so unknown-key validation doesn't flag them; see
         # tests/test_config_schema_sync.py::test_every_config_read_key_is_known.
