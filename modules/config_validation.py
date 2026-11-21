@@ -73,7 +73,7 @@ CANONICAL_NON_COMMAND_SECTIONS = frozenset({
     "MatrixBridge",
     "DARC_MoWaS_Service",
     "Region_Warnings",
-    "Repeater_Watch",
+    "Repeater_Watch","WatchDuty",
 })
 
 # Sections required for the bot to start (accessed without has_section guards)
