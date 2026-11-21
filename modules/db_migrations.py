@@ -17,7 +17,7 @@ Never modify or remove an existing migration — add a new one instead.
 import logging
 import re
 import sqlite3
-from collections.abc import Callable
+from typing import Callable
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -29,7 +29,7 @@ VALID_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # DEFAULT and a literal value.  This prevents SQL injection through the
 # definition parameter of _add_column().
 _VALID_COL_DEF = re.compile(
-    r"^[A-Z]+(?:\s+[A-Z]+)*"  # type name, e.g. "TEXT", "INTEGER", "BOOLEAN"
+    r"^[A-Z]+(?:\s+[A-Z]+)*"                      # type name, e.g. "TEXT", "INTEGER", "BOOLEAN"
     r"(?:\s+DEFAULT\s+(?:'[^']*'|[0-9.]+|NULL|CURRENT_TIMESTAMP))?"  # optional DEFAULT clause
     r"$",
     re.IGNORECASE,
@@ -79,15 +79,7 @@ def _execute_statements(cursor: sqlite3.Cursor, script: str) -> None:
         _execute_in_transaction(cursor, remainder)
 
 
-_TRANSACTION_BREAKERS = (
-    "BEGIN",
-    "COMMIT",
-    "END",
-    "ROLLBACK",
-    "VACUUM",
-    "SAVEPOINT",
-    "RELEASE",
-)
+_TRANSACTION_BREAKERS = ("BEGIN", "COMMIT", "END", "ROLLBACK", "VACUUM", "SAVEPOINT", "RELEASE")
 
 
 def _execute_in_transaction(cursor: sqlite3.Cursor, statement: str) -> None:
@@ -102,9 +94,7 @@ def _execute_in_transaction(cursor: sqlite3.Cursor, statement: str) -> None:
 
 
 def _strip_line_comments(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines() if not line.strip().startswith("--")
-    )
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("--"))
 
 
 def _has_sql(text: str) -> bool:
@@ -113,9 +103,7 @@ def _has_sql(text: str) -> bool:
     Block comments are not recognized; a comment-only statement that slips
     through is accepted by SQLite as a no-op.
     """
-    return any(
-        line.strip() and not line.strip().startswith("--") for line in text.splitlines()
-    )
+    return any(line.strip() and not line.strip().startswith("--") for line in text.splitlines())
 
 
 def _validate_col_definition(definition: str) -> None:
@@ -142,9 +130,7 @@ def _add_column(
 
 def _m0001_initial_schema(cursor: sqlite3.Cursor) -> None:
     """Create all base tables.  No-op for tables that already exist."""
-    _execute_statements(
-        cursor,
-        """
+    _execute_statements(cursor, """
         CREATE TABLE IF NOT EXISTS geocoding_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             query TEXT UNIQUE NOT NULL,
@@ -253,8 +239,7 @@ def _m0001_initial_schema(cursor: sqlite3.Cursor) -> None:
         CREATE INDEX IF NOT EXISTS idx_chan_ops_status      ON channel_operations(status, created_at);
         CREATE INDEX IF NOT EXISTS idx_fmq_feed_id         ON feed_message_queue(feed_id);
         CREATE INDEX IF NOT EXISTS idx_fmq_sent_at         ON feed_message_queue(sent_at);
-    """,
-    )
+    """)
 
 
 def _m0002_feed_subscriptions_output_format(cursor: sqlite3.Cursor) -> None:
@@ -316,9 +301,7 @@ def _m0007_packet_stream_table(cursor: sqlite3.Cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_packet_stream_timestamp ON packet_stream(timestamp)"
     )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_packet_stream_type ON packet_stream(type)"
-    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_packet_stream_type ON packet_stream(type)")
 
 
 def _m0008_repeater_tables_optional_columns(cursor: sqlite3.Cursor) -> None:
@@ -378,12 +361,8 @@ def _m0009_repeater_optional_indexes(cursor: sqlite3.Cursor) -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_from_prefix ON mesh_connections(from_prefix)"
         )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_to_prefix ON mesh_connections(to_prefix)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_last_seen ON mesh_connections(last_seen)"
-        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_to_prefix ON mesh_connections(to_prefix)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_last_seen ON mesh_connections(last_seen)")
 
     if _table_exists(cursor, "observed_paths"):
         cursor.execute(
@@ -412,8 +391,7 @@ def _m0009_repeater_optional_indexes(cursor: sqlite3.Cursor) -> None:
 
 def _m0010_create_repeater_and_graph_tables(cursor: sqlite3.Cursor) -> None:
     """Create repeater/graph tables used by the web viewer and repeater manager."""
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE TABLE IF NOT EXISTS repeater_contacts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -516,14 +494,13 @@ def _m0010_create_repeater_and_graph_tables(cursor: sqlite3.Cursor) -> None:
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             observation_count INTEGER DEFAULT 1
         );
-        """,
+        """
     )
 
 
 def _m0011_repeater_and_graph_indexes(cursor: sqlite3.Cursor) -> None:
     """Create indexes for repeater/graph tables (safe to run repeatedly)."""
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE INDEX IF NOT EXISTS idx_public_key ON repeater_contacts(public_key);
         CREATE INDEX IF NOT EXISTS idx_device_type ON repeater_contacts(device_type);
@@ -551,7 +528,7 @@ def _m0011_repeater_and_graph_indexes(cursor: sqlite3.Cursor) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_observed_paths_message_unique ON observed_paths(from_prefix, to_prefix, path_hex, packet_type) WHERE public_key IS NULL;
         CREATE INDEX IF NOT EXISTS idx_observed_paths_last_seen ON observed_paths(last_seen);
         CREATE INDEX IF NOT EXISTS idx_observed_paths_type_seen ON observed_paths(packet_type, last_seen);
-        """,
+        """
     )
 
 
@@ -570,14 +547,13 @@ def _m0013_observed_paths_advert_covering_index(cursor: sqlite3.Cursor) -> None:
     """
     if not _table_exists(cursor, "observed_paths"):
         return
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE INDEX IF NOT EXISTS idx_observed_paths_advert_pk_seen
             ON observed_paths(public_key, last_seen DESC, path_hex, path_length,
                               bytes_per_hop, observation_count)
             WHERE packet_type = 'advert';
-        """,
+        """
     )
 
 
@@ -592,14 +568,13 @@ def _m0014_observed_paths_multibyte_covering_index(cursor: sqlite3.Cursor) -> No
     """
     if not _table_exists(cursor, "observed_paths"):
         return
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE INDEX IF NOT EXISTS idx_observed_paths_multibyte
             ON observed_paths(bytes_per_hop, last_seen, path_hex,
                               observation_count, first_seen)
             WHERE bytes_per_hop >= 2;
-        """,
+        """
     )
 
 
@@ -676,8 +651,7 @@ def _m0018_dashboard_rollup_tables(cursor: sqlite3.Cursor) -> None:
     together and never queried by field, so columnizing it would cost a
     migration per new tile for no query benefit.
     """
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE TABLE IF NOT EXISTS daily_rollup (
             date                     TEXT PRIMARY KEY,
@@ -706,7 +680,7 @@ def _m0018_dashboard_rollup_tables(cursor: sqlite3.Cursor) -> None:
             schema_rev   INTEGER NOT NULL DEFAULT 1,
             payload      TEXT NOT NULL
         );
-        """,
+        """
     )
 
 
@@ -731,8 +705,7 @@ def _m0019_packet_stream_denorm_dims(cursor: sqlite3.Cursor) -> None:
     _add_column(cursor, "packet_stream", "payload_type_name", "TEXT")
     _add_column(cursor, "packet_stream", "path_len", "INTEGER")
     _add_column(cursor, "packet_stream", "bytes_per_hop", "INTEGER")
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE INDEX IF NOT EXISTS idx_packet_stream_dims
             ON packet_stream(timestamp, bytes_per_hop, route_type_name, payload_type_name)
@@ -749,7 +722,7 @@ def _m0019_packet_stream_denorm_dims(cursor: sqlite3.Cursor) -> None:
         CREATE INDEX IF NOT EXISTS idx_packet_stream_undimensioned
             ON packet_stream(type, id)
             WHERE route_type_name IS NULL;
-        """,
+        """
     )
 
 
@@ -822,8 +795,7 @@ def _m0022_neighbor_tables(cursor: sqlite3.Cursor) -> None:
     Index names are database-global in SQLite (see the note on migration 20), so
     every name here is table-qualified.
     """
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE TABLE IF NOT EXISTS neighbor_links (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -860,7 +832,7 @@ def _m0022_neighbor_tables(cursor: sqlite3.Cursor) -> None:
             ON neighbor_observations(observed_at);
         CREATE INDEX IF NOT EXISTS idx_neighbor_observations_neighbor
             ON neighbor_observations(neighbor_public_key, observed_at);
-        """,
+        """
     )
 
 
@@ -875,7 +847,6 @@ def _m0023_observed_paths_zero_hop_signal(cursor: sqlite3.Cursor) -> None:
         return
     _add_column(cursor, "observed_paths", "snr", "REAL")
     _add_column(cursor, "observed_paths", "rssi", "REAL")
-
 
 def _m0024_region_scope_tables(cursor: sqlite3.Cursor) -> None:
     """Storage for regional flood-scope observation and the warnings it drives.
@@ -895,8 +866,7 @@ def _m0024_region_scope_tables(cursor: sqlite3.Cursor) -> None:
     from memory so they survive a restart, which is why dry-run rows are
     written too — a dry run has to consume the same budget it is previewing.
     """
-    _execute_statements(
-        cursor,
+    _execute_statements(cursor,
         """
         CREATE TABLE IF NOT EXISTS region_scope_daily (
             date          TEXT NOT NULL,
@@ -922,37 +892,6 @@ def _m0024_region_scope_tables(cursor: sqlite3.Cursor) -> None:
             ON region_warning_events(created_at);
         CREATE INDEX IF NOT EXISTS idx_region_warning_events_sender
             ON region_warning_events(sender_id, created_at);
-        """,
-    )
-
-
-def _m0025_watchduty_tables(cursor: sqlite3.Cursor) -> None:
-    """Create WatchDuty state tables used by wildfire polling and alerts."""
-    cursor.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS watchduty_sent_reports (
-            event_id INTEGER NOT NULL,
-            report_id INTEGER NOT NULL,
-            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (event_id, report_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_watchduty_sent_reports_event
-            ON watchduty_sent_reports(event_id);
-
-        CREATE TABLE IF NOT EXISTS watchduty_feed_state (
-            event_id INTEGER PRIMARY KEY,
-            last_acres REAL NOT NULL,
-            last_containment TEXT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS watchduty_alert_suppression (
-            event_id INTEGER PRIMARY KEY,
-            suppressed INTEGER NOT NULL DEFAULT 0,
-            reason TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
         """
     )
 
@@ -965,26 +904,10 @@ MigrationEntry = tuple[int, str, Callable[[sqlite3.Cursor], None]]
 
 MIGRATIONS: list[MigrationEntry] = [
     (1, "initial schema", _m0001_initial_schema),
-    (
-        2,
-        "feed_subscriptions: output_format, message_send_interval_seconds",
-        _m0002_feed_subscriptions_output_format,
-    ),
-    (
-        3,
-        "feed_subscriptions: filter_config, sort_config",
-        _m0003_feed_subscriptions_filter_sort,
-    ),
-    (
-        4,
-        "channel_operations: result_data, processed_at",
-        _m0004_channel_operations_result_processed,
-    ),
-    (
-        5,
-        "feed_message_queue: item_id, item_title, priority",
-        _m0005_feed_message_queue_item_fields,
-    ),
+    (2, "feed_subscriptions: output_format, message_send_interval_seconds", _m0002_feed_subscriptions_output_format),
+    (3, "feed_subscriptions: filter_config, sort_config", _m0003_feed_subscriptions_filter_sort),
+    (4, "channel_operations: result_data, processed_at", _m0004_channel_operations_result_processed),
+    (5, "feed_message_queue: item_id, item_title, priority", _m0005_feed_message_queue_item_fields),
     (6, "channel_operations: payload_data", _m0006_channel_operations_payload_data),
     (7, "packet_stream table for web viewer", _m0007_packet_stream_table),
     (8, "optional repeater/graph columns", _m0008_repeater_tables_optional_columns),
@@ -992,51 +915,18 @@ MIGRATIONS: list[MigrationEntry] = [
     (10, "create repeater/graph tables", _m0010_create_repeater_and_graph_tables),
     (11, "repeater/graph indexes", _m0011_repeater_and_graph_indexes),
     (12, "purging_log: add details column", _m0012_purging_log_details_column),
-    (
-        13,
-        "observed_paths: advert covering index for contacts page",
-        _m0013_observed_paths_advert_covering_index,
-    ),
-    (
-        14,
-        "observed_paths: multibyte covering index for mesh graph",
-        _m0014_observed_paths_multibyte_covering_index,
-    ),
+    (13, "observed_paths: advert covering index for contacts page", _m0013_observed_paths_advert_covering_index),
+    (14, "observed_paths: multibyte covering index for mesh graph", _m0014_observed_paths_multibyte_covering_index),
     (15, "channel_operations: claimed_at", _m0015_channel_operations_claimed_at),
-    (
-        16,
-        "channel_operations: claim owner identity",
-        _m0016_channel_operations_claim_owner,
-    ),
-    (
-        17,
-        "feed_message_queue: unique identifiable items",
-        _m0017_feed_queue_item_uniqueness,
-    ),
+    (16, "channel_operations: claim owner identity", _m0016_channel_operations_claim_owner),
+    (17, "feed_message_queue: unique identifiable items", _m0017_feed_queue_item_uniqueness),
     (18, "dashboard rollup and snapshot tables", _m0018_dashboard_rollup_tables),
-    (
-        19,
-        "packet_stream: denormalized packet dimensions",
-        _m0019_packet_stream_denorm_dims,
-    ),
-    (
-        20,
-        "mesh_connections: table-specific last_seen index",
-        _m0020_mesh_connections_last_seen_index,
-    ),
-    (
-        21,
-        "daily_rollup: per-payload-type multibyte split",
-        _m0021_daily_rollup_packet_type_encoding,
-    ),
+    (19, "packet_stream: denormalized packet dimensions", _m0019_packet_stream_denorm_dims),
+    (20, "mesh_connections: table-specific last_seen index", _m0020_mesh_connections_last_seen_index),
+    (21, "daily_rollup: per-payload-type multibyte split", _m0021_daily_rollup_packet_type_encoding),
     (22, "neighbor discovery tables", _m0022_neighbor_tables),
-    (
-        23,
-        "observed_paths: snr/rssi for zero-hop adverts",
-        _m0023_observed_paths_zero_hop_signal,
-    ),
+    (23, "observed_paths: snr/rssi for zero-hop adverts", _m0023_observed_paths_zero_hop_signal),
     (24, "regional flood scope tallies and warning events", _m0024_region_scope_tables),
-    (25, "watchduty tables", _m0025_watchduty_tables),
 ]
 
 
@@ -1087,9 +977,7 @@ class MigrationRunner:
                 "Upgrade the bot to a newer version that includes these migrations."
             )
 
-    def _apply(
-        self, version: int, description: str, fn: Callable[[sqlite3.Cursor], None]
-    ) -> None:
+    def _apply(self, version: int, description: str, fn: Callable[[sqlite3.Cursor], None]) -> None:
         cursor = self.conn.cursor()
         fn(cursor)
         cursor.execute(

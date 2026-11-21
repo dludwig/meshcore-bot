@@ -35,66 +35,59 @@ def _channel_name_is_public(name: str) -> bool:
     """
     return name.strip().lstrip("#").lower() == "public"
 
-
 # Canonical non-command section names (as used in config.ini.example and code)
-CANONICAL_NON_COMMAND_SECTIONS = frozenset(
-    {
-        "Connection",
-        "Bot",
-        "Admin",
-        "Channels",
-        "Banned_Users",
-        "Localization",
-        "Admin_ACL",
-        "Plugin_Overrides",
-        "Service_Overrides",
-        "Companion_Purge",
-        "Keywords",
-        "RandomLine",
-        "Scheduled_Messages",
-        "Logging",
-        "Custom_Syntax",
-        "External_Data",
-        "Weather",
-        "Solar_Config",
-        "Channels_List",
-        "Data_Retention",
-        "Web_Viewer",
-        "Feed_Manager",
-        "PacketCapture",
-        "MapUploader",
-        "Weather_Service",
-        "MqttWeather",
-        "Earthquake_Service",
-        "Worldcup_Service",
-        "Rate_Limits",
-        "Webhook",
-        "RepeaterPrefixCollision_Service",
-        "DiscordBridge",
-        "TelegramBridge",
-        "MatrixBridge",
-        "DARC_MoWaS_Service",
-        "Region_Warnings",
-        "Repeater_Watch",
-        "WatchDuty",
-    }
-)
+CANONICAL_NON_COMMAND_SECTIONS = frozenset({
+    "Connection",
+    "Bot",
+    "Admin",
+    "Channels",
+    "Banned_Users",
+    "Localization",
+    "Admin_ACL",
+    "Plugin_Overrides",
+    "Service_Overrides",
+    "Companion_Purge",
+    "Keywords",
+    "RandomLine",
+    "Scheduled_Messages",
+    "Logging",
+    "Custom_Syntax",
+    "External_Data",
+    "Weather",
+    "Solar_Config",
+    "Channels_List",
+    "Data_Retention",
+    "Web_Viewer",
+    "Feed_Manager",
+    "PacketCapture",
+    "MapUploader",
+    "Weather_Service",
+    "MqttWeather",
+    "Earthquake_Service",
+    "Worldcup_Service",
+    "Rate_Limits",
+    "Webhook",
+    "RepeaterPrefixCollision_Service",
+    "DiscordBridge",
+    "TelegramBridge",
+    "MatrixBridge",
+    "DARC_MoWaS_Service",
+    "Region_Warnings",
+    "Repeater_Watch",
+})
 
 # Sections required for the bot to start (accessed without has_section guards)
 # Missing any of these causes ConfigParser.NoSectionError during startup
-REQUIRED_SECTIONS = frozenset(
-    {
-        "Connection",  # Serial/BLE/TCP connection params
-        "Bot",  # db_path, rate limits, bot_name, etc.
-        "Channels",  # monitor_channels, respond_to_dms
-    }
-)
+REQUIRED_SECTIONS = frozenset({
+    "Connection",   # Serial/BLE/TCP connection params
+    "Bot",          # db_path, rate limits, bot_name, etc.
+    "Channels",     # monitor_channels, respond_to_dms
+})
 
 # Optional sections: when absent, use defaults or treat as empty/disabled
-ADMIN_ACL_SECTION = "Admin_ACL"  # admin commands disabled
-BANNED_USERS_SECTION = "Banned_Users"  # empty banned list
-LOCALIZATION_SECTION = "Localization"  # language=en, translation_path=translations/
-
+ADMIN_ACL_SECTION = "Admin_ACL"        # admin commands disabled
+BANNED_USERS_SECTION = "Banned_Users"   # empty banned list
+LOCALIZATION_SECTION = "Localization"   # language=en, translation_path=translations/
 
 def strip_optional_quotes(s: str) -> str:
     """Strip one layer of surrounding double or single quotes if present.
@@ -106,7 +99,7 @@ def strip_optional_quotes(s: str) -> str:
     if not isinstance(s, str):
         return s
     s = s.strip()
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in '"\'':
         return s[1:-1]
     return s
 
@@ -144,9 +137,7 @@ def _get_command_prefix_to_section() -> dict[str, str]:
     return result
 
 
-def _suggest_similar_command(
-    section: str, prefix_to_section: dict[str, str]
-) -> Optional[str]:
+def _suggest_similar_command(section: str, prefix_to_section: dict[str, str]) -> Optional[str]:
     """If section looks like a command name (e.g. Stats, Hacker), suggest the canonical section."""
     return prefix_to_section.get(section.strip().lower())
 
@@ -210,35 +201,27 @@ def validate_config(config_path: str) -> list[tuple[str, str]]:
     sections_present = frozenset(s.strip() for s in config.sections() if s.strip())
     missing_required = REQUIRED_SECTIONS - sections_present
     for section in sorted(missing_required):
-        results.append(
-            (
-                SEVERITY_ERROR,
-                f"Missing required section [{section}]; bot will not start without it.",
-            )
-        )
+        results.append((
+            SEVERITY_ERROR,
+            f"Missing required section [{section}]; bot will not start without it.",
+        ))
 
     # Note when optional sections are absent
     if ADMIN_ACL_SECTION not in sections_present:
-        results.append(
-            (
-                SEVERITY_INFO,
-                f"Section [{ADMIN_ACL_SECTION}] absent; admin commands (repeater, webviewer, reload, channelpause) disabled.",
-            )
-        )
+        results.append((
+            SEVERITY_INFO,
+            f"Section [{ADMIN_ACL_SECTION}] absent; admin commands (repeater, webviewer, reload, channelpause) disabled.",
+        ))
     if BANNED_USERS_SECTION not in sections_present:
-        results.append(
-            (
-                SEVERITY_INFO,
-                f"Section [{BANNED_USERS_SECTION}] absent; no users banned.",
-            )
-        )
+        results.append((
+            SEVERITY_INFO,
+            f"Section [{BANNED_USERS_SECTION}] absent; no users banned.",
+        ))
     if LOCALIZATION_SECTION not in sections_present:
-        results.append(
-            (
-                SEVERITY_INFO,
-                f"Section [{LOCALIZATION_SECTION}] absent; using defaults (language=en, translation_path=translations/).",
-            )
-        )
+        results.append((
+            SEVERITY_INFO,
+            f"Section [{LOCALIZATION_SECTION}] absent; using defaults (language=en, translation_path=translations/).",
+        ))
 
     # Check writable paths (database, log file)
     bot_root = Path(config_path).resolve().parent
@@ -254,26 +237,20 @@ def validate_config(config_path: str) -> list[tuple[str, str]]:
             try:
                 resolved = _resolve_path(local_dir, bot_root)
                 if not resolved.exists():
-                    results.append(
-                        (
-                            SEVERITY_WARNING,
-                            f"Local plugins path '{resolved}' does not exist; local commands/plugins will not load.",
-                        )
-                    )
-                elif not os.access(str(resolved), os.R_OK):
-                    results.append(
-                        (
-                            SEVERITY_WARNING,
-                            f"Local plugins path '{resolved}' is not readable.",
-                        )
-                    )
-            except (OSError, RuntimeError):
-                results.append(
-                    (
+                    results.append((
                         SEVERITY_WARNING,
-                        f"Local plugins path: cannot resolve '{local_dir}'.",
-                    )
-                )
+                        f"Local plugins path '{resolved}' does not exist; local commands/plugins will not load.",
+                    ))
+                elif not os.access(str(resolved), os.R_OK):
+                    results.append((
+                        SEVERITY_WARNING,
+                        f"Local plugins path '{resolved}' is not readable.",
+                    ))
+            except (OSError, RuntimeError):
+                results.append((
+                    SEVERITY_WARNING,
+                    f"Local plugins path: cannot resolve '{local_dir}'.",
+                ))
     if config.has_section("Logging"):
         log_file = config.get("Logging", "log_file", fallback="").strip()
         if log_file:
@@ -288,28 +265,18 @@ def validate_config(config_path: str) -> list[tuple[str, str]]:
                 results.append((SEVERITY_WARNING, msg))
 
     # Public channel guard: refuse to run on the shared Public channel without explicit override
-    if config.has_section("Channels") and config.has_option(
-        "Channels", "monitor_channels"
-    ):
-        raw = strip_optional_quotes(
-            config.get("Channels", "monitor_channels", fallback="")
-        )
+    if config.has_section("Channels") and config.has_option("Channels", "monitor_channels"):
+        raw = strip_optional_quotes(config.get("Channels", "monitor_channels", fallback=""))
         entries = [e.strip() for e in raw.split(",") if e.strip()]
         if any(_channel_name_is_public(e) for e in entries):
-            override = (
-                config.get("Bot", PUBLIC_CHANNEL_OVERRIDE_KEY, fallback="")
-                .strip()
-                .lower()
-            )
+            override = config.get("Bot", PUBLIC_CHANNEL_OVERRIDE_KEY, fallback="").strip().lower()
             if override != "true":
-                results.append(
-                    (
-                        SEVERITY_ERROR,
-                        "monitor_channels includes the Public channel. Running a bot on Public "
-                        "is disruptive to other mesh users. To override, add to [Bot]:\n"
-                        f"  {PUBLIC_CHANNEL_OVERRIDE_KEY} = true",
-                    )
-                )
+                results.append((
+                    SEVERITY_ERROR,
+                    "monitor_channels includes the Public channel. Running a bot on Public "
+                    "is disruptive to other mesh users. To override, add to [Bot]:\n"
+                    f"  {PUBLIC_CHANNEL_OVERRIDE_KEY} = true",
+                ))
 
     prefix_to_section: Optional[dict[str, str]] = None
 
@@ -330,23 +297,18 @@ def validate_config(config_path: str) -> list[tuple[str, str]]:
             suggestion = SECTION_TYPO_MAP[section_stripped]
             # Special case: [Jokes] + [Joke_Command]/[DadJoke_Command] overlap
             if section_stripped == "Jokes" and (
-                "Joke_Command" in sections_present
-                or "DadJoke_Command" in sections_present
+                "Joke_Command" in sections_present or "DadJoke_Command" in sections_present
             ):
-                results.append(
-                    (
-                        SEVERITY_WARNING,
-                        "Both [Jokes] and [Joke_Command]/[DadJoke_Command] are present; "
-                        "the *_Command sections take precedence. Consider removing [Jokes] to avoid confusion.",
-                    )
-                )
+                results.append((
+                    SEVERITY_WARNING,
+                    "Both [Jokes] and [Joke_Command]/[DadJoke_Command] are present; "
+                    "the *_Command sections take precedence. Consider removing [Jokes] to avoid confusion.",
+                ))
             else:
-                results.append(
-                    (
-                        SEVERITY_WARNING,
-                        f"Non-standard section [{section_stripped}]; did you mean [{suggestion}]?",
-                    )
-                )
+                results.append((
+                    SEVERITY_WARNING,
+                    f"Non-standard section [{section_stripped}]; did you mean [{suggestion}]?",
+                ))
         else:
             # Check if section looks like a command name (e.g. [Stats] -> [Stats_Command])
             if prefix_to_section is None:
